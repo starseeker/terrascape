@@ -22,24 +22,17 @@ Edge *Subdivision::makeEdge()
 void Subdivision::initMesh(const Vec2& A,const Vec2& B,
 			   const Vec2& C,const Vec2& D)
 {
-    cerr << "initMesh called..." << endl;
     Vec2 a = A.clone();
     Vec2 b = B.clone();
     Vec2 c = C.clone();
     Vec2 d = D.clone();
-    cerr << "Cloned corner points..." << endl;
 
     Edge *ea = makeEdge();
-    cerr << "Created edge ea..." << endl;
     ea->EndPoints(a, b);
-    cerr << "Set endpoints for ea..." << endl;
 
     Edge *eb = makeEdge();
-    cerr << "Created edge eb..." << endl;
     splice(ea->Sym(), eb);
-    cerr << "Spliced ea->Sym() and eb..." << endl;
     eb->EndPoints(b, c);
-    cerr << "Set endpoints for eb..." << endl;
 
     Edge *ec = makeEdge();
     splice(eb->Sym(), ec);
