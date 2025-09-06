@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <queue>
+#include <unordered_map>
 
 namespace bg {
 
@@ -85,7 +86,7 @@ private:
 
 /**
  * Greedy refinement layer that handles error-driven candidate selection
- * and insertion on top of the triangulation manager
+ * and TRUE incremental insertion on top of the triangulation manager
  */
 class GreedyMeshRefiner {
 public:
@@ -94,6 +95,7 @@ public:
         float world_x, world_y; // World coordinates  
         float error;           // Approximation error
         std::vector<uint32_t> containing_triangle; // Triangle containing this point
+        bool needs_update;     // Whether error needs recalculation
         
         bool operator<(const CandidatePoint& other) const {
             return error < other.error; // For max-heap
@@ -106,26 +108,46 @@ private:
     float error_threshold_;
     int point_limit_;
     
+    // For true incremental insertion: track candidates by grid position
+    std::unordered_map<int, CandidatePoint> grid_candidates_; // key = y*width + x
+    int grid_width_, grid_height_;
+    
 public:
     GreedyMeshRefiner(DetriaTriangulationManager* manager, 
                      float error_threshold, int point_limit);
     
     /**
-     * Add candidate points from grid
+     * Initialize candidates from grid (but don't add all to heap immediately)
      */
     template<typename T>
-    void addCandidatesFromGrid(int width, int height, const T* elevations);
+    void initializeCandidatesFromGrid(int width, int height, const T* elevations);
     
     /**
-     * Perform greedy refinement until error threshold or point limit reached
+     * Perform TRUE incremental greedy refinement:
+     * - Find best candidate
+     * - Insert single point
+     * - Update only affected candidates
+     * - Repeat until done
      */
     template<typename T>
-    int refineGreedy(int width, int height, const T* elevations);
+    int refineIncrementally(int width, int height, const T* elevations);
     
     /**
-     * Update candidate errors after triangulation changes
+     * Update candidate errors for triangles affected by the last point insertion
      */
-    void updateCandidateErrors();
+    template<typename T>
+    void updateAffectedCandidates(int width, int height, const T* elevations, 
+                                 float inserted_x, float inserted_y);
+    
+    /**
+     * Get the current best candidate without removing it
+     */
+    CandidatePoint getBestCandidate() const;
+    
+    /**
+     * Check if there are viable candidates remaining
+     */
+    bool hasViableCandidates() const;
     
 private:
     template<typename T>
@@ -133,10 +155,17 @@ private:
                         const std::vector<uint32_t>& triangle) const;
     
     template<typename T>
-    float bilinearInterpolation(float x, float y, const T* elevations, int width, int height) const;
+    CandidatePoint createCandidateFromGrid(int x, int y, int width, int height, 
+                                          const T* elevations);
     
     float barycentricInterpolation(float px, float py, 
                                   const std::vector<uint32_t>& triangle) const;
+    
+    /**
+     * Find all grid candidates that need error updates due to triangulation changes
+     */
+    std::vector<std::pair<int, int>> findAffectedGridPoints(float inserted_x, float inserted_y, 
+                                                           float search_radius) const;
 };
 
 } // namespace bg
