@@ -15,12 +15,28 @@ typedef double real;
 #define EPS 1e-6
 #define EPS2 (EPS*EPS)
 
+#ifndef HUGE
+#ifdef HUGE_VAL
+#define HUGE HUGE_VAL
+#else
+#define HUGE 1e30
+#endif
+#endif
+
+#ifndef MIN
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
+
+#ifndef MAX
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+#endif
+
 typedef int boolean;
 
 enum Axis {X, Y, Z, W};
 enum Side {Left=-1, On=0, Right=1};
 
-#include <math.h>
+#include <cmath>
 #include "Vec2.h"
 #include "Vec3.h"
 

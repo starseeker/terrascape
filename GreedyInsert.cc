@@ -1,4 +1,5 @@
-#include <iostream.h>
+#include <iostream>
+using namespace std;
 #include "GreedyInsert.h"
 
 #include "Mask.h"
@@ -14,19 +15,28 @@ void TrackedTriangle::update(Subdivision& s)
 
 
 
-GreedySubdivision::GreedySubdivision(Map *map)
+GreedySubdivision::GreedySubdivision(Map *map) : Subdivision()
 {
+    cerr << "GreedySubdivision constructor starting..." << endl;
     H = map;
+    cerr << "Assigned map pointer..." << endl;
     heap = new Heap(128);
+    cerr << "Created heap..." << endl;
 
     int w = H->width;
     int h = H->height;
+    cerr << "Map dimensions: " << w << "x" << h << endl;
 
     is_used.init(w, h);
+    cerr << "Initialized is_used array..." << endl;
     int x,y;
+    cerr << "Starting loop to initialize is_used values..." << endl;
     for(x=0;x<w;x++)
 	for(y=0;y<h;y++)
 	    is_used(x,y) = DATA_POINT_UNUSED;
+    cerr << "Finished initializing is_used values..." << endl;
+
+    cerr << "About to call initMesh..." << endl;
 
 
     initMesh(Vec2(0,0),
@@ -209,7 +219,8 @@ Edge *GreedySubdivision::select(int sx, int sy, Triangle *t)
 
     is_used(sx,sy) = DATA_POINT_USED;
     count++;
-    return insert(Vec2(sx,sy), t);
+    Vec2 point(sx, sy);
+    return insert(point, t);
 }
 
 

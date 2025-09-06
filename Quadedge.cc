@@ -1,5 +1,6 @@
 #include <stdlib.h>
-#include <iostream.h>
+#include <iostream>
+using namespace std;
 
 #include "Quadedge.h"
 

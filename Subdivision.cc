@@ -1,5 +1,6 @@
 #include <stdlib.h>
-#include <iostream.h>
+#include <iostream>
+using namespace std;
 #include <assert.h>
 
 #include "Subdivision.h"
@@ -21,10 +22,10 @@ Edge *Subdivision::makeEdge()
 void Subdivision::initMesh(const Vec2& A,const Vec2& B,
 			   const Vec2& C,const Vec2& D)
 {
-    Vec2& a = A.clone();
-    Vec2& b = B.clone();
-    Vec2& c = C.clone();
-    Vec2& d = D.clone();
+    Vec2 a = A.clone();
+    Vec2 b = B.clone();
+    Vec2 c = C.clone();
+    Vec2 d = D.clone();
 
     Edge *ea = makeEdge();
     ea->EndPoints(a, b);
@@ -295,7 +296,8 @@ Edge *Subdivision::spoke(Vec2& x, Edge *e)
 	// x lies within the Lface of e
     }
 
-    Edge *base = makeEdge(e->Org(), x.clone());
+    Vec2 x_clone = x.clone();
+    Edge *base = makeEdge(e->Org(), x_clone);
 
     splice(base, e);
 

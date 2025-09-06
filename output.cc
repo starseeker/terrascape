@@ -1,5 +1,6 @@
 #include "terra.h"
-#include <fstream.h>
+#include <fstream>
+using namespace std;
 
 
 void generate_output(char *filename, FileFormat format)

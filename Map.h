@@ -1,8 +1,10 @@
 #ifndef MAP_INCLUDED // -*- C++ -*-
 #define MAP_INCLUDED
 
-#include <stdlib.h>
-#include <iostream.h>
+#include <cstdlib>
+#include <iostream>
+
+using namespace std;
 
 #include "Geom.h"
 

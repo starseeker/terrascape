@@ -1,6 +1,7 @@
-#include <math.h>
+#include <cmath>
 #include <stdlib.h>
-#include <iostream.h>
+#include <iostream>
+using namespace std;
 
 #include "Geom.h"
 #include "Mask.h"
