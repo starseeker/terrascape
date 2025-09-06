@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.12)
 project(terrascape VERSION 0.7)
 
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 11)
+# Set C++ standard to C++17 (required for bg_detria.hpp)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add compile definitions for legacy code compatibility
@@ -34,11 +34,11 @@ set(TERRA_HEADERS
     vmath.h
 )
 
-# Create the terrascape_demo executable (now using bg_grid_mesh.h only)
-add_executable(terrascape_demo main.cpp)
+# Create the terrascape_demo executable (using bg_grid_mesh.h with detria)
+add_executable(terrascape_demo main.cpp bg_detria_mesh.cpp)
 
-# Create the new grid mesh test executable (using only bg_grid_mesh.h)
-add_executable(test_gridmesh test_gridmesh.cpp)
+# Create the new grid mesh test executable (using bg_grid_mesh.h with detria)
+add_executable(test_gridmesh test_gridmesh.cpp bg_detria_mesh.cpp)
 
 # Create the legacy terrascape executable (using the old Terra system)
 add_executable(terrascape_legacy legacy_main.cpp ${TERRA_SOURCES})
