@@ -219,8 +219,6 @@ MeshResult grid_to_mesh_detria(
         }
     }
     
-    std::cerr << "Total points for triangulation: " << points.size() << "\n";
-    
     // Perform batch triangulation using detria with fallback
     detria::Triangulation<detria::PointF, uint32_t> triangulation;
     bool success = false;
@@ -240,21 +238,16 @@ MeshResult grid_to_mesh_detria(
         success = triangulation.triangulate(true); // Delaunay
         
         if (success) {
-            std::cerr << "Detria triangulation succeeded with " << attempt_point_count << " points\n";
-            std::cerr << "Max triangles: " << triangulation.getMaxNumTriangles() << "\n";
-            
             // Update points and z_coords to match successful attempt
             points.resize(attempt_point_count);
             point_z_coords.resize(attempt_point_count);
             break;
         } else {
-            std::cerr << "Detria failed with " << attempt_point_count << " points, trying fewer...\n";
             attempt_point_count = attempt_point_count * 3 / 4; // Reduce by 25%
         }
     }
     
     if (!success) {
-        std::cerr << "Warning: Detria triangulation failed even with reduced points, using fallback\n";
         // Fallback to simple manual triangulation
         MeshResult result;
         for (size_t i = 0; i < points.size(); ++i) {
@@ -277,17 +270,13 @@ MeshResult grid_to_mesh_detria(
     }
     
     // Extract triangles - use forEachTriangleOfEveryLocation to get all triangles
-    int triangle_count = 0;
     triangulation.forEachTriangleOfEveryLocation([&](detria::Triangle<uint32_t> triangle) {
         if (triangle.x < points.size() && triangle.y < points.size() && triangle.z < points.size()) {
             result.triangles.push_back({static_cast<int>(triangle.x), 
                                        static_cast<int>(triangle.y), 
                                        static_cast<int>(triangle.z)});
-            triangle_count++;
         }
     });
-    
-    std::cerr << "Extracted " << triangle_count << " triangles\n";
     
     return result;
 }
