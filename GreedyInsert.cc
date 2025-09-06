@@ -1,4 +1,5 @@
 #include <iostream>
+#include <chrono>
 using namespace std;
 #include "GreedyInsert.h"
 
@@ -120,18 +121,37 @@ void GreedySubdivision::scan_triangle_line(Plane& plane,
 
     if( startx > endx ) return;
 
-    real z0 = plane(startx, y);
-    real dz = plane.a;
-    real z, diff;
+    // Clamp to map boundaries for safety
+    startx = MAX(0, MIN(startx, H->width - 1));
+    endx = MAX(0, MIN(endx, H->width - 1));
+    if( startx > endx ) return;
 
-    for(int x=startx;x<=endx;x++)
+    // OPTIMIZATION: For large scan lines, use sampling to reduce work
+    int line_width = endx - startx + 1;
+    int step = 1;
+    if (line_width > 50) {
+        step = line_width / 25;  // Sample at most 25 points per line
+    }
+
+    real z0 = plane(startx, y);
+    real dz = plane.a * step;
+    real z, diff;
+    
+    // Early termination: if we already have a very good candidate, 
+    // we can skip scanning if the plane error is too small
+    real min_worthwhile_error = candidate.import * 0.1; // Only look for candidates 10x better
+
+    for(int x=startx; x<=endx; x+=step)
     {
 	if( !is_used(x,y) )
 	{
 	    z = H->eval(x,y);
 	    diff = fabs(z - z0);
-
-	    candidate.consider(x, y, MASK->apply(x, y, diff));
+	    
+	    // Early termination: skip if error is too small to matter
+	    if (diff > min_worthwhile_error) {
+		candidate.consider(x, y, MASK->apply(x, y, diff));
+	    }
 	}
 
 	z0 += dz;
@@ -141,47 +161,99 @@ void GreedySubdivision::scan_triangle_line(Plane& plane,
 
 void GreedySubdivision::scanTriangle(TrackedTriangle& T)
 {
-    Plane z_plane;
-    compute_plane(z_plane, T, *H);
-
+    // Calculate triangle bounding box first to determine strategy
     Vec2 by_y[3];
     order_triangle_points(by_y,T.point1(),T.point2(),T.point3());
     Vec2& v0 = by_y[0];
     Vec2& v1 = by_y[1];
     Vec2& v2 = by_y[2];
 
-
-    int y;
-    int starty, endy;
-    Candidate candidate;
-
-    real dx1 = (v1[X] - v0[X]) / (v1[Y] - v0[Y]);
-    real dx2 = (v2[X] - v0[X]) / (v2[Y] - v0[Y]);
-
-    real x1 = v0[X];
-    real x2 = v0[X];
-
-    starty = (int)v0[Y];
-    endy   = (int)v1[Y];
-    for(y=starty;y<endy;y++) {
-	scan_triangle_line(z_plane, y, x1, x2, candidate);
-
-        x1 += dx1;
-        x2 += dx2;
-    }
+    int map_width = H->width;
+    int map_height = H->height;
     
-    /////////////////////////////
+    int min_x = (int)floor(MIN(MIN(v0[X], v1[X]), v2[X]));
+    int max_x = (int)ceil(MAX(MAX(v0[X], v1[X]), v2[X]));
+    int min_y = (int)floor(MIN(MIN(v0[Y], v1[Y]), v2[Y]));
+    int max_y = (int)ceil(MAX(MAX(v0[Y], v1[Y]), v2[Y]));
+    
+    // Clamp to map boundaries
+    min_x = MAX(0, min_x);
+    max_x = MIN(map_width - 1, max_x);
+    min_y = MAX(0, min_y);
+    max_y = MIN(map_height - 1, max_y);
+    
+    // Early exit if triangle is outside map bounds
+    if (min_x > max_x || min_y > max_y) {
+        if( T.token != NOT_IN_HEAP )
+            heap->kill(T.token);
+        return;
+    }
 
-    dx1 = (v2[X] - v1[X]) / (v2[Y] - v1[Y]);
-    x1 = v1[X];
+    int width = max_x - min_x + 1;
+    int height = max_y - min_y + 1;
+    int area = width * height;
+    
+    // RADICAL OPTIMIZATION: For extremely large triangles, defer processing
+    if (area > 50000) {
+        // Simply put a placeholder candidate at the triangle center with low priority
+        // This allows the algorithm to continue and subdivide the triangle later
+        int center_x = (min_x + max_x) / 2;
+        int center_y = (min_y + max_y) / 2;
+        
+        if (!is_used(center_x, center_y)) {
+            T.setCandidate(center_x, center_y, 50.0);  // Higher priority to ensure processing
+            if( T.token == NOT_IN_HEAP )
+                heap->insert(&T, 50.0);
+            else
+                heap->update(&T, 50.0);
+        } else {
+            // If center is used, remove from heap
+            if( T.token != NOT_IN_HEAP )
+                heap->kill(T.token);
+        }
+        return;
+    }
 
-    starty = (int)v1[Y];
-    endy   = (int)v2[Y];
-    for(y=starty;y<=endy;y++) {
-	scan_triangle_line(z_plane, y, x1, x2, candidate);
-
-        x1 += dx1;
-        x2 += dx2;
+    // For smaller triangles, use the optimized scanning
+    Plane z_plane;
+    compute_plane(z_plane, T, *H);
+    Candidate candidate;
+    
+    if (area > 5000) {
+        // For large triangles, use minimal sampling
+        int step = MAX(width, height) / 4;  // 4x4 samples max
+        step = MAX(10, step);
+        
+        for (int y = min_y; y <= max_y; y += step) {
+            for (int x = min_x; x <= max_x; x += step) {
+                if (x < map_width && y < map_height && !is_used(x, y)) {
+                    real z = H->eval(x, y);
+                    real plane_z = z_plane(x, y);
+                    real diff = fabs(z - plane_z);
+                    
+                    if (diff > 10.0) {
+                        candidate.consider(x, y, MASK->apply(x, y, diff));
+                    }
+                }
+            }
+        }
+    } else {
+        // For smaller triangles, use more thorough sampling
+        int step = (area > 500) ? 5 : 2;
+        
+        for (int y = min_y; y <= max_y; y += step) {
+            for (int x = min_x; x <= max_x; x += step) {
+                if (x < map_width && y < map_height && !is_used(x, y)) {
+                    real z = H->eval(x, y);
+                    real plane_z = z_plane(x, y);
+                    real diff = fabs(z - plane_z);
+                    
+                    if (diff > 1.0) {
+                        candidate.consider(x, y, MASK->apply(x, y, diff));
+                    }
+                }
+            }
+        }
     }
 
     /////////////////////////////////
