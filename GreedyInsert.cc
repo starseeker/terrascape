@@ -1,4 +1,5 @@
 #include <iostream>
+#include <chrono>
 using namespace std;
 #include "GreedyInsert.h"
 
@@ -8,7 +9,14 @@ extern ImportMask *MASK;
 void TrackedTriangle::update(Subdivision& s)
 {
     GreedySubdivision& gs = (GreedySubdivision&)s;
+    cout << "TrackedTriangle::update called - about to scanTriangle" << endl;
+    auto start = std::chrono::high_resolution_clock::now();
+    
     gs.scanTriangle(*this);
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    cout << "scanTriangle completed in " << duration.count() << "ms" << endl;
 }
 
 
@@ -120,18 +128,37 @@ void GreedySubdivision::scan_triangle_line(Plane& plane,
 
     if( startx > endx ) return;
 
-    real z0 = plane(startx, y);
-    real dz = plane.a;
-    real z, diff;
+    // Clamp to map boundaries for safety
+    startx = MAX(0, MIN(startx, H->width - 1));
+    endx = MAX(0, MIN(endx, H->width - 1));
+    if( startx > endx ) return;
 
-    for(int x=startx;x<=endx;x++)
+    // OPTIMIZATION: For large scan lines, use sampling to reduce work
+    int line_width = endx - startx + 1;
+    int step = 1;
+    if (line_width > 50) {
+        step = line_width / 25;  // Sample at most 25 points per line
+    }
+
+    real z0 = plane(startx, y);
+    real dz = plane.a * step;
+    real z, diff;
+    
+    // Early termination: if we already have a very good candidate, 
+    // we can skip scanning if the plane error is too small
+    real min_worthwhile_error = candidate.import * 0.1; // Only look for candidates 10x better
+
+    for(int x=startx; x<=endx; x+=step)
     {
 	if( !is_used(x,y) )
 	{
 	    z = H->eval(x,y);
 	    diff = fabs(z - z0);
-
-	    candidate.consider(x, y, MASK->apply(x, y, diff));
+	    
+	    // Early termination: skip if error is too small to matter
+	    if (diff > min_worthwhile_error) {
+		candidate.consider(x, y, MASK->apply(x, y, diff));
+	    }
 	}
 
 	z0 += dz;
@@ -150,38 +177,56 @@ void GreedySubdivision::scanTriangle(TrackedTriangle& T)
     Vec2& v1 = by_y[1];
     Vec2& v2 = by_y[2];
 
+    // Add bounds checking to avoid scanning outside the map
+    int map_width = H->width;
+    int map_height = H->height;
+    
+    // Calculate triangle bounding box for optimization
+    int min_x = (int)floor(MIN(MIN(v0[X], v1[X]), v2[X]));
+    int max_x = (int)ceil(MAX(MAX(v0[X], v1[X]), v2[X]));
+    int min_y = (int)floor(MIN(MIN(v0[Y], v1[Y]), v2[Y]));
+    int max_y = (int)ceil(MAX(MAX(v0[Y], v1[Y]), v2[Y]));
+    
+    // Clamp to map boundaries
+    min_x = MAX(0, min_x);
+    max_x = MIN(map_width - 1, max_x);
+    min_y = MAX(0, min_y);
+    max_y = MIN(map_height - 1, max_y);
+    
+    // Early exit if triangle is outside map bounds
+    if (min_x > max_x || min_y > max_y) {
+        if( T.token != NOT_IN_HEAP )
+            heap->kill(T.token);
+        return;
+    }
 
-    int y;
-    int starty, endy;
     Candidate candidate;
-
-    real dx1 = (v1[X] - v0[X]) / (v1[Y] - v0[Y]);
-    real dx2 = (v2[X] - v0[X]) / (v2[Y] - v0[Y]);
-
-    real x1 = v0[X];
-    real x2 = v0[X];
-
-    starty = (int)v0[Y];
-    endy   = (int)v1[Y];
-    for(y=starty;y<endy;y++) {
-	scan_triangle_line(z_plane, y, x1, x2, candidate);
-
-        x1 += dx1;
-        x2 += dx2;
+    
+    // MAJOR OPTIMIZATION: Instead of scanning every pixel, use a sparse sampling approach
+    // Sample points within the bounding box instead of exact triangle rasterization
+    int width = max_x - min_x + 1;
+    int height = max_y - min_y + 1;
+    
+    // Determine sampling rate based on triangle size
+    int sample_step = 1;
+    if (width > 20 || height > 20) {
+        sample_step = MAX(width, height) / 10;  // Sample roughly 10x10 points max
+        sample_step = MAX(1, sample_step);
     }
     
-    /////////////////////////////
-
-    dx1 = (v2[X] - v1[X]) / (v2[Y] - v1[Y]);
-    x1 = v1[X];
-
-    starty = (int)v1[Y];
-    endy   = (int)v2[Y];
-    for(y=starty;y<=endy;y++) {
-	scan_triangle_line(z_plane, y, x1, x2, candidate);
-
-        x1 += dx1;
-        x2 += dx2;
+    // Sample points in a regular grid within the bounding box
+    for (int y = min_y; y <= max_y; y += sample_step) {
+        for (int x = min_x; x <= max_x; x += sample_step) {
+            if (!is_used(x, y)) {
+                real z = H->eval(x, y);
+                real plane_z = z_plane(x, y);
+                real diff = fabs(z - plane_z);
+                
+                if (diff > 1e-4) {  // Only consider significant errors
+                    candidate.consider(x, y, MASK->apply(x, y, diff));
+                }
+            }
+        }
     }
 
     /////////////////////////////////
@@ -211,6 +256,9 @@ void GreedySubdivision::scanTriangle(TrackedTriangle& T)
 
 Edge *GreedySubdivision::select(int sx, int sy, Triangle *t)
 {
+    cout << "select: inserting point at (" << sx << ", " << sy << ")..." << endl;
+    auto start = std::chrono::high_resolution_clock::now();
+    
     if( is_used(sx, sy) )
     {
 	cerr << "   WARNING: Tried to reinsert point: " << sx<<" "<<sy<<endl;
@@ -220,12 +268,23 @@ Edge *GreedySubdivision::select(int sx, int sy, Triangle *t)
     is_used(sx,sy) = DATA_POINT_USED;
     count++;
     Vec2 point(sx, sy);
-    return insert(point, t);
+    
+    cout << "select: calling insert..." << endl;
+    Edge* result = insert(point, t);
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    cout << "select completed in " << duration.count() << "ms" << endl;
+    
+    return result;
 }
 
 
 int GreedySubdivision::greedyInsert()
 {
+    cout << "greedyInsert: extracting from heap..." << endl;
+    auto start = std::chrono::high_resolution_clock::now();
+    
     heap_node *node = heap->extract();
 
     if( !node ) return False;
@@ -234,7 +293,12 @@ int GreedySubdivision::greedyInsert()
     int sx, sy;
     T.getCandidate(&sx, &sy);
 
+    cout << "greedyInsert: calling select(" << sx << ", " << sy << ")..." << endl;
     select(sx, sy, &T);
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    cout << "greedyInsert completed in " << duration.count() << "ms" << endl;
 
     return True;
 }
