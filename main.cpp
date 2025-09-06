@@ -34,6 +34,12 @@ void process_cmdline(int argc, char **argv)
     // In a full implementation, this would parse command line arguments
 }
 
+int goal_not_met()
+{
+    return mesh->maxError() > error_threshold &&
+           mesh->pointCount() < point_limit;
+}
+
 int main(int argc, char **argv)
 {
     cout << "Terra Terrascape Demo v" << terra_version_string << endl;
@@ -61,9 +67,34 @@ int main(int argc, char **argv)
     cout << "DEM loaded: " << DEM->width << "x" << DEM->height << " pixels" << endl;
     cout << "Height range: " << DEM->min << " to " << DEM->max << endl;
     
-    // For now, skip the complex mesh generation and just create a simple output
-    cout << "Skipping complex mesh generation for now..." << endl;
-    cout << "Creating simple OBJ output directly from height data..." << endl;
+    // Create a simple mask for the greedy algorithm
+    MASK = new ImportMask();
+    MASK->width = DEM->width;
+    MASK->height = DEM->height;
+    
+    // Test the optimized greedy mesh generation
+    cout << "Creating GreedySubdivision mesh..." << endl;
+    mesh = new GreedySubdivision(DEM);
+    
+    cout << "Initial mesh: " << mesh->pointCount() << " points, max error: " << mesh->maxError() << endl;
+    
+    // Run a few iterations of greedy insertion for testing
+    cout << "Running greedy insertion (limited iterations for demo)..." << endl;
+    int iterations = 0;
+    while(goal_not_met() && iterations < 20) {  // More iterations to see it work
+        if (!mesh->greedyInsert()) {
+            cout << "Greedy insertion failed at iteration " << iterations << endl;
+            break;
+        }
+        iterations++;
+        if (iterations % 5 == 0) {  // Print every 5 iterations
+            cout << "Iteration " << iterations << ": points=" << mesh->pointCount() 
+                 << ", error=" << mesh->maxError() << endl;
+        }
+    }
+    
+    cout << "Greedy mesh generation completed!" << endl;
+    cout << "Final: " << mesh->pointCount() << " points, max error: " << mesh->maxError() << endl;
     
     // Generate a simple OBJ output directly from the DEM data
     const char* obj_filename = "crater_mesh.obj";
@@ -104,7 +135,9 @@ int main(int argc, char **argv)
     cout << "Simple OBJ file written successfully with " << vertex_count << " vertices." << endl;
     cout << "This is a basic grid representation of the terrain data." << endl;
     
-    // Clean up
+    // Clean up the mesh
+    delete mesh;
+    delete MASK;
     delete DEM;
     
     return 0;

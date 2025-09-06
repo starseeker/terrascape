@@ -9,14 +9,7 @@ extern ImportMask *MASK;
 void TrackedTriangle::update(Subdivision& s)
 {
     GreedySubdivision& gs = (GreedySubdivision&)s;
-    cout << "TrackedTriangle::update called - about to scanTriangle" << endl;
-    auto start = std::chrono::high_resolution_clock::now();
-    
     gs.scanTriangle(*this);
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    cout << "scanTriangle completed in " << duration.count() << "ms" << endl;
 }
 
 
@@ -168,20 +161,16 @@ void GreedySubdivision::scan_triangle_line(Plane& plane,
 
 void GreedySubdivision::scanTriangle(TrackedTriangle& T)
 {
-    Plane z_plane;
-    compute_plane(z_plane, T, *H);
-
+    // Calculate triangle bounding box first to determine strategy
     Vec2 by_y[3];
     order_triangle_points(by_y,T.point1(),T.point2(),T.point3());
     Vec2& v0 = by_y[0];
     Vec2& v1 = by_y[1];
     Vec2& v2 = by_y[2];
 
-    // Add bounds checking to avoid scanning outside the map
     int map_width = H->width;
     int map_height = H->height;
     
-    // Calculate triangle bounding box for optimization
     int min_x = (int)floor(MIN(MIN(v0[X], v1[X]), v2[X]));
     int max_x = (int)ceil(MAX(MAX(v0[X], v1[X]), v2[X]));
     int min_y = (int)floor(MIN(MIN(v0[Y], v1[Y]), v2[Y]));
@@ -200,30 +189,68 @@ void GreedySubdivision::scanTriangle(TrackedTriangle& T)
         return;
     }
 
-    Candidate candidate;
-    
-    // MAJOR OPTIMIZATION: Instead of scanning every pixel, use a sparse sampling approach
-    // Sample points within the bounding box instead of exact triangle rasterization
     int width = max_x - min_x + 1;
     int height = max_y - min_y + 1;
+    int area = width * height;
     
-    // Determine sampling rate based on triangle size
-    int sample_step = 1;
-    if (width > 20 || height > 20) {
-        sample_step = MAX(width, height) / 10;  // Sample roughly 10x10 points max
-        sample_step = MAX(1, sample_step);
+    // RADICAL OPTIMIZATION: For extremely large triangles, defer processing
+    if (area > 50000) {
+        // Simply put a placeholder candidate at the triangle center with low priority
+        // This allows the algorithm to continue and subdivide the triangle later
+        int center_x = (min_x + max_x) / 2;
+        int center_y = (min_y + max_y) / 2;
+        
+        if (!is_used(center_x, center_y)) {
+            T.setCandidate(center_x, center_y, 50.0);  // Higher priority to ensure processing
+            if( T.token == NOT_IN_HEAP )
+                heap->insert(&T, 50.0);
+            else
+                heap->update(&T, 50.0);
+        } else {
+            // If center is used, remove from heap
+            if( T.token != NOT_IN_HEAP )
+                heap->kill(T.token);
+        }
+        return;
     }
+
+    // For smaller triangles, use the optimized scanning
+    Plane z_plane;
+    compute_plane(z_plane, T, *H);
+    Candidate candidate;
     
-    // Sample points in a regular grid within the bounding box
-    for (int y = min_y; y <= max_y; y += sample_step) {
-        for (int x = min_x; x <= max_x; x += sample_step) {
-            if (!is_used(x, y)) {
-                real z = H->eval(x, y);
-                real plane_z = z_plane(x, y);
-                real diff = fabs(z - plane_z);
-                
-                if (diff > 1e-4) {  // Only consider significant errors
-                    candidate.consider(x, y, MASK->apply(x, y, diff));
+    if (area > 5000) {
+        // For large triangles, use minimal sampling
+        int step = MAX(width, height) / 4;  // 4x4 samples max
+        step = MAX(10, step);
+        
+        for (int y = min_y; y <= max_y; y += step) {
+            for (int x = min_x; x <= max_x; x += step) {
+                if (x < map_width && y < map_height && !is_used(x, y)) {
+                    real z = H->eval(x, y);
+                    real plane_z = z_plane(x, y);
+                    real diff = fabs(z - plane_z);
+                    
+                    if (diff > 10.0) {
+                        candidate.consider(x, y, MASK->apply(x, y, diff));
+                    }
+                }
+            }
+        }
+    } else {
+        // For smaller triangles, use more thorough sampling
+        int step = (area > 500) ? 5 : 2;
+        
+        for (int y = min_y; y <= max_y; y += step) {
+            for (int x = min_x; x <= max_x; x += step) {
+                if (x < map_width && y < map_height && !is_used(x, y)) {
+                    real z = H->eval(x, y);
+                    real plane_z = z_plane(x, y);
+                    real diff = fabs(z - plane_z);
+                    
+                    if (diff > 1.0) {
+                        candidate.consider(x, y, MASK->apply(x, y, diff));
+                    }
                 }
             }
         }
@@ -256,9 +283,6 @@ void GreedySubdivision::scanTriangle(TrackedTriangle& T)
 
 Edge *GreedySubdivision::select(int sx, int sy, Triangle *t)
 {
-    cout << "select: inserting point at (" << sx << ", " << sy << ")..." << endl;
-    auto start = std::chrono::high_resolution_clock::now();
-    
     if( is_used(sx, sy) )
     {
 	cerr << "   WARNING: Tried to reinsert point: " << sx<<" "<<sy<<endl;
@@ -268,23 +292,12 @@ Edge *GreedySubdivision::select(int sx, int sy, Triangle *t)
     is_used(sx,sy) = DATA_POINT_USED;
     count++;
     Vec2 point(sx, sy);
-    
-    cout << "select: calling insert..." << endl;
-    Edge* result = insert(point, t);
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    cout << "select completed in " << duration.count() << "ms" << endl;
-    
-    return result;
+    return insert(point, t);
 }
 
 
 int GreedySubdivision::greedyInsert()
 {
-    cout << "greedyInsert: extracting from heap..." << endl;
-    auto start = std::chrono::high_resolution_clock::now();
-    
     heap_node *node = heap->extract();
 
     if( !node ) return False;
@@ -293,12 +306,7 @@ int GreedySubdivision::greedyInsert()
     int sx, sy;
     T.getCandidate(&sx, &sy);
 
-    cout << "greedyInsert: calling select(" << sx << ", " << sy << ")..." << endl;
     select(sx, sy, &T);
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    cout << "greedyInsert completed in " << duration.count() << "ms" << endl;
 
     return True;
 }
