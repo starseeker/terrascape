@@ -1,7 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cassert>
-#include "bg_grid_mesh.h"
+#include "TerraScape.hpp"
 
 // Simple test data: 5x5 grid with a peak in the center
 std::vector<float> create_test_elevation_data() {
@@ -15,13 +15,13 @@ std::vector<float> create_test_elevation_data() {
     return data;
 }
 
-void test_strategy(const std::string& strategy_name, bg::MeshRefineStrategy strategy) {
+void test_strategy(const std::string& strategy_name, TerraScape::MeshRefineStrategy strategy) {
     std::cout << "Testing " << strategy_name << " strategy:\n";
     
     auto data = create_test_elevation_data();
     int width = 5, height = 5;
     
-    auto result = bg::grid_to_mesh(width, height, data.data(), 0.1f, 20, strategy);
+    auto result = TerraScape::grid_to_mesh(width, height, data.data(), 0.1f, 20, strategy);
     
     std::cout << "  Vertices: " << result.vertices.size() 
               << ", Triangles: " << result.triangles.size() << "\n";
@@ -64,10 +64,10 @@ int main() {
     
     try {
         // Test each strategy
-        test_strategy("AUTO", bg::MeshRefineStrategy::AUTO);
-        test_strategy("SPARSE", bg::MeshRefineStrategy::SPARSE);
-        test_strategy("HEAP", bg::MeshRefineStrategy::HEAP);
-        test_strategy("HYBRID", bg::MeshRefineStrategy::HYBRID);
+        test_strategy("AUTO", TerraScape::MeshRefineStrategy::AUTO);
+        test_strategy("SPARSE", TerraScape::MeshRefineStrategy::SPARSE);
+        test_strategy("HEAP", TerraScape::MeshRefineStrategy::HEAP);
+        test_strategy("HYBRID", TerraScape::MeshRefineStrategy::HYBRID);
         
         std::cout << "=== All tests passed! ===\n\n";
         

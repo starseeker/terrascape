@@ -6,7 +6,7 @@
 #include <queue>
 #include <unordered_map>
 
-namespace bg {
+namespace TerraScape {
 
 // Forward declarations for compatibility with bg_grid_mesh.h
 struct Vertex;
@@ -168,4 +168,4 @@ private:
                                                            float search_radius) const;
 };
 
-} // namespace bg
+} // namespace TerraScape

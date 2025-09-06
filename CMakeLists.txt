@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.12)
-project(terrascape VERSION 0.7)
+project(TerraScape VERSION 0.7)
 
 # Set C++ standard to C++17 (required for bg_detria.hpp)
 set(CMAKE_CXX_STANDARD 17)
@@ -8,17 +8,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Add compile definitions
 add_definitions(-DSAFETY)
 
-# Create the terrascape_demo executable (using bg_grid_mesh.h with detria)
-add_executable(terrascape_demo main.cpp bg_detria_mesh.cpp)
+# Create the terrascape_demo executable (using TerraScape.hpp with detria)
+add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp)
 
-# Create the new grid mesh test executable (using bg_grid_mesh.h with detria)
-add_executable(test_gridmesh test_gridmesh.cpp bg_detria_mesh.cpp)
+# Create the new grid mesh test executable (using TerraScape.hpp with detria)
+add_executable(test_gridmesh test_gridmesh.cpp TerraScapeImpl.cpp)
 
 # Create the new detria integration test
-add_executable(test_detria_integration test_detria_integration.cpp bg_detria_mesh.cpp)
+add_executable(test_detria_integration test_detria_integration.cpp TerraScapeImpl.cpp)
 
 # Create the incremental insertion demonstration
-add_executable(test_incremental_demo test_incremental_demo.cpp bg_detria_mesh.cpp)
+add_executable(test_incremental_demo test_incremental_demo.cpp TerraScapeImpl.cpp)
 
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -2,7 +2,7 @@
 #include <vector>
 #include <chrono>
 #include <cmath>
-#include "bg_grid_mesh.h"
+#include "TerraScape.hpp"
 
 // Create test data with varying complexity to show incremental behavior
 std::vector<float> create_complex_elevation_data(int width, int height) {
@@ -40,8 +40,8 @@ void test_incremental_vs_sparse(int width, int height, float error_threshold, in
     std::cout << "1. HEAP Strategy (TRUE incremental insertion):\n";
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    auto heap_result = bg::grid_to_mesh(width, height, data.data(), error_threshold, point_limit, 
-                                       bg::MeshRefineStrategy::HEAP);
+    auto heap_result = TerraScape::grid_to_mesh(width, height, data.data(), error_threshold, point_limit, 
+                                       TerraScape::MeshRefineStrategy::HEAP);
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto heap_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -54,8 +54,8 @@ void test_incremental_vs_sparse(int width, int height, float error_threshold, in
     std::cout << "2. SPARSE Strategy (regular sampling):\n";
     start_time = std::chrono::high_resolution_clock::now();
     
-    auto sparse_result = bg::grid_to_mesh(width, height, data.data(), error_threshold, point_limit, 
-                                         bg::MeshRefineStrategy::SPARSE);
+    auto sparse_result = TerraScape::grid_to_mesh(width, height, data.data(), error_threshold, point_limit, 
+                                         TerraScape::MeshRefineStrategy::SPARSE);
     
     end_time = std::chrono::high_resolution_clock::now();
     auto sparse_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
