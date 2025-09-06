@@ -104,181 +104,99 @@ inline float barycentric_interp(float px, float py,
     return w1 * v0.z + w2 * v1.z + w3 * v2.z;
 }
 
-// --- Detria-based mesh generation implementation ---
+// --- Detria-based mesh generation implementation with TRUE incremental insertion ---
 // This implementation uses bg_detria.hpp for proper Delaunay triangulation
-// and topology management, with a greedy refinement layer on top.
+// and includes proper incremental point insertion with localized error updates.
 template<typename T>
 MeshResult grid_to_mesh_detria(
     int width, int height, const T* elevations,
     float error_threshold = 1.0f, int point_limit = 10000,
     MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
 {
-    // Collect all candidate points first, then do batch triangulation
-    std::vector<detria::PointF> points;
-    std::vector<float> point_z_coords;
+    // Create triangulation manager and initialize with boundary
+    auto triangulation_manager = std::make_unique<DetriaTriangulationManager>();
     
-    // Add boundary corners first
-    points.emplace_back(detria::PointF{0.0f, 0.0f});
-    points.emplace_back(detria::PointF{static_cast<float>(width - 1), 0.0f});
-    points.emplace_back(detria::PointF{static_cast<float>(width - 1), static_cast<float>(height - 1)});
-    points.emplace_back(detria::PointF{0.0f, static_cast<float>(height - 1)});
+    // Initialize boundary corners
+    float minX = 0.0f, minY = 0.0f;
+    float maxX = static_cast<float>(width - 1);
+    float maxY = static_cast<float>(height - 1);
     
-    point_z_coords.push_back(static_cast<float>(elevations[0]));                          // bottom-left
-    point_z_coords.push_back(static_cast<float>(elevations[width - 1]));                 // bottom-right
-    point_z_coords.push_back(static_cast<float>(elevations[(height - 1) * width + width - 1])); // top-right
-    point_z_coords.push_back(static_cast<float>(elevations[(height - 1) * width]));      // top-left
+    triangulation_manager->initializeBoundary(
+        minX, minY, maxX, maxY,
+        static_cast<float>(elevations[0]),                                    // z00: bottom-left
+        static_cast<float>(elevations[width - 1]),                           // z10: bottom-right
+        static_cast<float>(elevations[(height - 1) * width + width - 1]),    // z11: top-right
+        static_cast<float>(elevations[(height - 1) * width])                 // z01: top-left
+    );
     
-    // Collect candidate points based on strategy
-    std::vector<std::tuple<int, int, float>> candidates; // x, y, error
+    // Create greedy refiner for incremental insertion
+    auto refiner = std::make_unique<GreedyMeshRefiner>(
+        triangulation_manager.get(), error_threshold, point_limit);
     
     if (strategy == MeshRefineStrategy::SPARSE) {
-        // Sparse strategy: sample at regular intervals
-        int step = std::max(1, std::max(width, height) / 50);
-        for (int y = 0; y < height; y += step) {
-            for (int x = 0; x < width; x += step) {
+        // For sparse strategy, use regular sampling instead of error-driven
+        int step = std::max(1, std::max(width, height) / 10);  // Denser sampling for better results
+        std::cout << "Using SPARSE strategy with step=" << step << "\n";
+        
+        // Build list of sparse points first
+        std::vector<std::tuple<float, float, float>> sparse_points;
+        for (int y = step; y < height; y += step) {
+            for (int x = step; x < width; x += step) {
                 bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
-                if (!is_corner) {
-                    candidates.emplace_back(x, y, 1.0f); // Dummy error for sparse sampling
+                if (!is_corner && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
+                    float px = static_cast<float>(x);
+                    float py = static_cast<float>(y);
+                    float pz = static_cast<float>(elevations[y * width + x]);
+                    sparse_points.emplace_back(px, py, pz);
                 }
             }
         }
+        
+        // Add points with progressive fallback if triangulation fails
+        size_t points_to_try = sparse_points.size();
+        bool success = false;
+        
+        while (!success && points_to_try > 0) {
+            // Reset and add boundary + subset of sparse points
+            triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+            triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+                static_cast<float>(elevations[0]),
+                static_cast<float>(elevations[width - 1]),
+                static_cast<float>(elevations[(height - 1) * width + width - 1]),
+                static_cast<float>(elevations[(height - 1) * width]));
+            
+            // Add subset of sparse points
+            for (size_t i = 0; i < points_to_try; ++i) {
+                const auto& pt = sparse_points[i];
+                triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
+            }
+            
+            success = triangulation_manager->retriangulate();
+            
+            if (!success) {
+                points_to_try = points_to_try * 3 / 4; // Reduce by 25%
+                std::cout << "SPARSE triangulation failed, trying with " << points_to_try << " points\n";
+            }
+        }
+        
+        std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
+                  << " total points\n";
     } else {
-        // HEAP and HYBRID: evaluate all grid points for error
-        Grid<T> grid(width, height, elevations);
+        // HEAP and HYBRID: Use TRUE incremental insertion with error-driven selection
+        std::cout << "Starting TRUE incremental point insertion for error-driven strategy\n";
         
-        // Start with simple initial triangulation for error calculation
-        std::vector<Vertex> temp_vertices = {
-            {0, 0, static_cast<float>(grid(0, 0))},
-            {static_cast<float>(width - 1), 0, static_cast<float>(grid(width - 1, 0))},
-            {static_cast<float>(width - 1), static_cast<float>(height - 1), static_cast<float>(grid(width - 1, height - 1))},
-            {0, static_cast<float>(height - 1), static_cast<float>(grid(0, height - 1))}
-        };
-        std::vector<Triangle> temp_triangles = {{0, 1, 2}, {0, 2, 3}};
+        // Initialize all candidates from grid
+        refiner->initializeCandidatesFromGrid(width, height, elevations);
         
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
-                if (is_corner) continue;
-                
-                float gx = static_cast<float>(x), gy = static_cast<float>(y);
-                float actual = static_cast<float>(grid(x, y));
-                
-                // Find containing triangle and calculate error
-                float error = 0.0f;
-                for (const auto& tri : temp_triangles) {
-                    const auto& v0 = temp_vertices[tri.v0];
-                    const auto& v1 = temp_vertices[tri.v1]; 
-                    const auto& v2 = temp_vertices[tri.v2];
-                    
-                    if (point_in_triangle(gx, gy, v0, v1, v2)) {
-                        float approx = barycentric_interp(gx, gy, v0, v1, v2);
-                        error = std::abs(actual - approx);
-                        break;
-                    }
-                }
-                
-                if (error > 0.0f) {
-                    candidates.emplace_back(x, y, error);
-                }
-            }
-        }
+        // Perform incremental refinement
+        int points_added = refiner->refineIncrementally(width, height, elevations);
         
-        // Sort by error (descending) and limit points
-        std::sort(candidates.begin(), candidates.end(), 
-                 [](const auto& a, const auto& b) { return std::get<2>(a) > std::get<2>(b); });
+        std::cout << "TRUE incremental insertion completed. Added " << points_added 
+                  << " points incrementally.\n";
     }
     
-    // Limit number of candidates
-    if (candidates.size() > static_cast<size_t>(point_limit - 4)) {
-        candidates.resize(point_limit - 4);
-    }
-    
-    // Add selected candidates to points (with duplicate checking)
-    for (const auto& candidate : candidates) {
-        int x = std::get<0>(candidate);
-        int y = std::get<1>(candidate);
-        float error = std::get<2>(candidate);
-        
-        if (error >= error_threshold || strategy == MeshRefineStrategy::SPARSE) {
-            float px = static_cast<float>(x);
-            float py = static_cast<float>(y);
-            
-            // Check for duplicates (simple distance check)
-            bool is_duplicate = false;
-            for (const auto& existing_point : points) {
-                if (std::abs(existing_point.x - px) < 0.01f && std::abs(existing_point.y - py) < 0.01f) {
-                    is_duplicate = true;
-                    break;
-                }
-            }
-            
-            if (!is_duplicate) {
-                points.emplace_back(detria::PointF{px, py});
-                point_z_coords.push_back(static_cast<float>(elevations[y * width + x]));
-            }
-        }
-    }
-    
-    // Perform batch triangulation using detria with fallback
-    detria::Triangulation<detria::PointF, uint32_t> triangulation;
-    bool success = false;
-    size_t attempt_point_count = points.size();
-    
-    // Try triangulation with progressively fewer points if it fails
-    while (!success && attempt_point_count >= 4) {
-        std::vector<detria::PointF> attempt_points(points.begin(), points.begin() + attempt_point_count);
-        std::vector<float> attempt_z_coords(point_z_coords.begin(), point_z_coords.begin() + attempt_point_count);
-        
-        triangulation.setPoints(attempt_points);
-        
-        // Set boundary outline (counter-clockwise: 0,1,2,3)
-        std::vector<uint32_t> boundary = {0, 1, 2, 3};
-        triangulation.addOutline(boundary);
-        
-        success = triangulation.triangulate(true); // Delaunay
-        
-        if (success) {
-            // Update points and z_coords to match successful attempt
-            points.resize(attempt_point_count);
-            point_z_coords.resize(attempt_point_count);
-            break;
-        } else {
-            attempt_point_count = attempt_point_count * 3 / 4; // Reduce by 25%
-        }
-    }
-    
-    if (!success) {
-        // Fallback to simple manual triangulation
-        MeshResult result;
-        for (size_t i = 0; i < points.size(); ++i) {
-            result.vertices.push_back({points[i].x, points[i].y, point_z_coords[i]});
-        }
-        // Simple triangulation with first 4 points
-        if (points.size() >= 4) {
-            result.triangles.push_back({0, 1, 2});
-            result.triangles.push_back({0, 2, 3});
-        }
-        return result;
-    }
-    
-    // Convert detria result to MeshResult
-    MeshResult result;
-    
-    // Add vertices
-    for (size_t i = 0; i < points.size(); ++i) {
-        result.vertices.push_back({points[i].x, points[i].y, point_z_coords[i]});
-    }
-    
-    // Extract triangles - use forEachTriangleOfEveryLocation to get all triangles
-    triangulation.forEachTriangleOfEveryLocation([&](detria::Triangle<uint32_t> triangle) {
-        if (triangle.x < points.size() && triangle.y < points.size() && triangle.z < points.size()) {
-            result.triangles.push_back({static_cast<int>(triangle.x), 
-                                       static_cast<int>(triangle.y), 
-                                       static_cast<int>(triangle.z)});
-        }
-    });
-    
-    return result;
+    // Convert to final mesh result
+    return triangulation_manager->toMeshResult();
 }
 
 // --- Core mesh generation with detria integration ---

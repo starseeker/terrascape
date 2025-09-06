@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <iostream>
+#include <unordered_map>
 
 namespace bg {
 
@@ -99,6 +100,12 @@ bool DetriaTriangulationManager::retriangulate() {
     triangulation_->addOutline(boundary_indices_);
     
     is_triangulated_ = triangulation_->triangulate(true); // Delaunay
+    
+    if (!is_triangulated_) {
+        std::cerr << "Triangulation failed with " << points_.size() << " points. Error: " 
+                  << triangulation_->getErrorMessage() << "\n";
+    }
+    
     return is_triangulated_;
 }
 
@@ -170,59 +177,56 @@ GreedyMeshRefiner::GreedyMeshRefiner(DetriaTriangulationManager* manager,
                                    float error_threshold, int point_limit)
     : triangulation_manager_(manager)
     , error_threshold_(error_threshold)
-    , point_limit_(point_limit) {
+    , point_limit_(point_limit)
+    , grid_width_(0)
+    , grid_height_(0) {
 }
 
 template<typename T>
-void GreedyMeshRefiner::addCandidatesFromGrid(int width, int height, const T* elevations) {
-    // Clear existing candidates
+void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, const T* elevations) {
+    grid_width_ = width;
+    grid_height_ = height;
+    
+    // Clear existing data
+    grid_candidates_.clear();
     candidate_heap_ = std::priority_queue<CandidatePoint>();
     
     // Ensure triangulation is up to date
     if (!triangulation_manager_->retriangulate()) {
-        std::cerr << "Warning: Triangulation failed, cannot add candidates\n";
+        std::cerr << "Warning: Triangulation failed, cannot initialize candidates\n";
         return;
     }
     
-    // Add candidate points from grid (skip boundary points)
+    // Initialize all grid candidates but only add viable ones to heap
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             // Skip corner points (already in triangulation)
             bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
             if (is_corner) continue;
             
-            float world_x = static_cast<float>(x);
-            float world_y = static_cast<float>(y);
+            CandidatePoint candidate = createCandidateFromGrid(x, y, width, height, elevations);
+            int key = y * width + x;
+            grid_candidates_[key] = candidate;
             
-            // Find containing triangle
-            auto triangle = triangulation_manager_->findContainingTriangle(world_x, world_y);
-            if (triangle.empty()) continue;
-            
-            // Calculate error
-            float error = calculateError(x, y, elevations, width, height, triangle);
-            
-            if (error > 0.0f) {
-                CandidatePoint candidate;
-                candidate.x = x;
-                candidate.y = y;
-                candidate.world_x = world_x;
-                candidate.world_y = world_y;
-                candidate.error = error;
-                candidate.containing_triangle = triangle;
-                
+            // Add to heap if error is significant
+            if (candidate.error > error_threshold_) {
                 candidate_heap_.push(candidate);
             }
         }
     }
+    
+    std::cout << "Initialized " << grid_candidates_.size() << " grid candidates, " 
+              << candidate_heap_.size() << " in active heap\n";
 }
 
 template<typename T>
-int GreedyMeshRefiner::refineGreedy(int width, int height, const T* elevations) {
+int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* elevations) {
     int points_added = 0;
     
-    while (!candidate_heap_.empty() && 
+    while (hasViableCandidates() && 
            triangulation_manager_->getPointCount() < static_cast<size_t>(point_limit_)) {
         
+        // Get the best candidate
         CandidatePoint best = candidate_heap_.top();
         candidate_heap_.pop();
         
@@ -230,11 +234,24 @@ int GreedyMeshRefiner::refineGreedy(int width, int height, const T* elevations) 
             break; // All remaining candidates have acceptable error
         }
         
+        // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
+        int key = best.y * width + best.x;
+        auto it = grid_candidates_.find(key);
+        if (it == grid_candidates_.end() || it->second.needs_update) {
+            // Recalculate this candidate
+            if (it != grid_candidates_.end()) {
+                CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
+                it->second = updated;
+                if (updated.error > error_threshold_) {
+                    candidate_heap_.push(updated);
+                }
+            }
+            continue; // Try next candidate
+        }
+        
         // Add the point with actual elevation data
         float actual_z = static_cast<float>(elevations[best.y * width + best.x]);
         uint32_t new_index = triangulation_manager_->addPoint(best.world_x, best.world_y, actual_z);
-        
-        points_added++;
         
         // Retriangulate
         if (!triangulation_manager_->retriangulate()) {
@@ -242,17 +259,110 @@ int GreedyMeshRefiner::refineGreedy(int width, int height, const T* elevations) 
             break;
         }
         
-        // For efficiency, we could update only affected candidates here
-        // For now, we'll rely on the caller to call updateCandidateErrors() periodically
+        points_added++;
+        
+        // Remove this candidate from our tracking
+        grid_candidates_.erase(key);
+        
+        // Update affected candidates (TRUE incremental approach)
+        updateAffectedCandidates(width, height, elevations, best.world_x, best.world_y);
+        
+        if (points_added % 10 == 0) {
+            std::cout << "Added " << points_added << " points incrementally\n";
+        }
     }
     
     return points_added;
 }
 
-void GreedyMeshRefiner::updateCandidateErrors() {
-    // This is a simplified implementation
-    // In practice, we would maintain a more efficient data structure
-    // to update only candidates affected by triangulation changes
+template<typename T>
+void GreedyMeshRefiner::updateAffectedCandidates(int width, int height, const T* elevations, 
+                                                float inserted_x, float inserted_y) {
+    // Find grid points that might be affected by this insertion
+    // Use a reasonable search radius based on typical triangle sizes
+    float search_radius = std::max(width, height) / 20.0f;
+    auto affected_points = findAffectedGridPoints(inserted_x, inserted_y, search_radius);
+    
+    int updated_count = 0;
+    for (const auto& grid_point : affected_points) {
+        int x = grid_point.first;
+        int y = grid_point.second;
+        int key = y * width + x;
+        
+        auto it = grid_candidates_.find(key);
+        if (it != grid_candidates_.end()) {
+            // Recalculate this candidate's error
+            CandidatePoint updated = createCandidateFromGrid(x, y, width, height, elevations);
+            it->second = updated;
+            it->second.needs_update = false;
+            
+            // Add to heap if error is still significant
+            if (updated.error > error_threshold_) {
+                candidate_heap_.push(updated);
+            }
+            updated_count++;
+        }
+    }
+    
+    std::cout << "Updated " << updated_count << " affected candidates\n";
+}
+
+template<typename T>
+GreedyMeshRefiner::CandidatePoint GreedyMeshRefiner::createCandidateFromGrid(int x, int y, int width, int height, 
+                                                         const T* elevations) {
+    CandidatePoint candidate;
+    candidate.x = x;
+    candidate.y = y;
+    candidate.world_x = static_cast<float>(x);
+    candidate.world_y = static_cast<float>(y);
+    candidate.needs_update = false;
+    
+    // Find containing triangle
+    auto triangle = triangulation_manager_->findContainingTriangle(candidate.world_x, candidate.world_y);
+    candidate.containing_triangle = triangle;
+    
+    if (triangle.empty()) {
+        candidate.error = 0.0f;
+    } else {
+        candidate.error = calculateError(x, y, elevations, width, height, triangle);
+    }
+    
+    return candidate;
+}
+
+GreedyMeshRefiner::CandidatePoint GreedyMeshRefiner::getBestCandidate() const {
+    if (candidate_heap_.empty()) {
+        return CandidatePoint{}; // Default constructed
+    }
+    return candidate_heap_.top();
+}
+
+bool GreedyMeshRefiner::hasViableCandidates() const {
+    return !candidate_heap_.empty() && candidate_heap_.top().error >= error_threshold_;
+}
+
+std::vector<std::pair<int, int>> GreedyMeshRefiner::findAffectedGridPoints(float inserted_x, float inserted_y, 
+                                                                          float search_radius) const {
+    std::vector<std::pair<int, int>> affected_points;
+    
+    int min_x = std::max(0, static_cast<int>(inserted_x - search_radius));
+    int max_x = std::min(grid_width_ - 1, static_cast<int>(inserted_x + search_radius));
+    int min_y = std::max(0, static_cast<int>(inserted_y - search_radius));
+    int max_y = std::min(grid_height_ - 1, static_cast<int>(inserted_y + search_radius));
+    
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
+            float dx = static_cast<float>(x) - inserted_x;
+            float dy = static_cast<float>(y) - inserted_y;
+            float distance = std::sqrt(dx * dx + dy * dy);
+            
+            if (distance <= search_radius) {
+                affected_points.emplace_back(x, y);
+            }
+        }
+    }
+    
+    return affected_points;
 }
 
 template<typename T>
@@ -267,12 +377,6 @@ float GreedyMeshRefiner::calculateError(int gx, int gy, const T* elevations, int
     float approx = barycentricInterpolation(static_cast<float>(gx), static_cast<float>(gy), triangle);
     
     return std::abs(actual - approx);
-}
-
-template<typename T>
-float GreedyMeshRefiner::bilinearInterpolation(float x, float y, const T* elevations, int width, int height) const {
-    // This is a placeholder - need to pass grid data properly
-    return 0.0f;
 }
 
 float GreedyMeshRefiner::barycentricInterpolation(float px, float py, 
@@ -291,12 +395,16 @@ float GreedyMeshRefiner::barycentricInterpolation(float px, float py,
 }
 
 // Explicit template instantiations for common types
-template void GreedyMeshRefiner::addCandidatesFromGrid<float>(int width, int height, const float* elevations);
-template void GreedyMeshRefiner::addCandidatesFromGrid<double>(int width, int height, const double* elevations);
-template void GreedyMeshRefiner::addCandidatesFromGrid<int>(int width, int height, const int* elevations);
+template void GreedyMeshRefiner::initializeCandidatesFromGrid<float>(int width, int height, const float* elevations);
+template void GreedyMeshRefiner::initializeCandidatesFromGrid<double>(int width, int height, const double* elevations);
+template void GreedyMeshRefiner::initializeCandidatesFromGrid<int>(int width, int height, const int* elevations);
 
-template int GreedyMeshRefiner::refineGreedy<float>(int width, int height, const float* elevations);
-template int GreedyMeshRefiner::refineGreedy<double>(int width, int height, const double* elevations);
-template int GreedyMeshRefiner::refineGreedy<int>(int width, int height, const int* elevations);
+template int GreedyMeshRefiner::refineIncrementally<float>(int width, int height, const float* elevations);
+template int GreedyMeshRefiner::refineIncrementally<double>(int width, int height, const double* elevations);
+template int GreedyMeshRefiner::refineIncrementally<int>(int width, int height, const int* elevations);
+
+template void GreedyMeshRefiner::updateAffectedCandidates<float>(int width, int height, const float* elevations, float inserted_x, float inserted_y);
+template void GreedyMeshRefiner::updateAffectedCandidates<double>(int width, int height, const double* elevations, float inserted_x, float inserted_y);
+template void GreedyMeshRefiner::updateAffectedCandidates<int>(int width, int height, const int* elevations, float inserted_x, float inserted_y);
 
 } // namespace bg
