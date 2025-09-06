@@ -34,8 +34,8 @@ public:
     T operator()(int x, int y) const { return data[y * width + x]; }
     // Bilinear interpolation
     float interp(float x, float y) const {
-        int ix = std::clamp(int(x), 0, width - 2);
-        int iy = std::clamp(int(y), 0, height - 2);
+        int ix = std::max(0, std::min(int(x), width - 2));
+        int iy = std::max(0, std::min(int(y), height - 2));
         float fx = x - ix, fy = y - iy;
         float h00 = float((*this)(ix, iy)), h10 = float((*this)(ix + 1, iy));
         float h01 = float((*this)(ix, iy + 1)), h11 = float((*this)(ix + 1, iy + 1));
@@ -45,7 +45,6 @@ public:
 };
 
 // A simple triangle mesh for the grid
-template<typename T>
 struct MeshResult {
     std::vector<Vertex> vertices;
     std::vector<Triangle> triangles;
@@ -84,11 +83,11 @@ inline float barycentric_interp(float px, float py,
     - Stops when error threshold or point limit is reached
 */
 template<typename T>
-MeshResult<T> grid_to_mesh(
+MeshResult grid_to_mesh(
     int width, int height, const T* elevations,
     float error_threshold = 1.0f, int point_limit = 10000)
 {
-    MeshResult<T> result;
+    MeshResult result;
     Grid<T> grid(width, height, elevations);
 
     // Seed mesh with grid corners
@@ -99,10 +98,11 @@ MeshResult<T> grid_to_mesh(
     result.triangles.push_back({0, 1, 2});
     result.triangles.push_back({0, 2, 3});
 
-    // Candidate points: all grid points except corners
+    // Candidate points: sample the grid more sparsely for large grids
     std::vector<std::pair<int, int>> candidates;
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    int step = std::max(1, std::max(width, height) / 50); // Sample roughly 50x50 points max
+    for (int y = 0; y < height; y += step) {
+        for (int x = 0; x < width; x += step) {
             bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
             if (!is_corner) {
                 candidates.emplace_back(x, y);
@@ -111,7 +111,11 @@ MeshResult<T> grid_to_mesh(
     }
 
     int inserted = 4;
-    while (inserted < point_limit) {
+    int max_iterations = std::min(point_limit * 2, int(candidates.size())); // Prevent infinite loops
+    int iterations = 0;
+    
+    while (inserted < point_limit && iterations < max_iterations) {
+        iterations++;
         float max_err = -1.0f;
         int max_x = -1, max_y = -1;
         int tri_idx = -1;
