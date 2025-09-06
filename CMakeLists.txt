@@ -37,13 +37,20 @@ set(TERRA_HEADERS
 # Create the terrascape_demo executable
 add_executable(terrascape_demo main.cpp ${TERRA_SOURCES})
 
+# Create the new grid mesh test executable (using only bg_grid_mesh.h)
+add_executable(test_gridmesh test_gridmesh.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(test_gridmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set output directory
 set_target_properties(terrascape_demo PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(test_gridmesh PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
-# Install target
-install(TARGETS terrascape_demo DESTINATION bin)
+# Install targets
+install(TARGETS terrascape_demo test_gridmesh DESTINATION bin)
