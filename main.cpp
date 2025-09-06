@@ -3,142 +3,137 @@
 #include <cstdlib>
 #include <cstring>
 #include <cfloat>  // For HUGE_VAL
+#include <vector>
 
 // Define compatibility with old-style headers
 using namespace std;
 
 #include "version.h"
-#include "terra.h"
+#include "bg_grid_mesh.h"  // Use new grid mesh API instead of Terra
 
-// Define the global variables that are declared as extern in terra.h
-GreedySubdivision *mesh = nullptr;
-Map *DEM = nullptr;
-ImportMask *MASK = nullptr;
-
-real error_threshold = 0.0;
-int point_limit = 1000;
-real height_scale = 1.0;
-FileFormat output_format = OBJfile;
-char *output_filename = nullptr;
-char *script_filename = nullptr;
-
-// Simple implementation of process_cmdline for demo purposes
-void process_cmdline(int argc, char **argv)
-{
-    // Set default values for demo
-    error_threshold = 40.0;  // Reasonable error threshold
-    point_limit = 1000;      // Reasonable point limit
-    height_scale = 1.0;      // No scaling
+// Simple PGM reader that extracts elevation data into a float array
+bool readPGMToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
+    ifstream file(filename);
+    if (!file) {
+        cerr << "Error: Cannot open " << filename << endl;
+        return false;
+    }
     
-    // For now, just use default settings
-    // In a full implementation, this would parse command line arguments
+    char magicP, magicNum;
+    int maxval;
+    
+    file >> magicP >> magicNum >> width >> height >> maxval;
+    
+    if (magicP != 'P' || (magicNum != '2' && magicNum != '5')) {
+        cerr << "Error: Not a valid PGM file" << endl;
+        return false;
+    }
+    
+    elevations.resize(width * height);
+    
+    if (magicNum == '2') {
+        // Textual PGM
+        for (int i = 0; i < width * height; ++i) {
+            float val;
+            file >> val;
+            elevations[i] = val;
+        }
+    } else {
+        // Binary PGM - for simplicity, convert to textual read
+        char newline;
+        file.get(newline); // consume the newline after maxval
+        for (int i = 0; i < width * height; ++i) {
+            unsigned char val;
+            file.read(reinterpret_cast<char*>(&val), 1);
+            elevations[i] = float(val);
+        }
+    }
+    
+    cout << "Successfully read PGM: " << width << "x" << height << " pixels, maxval=" << maxval << endl;
+    
+    // Find min/max for info
+    float min_val = elevations[0], max_val = elevations[0];
+    for (float val : elevations) {
+        if (val < min_val) min_val = val;
+        if (val > max_val) max_val = val;
+    }
+    cout << "Elevation range: " << min_val << " to " << max_val << endl;
+    
+    return true;
 }
 
-int goal_not_met()
-{
-    return mesh->maxError() > error_threshold &&
-           mesh->pointCount() < point_limit;
+// Write mesh to OBJ format
+bool writeMeshToOBJ(const char* filename, const bg::MeshResult& mesh) {
+    ofstream file(filename);
+    if (!file) {
+        cerr << "Error: Cannot create " << filename << endl;
+        return false;
+    }
+    
+    // Write vertices
+    for (const auto& vertex : mesh.vertices) {
+        file << "v " << vertex.x << " " << vertex.y << " " << vertex.z << endl;
+    }
+    
+    // Write triangles (OBJ uses 1-based indexing)
+    for (const auto& triangle : mesh.triangles) {
+        file << "f " << (triangle.v0 + 1) << " " << (triangle.v1 + 1) << " " << (triangle.v2 + 1) << endl;
+    }
+    
+    cout << "OBJ file written: " << mesh.vertices.size() << " vertices, " << mesh.triangles.size() << " triangles" << endl;
+    return true;
 }
 
 int main(int argc, char **argv)
 {
-    cout << "Terra Terrascape Demo v" << terra_version_string << endl;
+    cout << "Terrascape Demo v" << terra_version_string << " (using bg_grid_mesh API)" << endl;
     cout << "Processing crater.pgm and generating mesh..." << endl;
     
-    // Process command line (currently just sets defaults)
-    process_cmdline(argc, argv);
+    const char* input_file = "crater.pgm";
+    const char* output_file = "crater_mesh.obj";
+    float error_threshold = 40.0f;  // Reasonable error threshold
+    int point_limit = 1000;         // Reasonable point limit for demo
     
-    // Open and read the PGM file
-    ifstream dem_file("crater.pgm");
-    if (!dem_file) {
-        cerr << "Error: Cannot open crater.pgm" << endl;
+    // Simple command line parsing
+    if (argc > 1 && strcmp(argv[1], "-h") == 0) {
+        cout << "Usage: " << argv[0] << " [input.pgm] [output.obj] [error_threshold] [point_limit]" << endl;
+        cout << "  input.pgm: Input PGM heightfield file (default: crater.pgm)" << endl;
+        cout << "  output.obj: Output OBJ mesh file (default: crater_mesh.obj)" << endl;
+        cout << "  error_threshold: Maximum error threshold (default: 40.0)" << endl;
+        cout << "  point_limit: Maximum number of vertices (default: 1000)" << endl;
+        return 0;
+    }
+    
+    if (argc > 1) input_file = argv[1];
+    if (argc > 2) output_file = argv[2];
+    if (argc > 3) error_threshold = atof(argv[3]);
+    if (argc > 4) point_limit = atoi(argv[4]);
+    
+    cout << "Input: " << input_file << endl;
+    cout << "Output: " << output_file << endl;
+    cout << "Error threshold: " << error_threshold << endl;
+    cout << "Point limit: " << point_limit << endl;
+    cout << endl;
+    
+    // Read PGM file to get elevation data
+    int width, height;
+    vector<float> elevations;
+    if (!readPGMToFloatArray(input_file, width, height, elevations)) {
         return 1;
     }
     
-    // Read the DEM data
-    DEM = readPGM(dem_file);
-    dem_file.close();
+    // Generate mesh using the new bg_grid_mesh API
+    cout << "Generating mesh using greedy refinement algorithm..." << endl;
+    auto mesh = bg::grid_to_mesh(width, height, elevations.data(), error_threshold, point_limit);
     
-    if (!DEM) {
-        cerr << "Error: Failed to read crater.pgm" << endl;
+    cout << "Mesh generation complete!" << endl;
+    cout << "Final mesh: " << mesh.vertices.size() << " vertices, " << mesh.triangles.size() << " triangles" << endl;
+    
+    // Write the resulting mesh to OBJ format
+    if (!writeMeshToOBJ(output_file, mesh)) {
         return 1;
     }
     
-    cout << "DEM loaded: " << DEM->width << "x" << DEM->height << " pixels" << endl;
-    cout << "Height range: " << DEM->min << " to " << DEM->max << endl;
-    
-    // Create a simple mask for the greedy algorithm
-    MASK = new ImportMask();
-    MASK->width = DEM->width;
-    MASK->height = DEM->height;
-    
-    // Test the optimized greedy mesh generation
-    cout << "Creating GreedySubdivision mesh..." << endl;
-    mesh = new GreedySubdivision(DEM);
-    
-    cout << "Initial mesh: " << mesh->pointCount() << " points, max error: " << mesh->maxError() << endl;
-    
-    // Run a few iterations of greedy insertion for testing
-    cout << "Running greedy insertion (limited iterations for demo)..." << endl;
-    int iterations = 0;
-    while(goal_not_met() && iterations < 20) {  // More iterations to see it work
-        if (!mesh->greedyInsert()) {
-            cout << "Greedy insertion failed at iteration " << iterations << endl;
-            break;
-        }
-        iterations++;
-        if (iterations % 5 == 0) {  // Print every 5 iterations
-            cout << "Iteration " << iterations << ": points=" << mesh->pointCount() 
-                 << ", error=" << mesh->maxError() << endl;
-        }
-    }
-    
-    cout << "Greedy mesh generation completed!" << endl;
-    cout << "Final: " << mesh->pointCount() << " points, max error: " << mesh->maxError() << endl;
-    
-    // Generate a simple OBJ output directly from the DEM data
-    const char* obj_filename = "crater_mesh.obj";
-    ofstream obj_file(obj_filename);
-    if (!obj_file) {
-        cerr << "Error: Cannot create output file " << obj_filename << endl;
-        return 1;
-    }
-    
-    // Output vertices for a simple grid
-    int step = 10; // Sample every 10th point to keep output manageable
-    int vertex_count = 0;
-    for(int y = 0; y < DEM->height; y += step) {
-        for(int x = 0; x < DEM->width; x += step) {
-            real height = DEM->eval(x, y);
-            obj_file << "v " << x << " " << y << " " << height << endl;
-            vertex_count++;
-        }
-    }
-    
-    // Output simple triangle faces
-    int width_verts = (DEM->width + step - 1) / step;
-    for(int y = 0; y < (DEM->height / step) - 1; y++) {
-        for(int x = 0; x < width_verts - 1; x++) {
-            int v1 = y * width_verts + x + 1;        // OBJ uses 1-based indexing
-            int v2 = v1 + 1;
-            int v3 = (y + 1) * width_verts + x + 1;
-            int v4 = v3 + 1;
-            
-            // Two triangles per quad
-            obj_file << "f " << v1 << " " << v2 << " " << v3 << endl;
-            obj_file << "f " << v2 << " " << v4 << " " << v3 << endl;
-        }
-    }
-    
-    obj_file.close();
-    
-    cout << "Simple OBJ file written successfully with " << vertex_count << " vertices." << endl;
-    cout << "This is a basic grid representation of the terrain data." << endl;
-    
-    // Clean up the mesh
-    delete mesh;
-    delete MASK;
-    delete DEM;
-    
+    cout << "Success! Mesh written to " << output_file << endl;
     return 0;
 }
