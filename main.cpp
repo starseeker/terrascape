@@ -9,7 +9,7 @@
 using namespace std;
 
 #include "version.h"
-#include "bg_grid_mesh.h"  // Use new grid mesh API instead of Terra
+#include "TerraScape.hpp"  // Use new consolidated TerraScape header
 
 // Simple PGM reader that extracts elevation data into a float array
 bool readPGMToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
@@ -63,7 +63,7 @@ bool readPGMToFloatArray(const char* filename, int& width, int& height, vector<f
 }
 
 // Write mesh to OBJ format
-bool writeMeshToOBJ(const char* filename, const bg::MeshResult& mesh) {
+bool writeMeshToOBJ(const char* filename, const TerraScape::MeshResult& mesh) {
     ofstream file(filename);
     if (!file) {
         cerr << "Error: Cannot create " << filename << endl;
@@ -124,7 +124,7 @@ int main(int argc, char **argv)
     
     // Generate mesh using the new bg_grid_mesh API
     cout << "Generating mesh using greedy refinement algorithm..." << endl;
-    auto mesh = bg::grid_to_mesh(width, height, elevations.data(), error_threshold, point_limit);
+    auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), error_threshold, point_limit);
     
     cout << "Mesh generation complete!" << endl;
     cout << "Final mesh: " << mesh.vertices.size() << " vertices, " << mesh.triangles.size() << " triangles" << endl;

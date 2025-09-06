@@ -1,11 +1,11 @@
-#include "bg_detria_mesh.h"
-#include "bg_grid_mesh.h"
+#include "TerraScapeImpl.h"
+#include "TerraScape.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
 #include <unordered_map>
 
-namespace bg {
+namespace TerraScape {
 
 // Helper function for point-in-triangle test (barycentric coordinates)
 static bool pointInTriangle(float px, float py, 
@@ -407,4 +407,102 @@ template void GreedyMeshRefiner::updateAffectedCandidates<float>(int width, int 
 template void GreedyMeshRefiner::updateAffectedCandidates<double>(int width, int height, const double* elevations, float inserted_x, float inserted_y);
 template void GreedyMeshRefiner::updateAffectedCandidates<int>(int width, int height, const int* elevations, float inserted_x, float inserted_y);
 
-} // namespace bg
+// --- Main grid_to_mesh_detria implementation ---
+template<typename T>
+MeshResult grid_to_mesh_detria(
+    int width, int height, const T* elevations,
+    float error_threshold, int point_limit,
+    MeshRefineStrategy strategy)
+{
+    // Create triangulation manager and initialize with boundary
+    auto triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+    
+    // Initialize boundary corners
+    float minX = 0.0f, minY = 0.0f;
+    float maxX = static_cast<float>(width - 1);
+    float maxY = static_cast<float>(height - 1);
+    
+    triangulation_manager->initializeBoundary(
+        minX, minY, maxX, maxY,
+        static_cast<float>(elevations[0]),                                    // z00: bottom-left
+        static_cast<float>(elevations[width - 1]),                           // z10: bottom-right
+        static_cast<float>(elevations[(height - 1) * width + width - 1]),    // z11: top-right
+        static_cast<float>(elevations[(height - 1) * width])                 // z01: top-left
+    );
+    
+    // Create greedy refiner for incremental insertion
+    auto refiner = std::make_unique<GreedyMeshRefiner>(
+        triangulation_manager.get(), error_threshold, point_limit);
+    
+    if (strategy == MeshRefineStrategy::SPARSE) {
+        // For sparse strategy, use regular sampling instead of error-driven
+        int step = std::max(1, std::max(width, height) / 10);  // Denser sampling for better results
+        std::cout << "Using SPARSE strategy with step=" << step << "\n";
+        
+        // Build list of sparse points first
+        std::vector<std::tuple<float, float, float>> sparse_points;
+        for (int y = step; y < height; y += step) {
+            for (int x = step; x < width; x += step) {
+                bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
+                if (!is_corner && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
+                    float px = static_cast<float>(x);
+                    float py = static_cast<float>(y);
+                    float pz = static_cast<float>(elevations[y * width + x]);
+                    sparse_points.emplace_back(px, py, pz);
+                }
+            }
+        }
+        
+        // Add points with progressive fallback if triangulation fails
+        size_t points_to_try = sparse_points.size();
+        bool success = false;
+        
+        while (!success && points_to_try > 0) {
+            // Reset and add boundary + subset of sparse points
+            triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+            triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+                static_cast<float>(elevations[0]),
+                static_cast<float>(elevations[width - 1]),
+                static_cast<float>(elevations[(height - 1) * width + width - 1]),
+                static_cast<float>(elevations[(height - 1) * width]));
+            
+            // Add subset of sparse points
+            for (size_t i = 0; i < points_to_try; ++i) {
+                const auto& pt = sparse_points[i];
+                triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
+            }
+            
+            success = triangulation_manager->retriangulate();
+            
+            if (!success) {
+                points_to_try = points_to_try * 3 / 4; // Reduce by 25%
+                std::cout << "SPARSE triangulation failed, trying with " << points_to_try << " points\n";
+            }
+        }
+        
+        std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
+                  << " total points\n";
+    } else {
+        // HEAP and HYBRID: Use TRUE incremental insertion with error-driven selection
+        std::cout << "Starting TRUE incremental point insertion for error-driven strategy\n";
+        
+        // Initialize all candidates from grid
+        refiner->initializeCandidatesFromGrid(width, height, elevations);
+        
+        // Perform incremental refinement
+        int points_added = refiner->refineIncrementally(width, height, elevations);
+        
+        std::cout << "TRUE incremental insertion completed. Added " << points_added 
+                  << " points incrementally.\n";
+    }
+    
+    // Convert to final mesh result
+    return triangulation_manager->toMeshResult();
+}
+
+// Explicit instantiations for common types
+template MeshResult grid_to_mesh_detria<float>(int width, int height, const float* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template MeshResult grid_to_mesh_detria<double>(int width, int height, const double* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template MeshResult grid_to_mesh_detria<int>(int width, int height, const int* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+
+} // namespace TerraScape
