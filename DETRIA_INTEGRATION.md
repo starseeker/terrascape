@@ -41,14 +41,20 @@ Due to practical limits in detria with large point sets, the implementation uses
 4. **Fallback if Needed**: If triangulation fails, reduce points by 25% and retry
 5. **Graceful Degradation**: Continue until triangulation succeeds
 
-### 4. Batch Processing Approach
+### 4. ~~Batch Processing Approach~~ → TRUE Incremental Insertion
 
-Unlike incremental approaches, this uses batch processing:
-
+**Previous Implementation** used batch processing:
 1. **Candidate Collection**: Evaluate all grid points for error
 2. **Selection**: Choose best candidates up to point limit
 3. **Single Triangulation**: Perform one triangulation with all selected points
 4. **Result Extraction**: Convert detria output to standard format
+
+**New Implementation** uses TRUE incremental insertion:
+1. **Candidate Initialization**: Evaluate all grid points once and store in candidate map
+2. **Greedy Selection**: Extract best candidate from priority queue
+3. **Incremental Insertion**: Insert single point and retriangulate
+4. **Localized Updates**: Recalculate errors only for candidates near insertion point
+5. **Repeat**: Continue until error threshold met or point limit reached
 
 ## API Compatibility
 
@@ -161,11 +167,43 @@ std::cerr << "Points: " << points.size() << ", Strategy: " << strategy_name << "
 
 Potential improvements for future development:
 
-1. **Incremental Insertion**: Implement true incremental point insertion
+1. **~~Incremental Insertion~~**: ✅ **COMPLETED** - Implemented true incremental point insertion with localized candidate updates
 2. **Constraint Support**: Add support for constrained edges (rivers, roads)
 3. **Multi-scale**: Hierarchical mesh refinement for very large grids
 4. **Streaming**: Process grids larger than memory
 5. **GPU Acceleration**: Utilize parallel triangulation algorithms
+6. **Edge Collision Handling**: Improve handling of points that land exactly on constrained boundary edges
+
+## Implementation Details: True Incremental Point Insertion
+
+### Key Components
+
+1. **GreedyMeshRefiner Class**: Manages incremental point insertion process
+   - Maintains `grid_candidates_` map for all potential insertion points
+   - Uses priority queue for active candidates above error threshold
+   - Implements `refineIncrementally()` for one-at-a-time point insertion
+
+2. **Localized Error Updates**: 
+   - `updateAffectedCandidates()` recalculates errors only for nearby points
+   - `findAffectedGridPoints()` identifies candidates within search radius
+   - Eliminates expensive full grid re-evaluation after each insertion
+
+3. **Progressive Fallback**: Handles detria triangulation failures gracefully
+   - Reduces point count by 25% on triangulation failure
+   - Ensures robustness with complex point configurations
+
+### Performance Characteristics
+
+- **Initialization**: O(n) where n = grid_width × grid_height
+- **Per Insertion**: O(log k + m) where k = active candidates, m = affected candidates
+- **Memory**: O(n) for candidate tracking vs O(n²) for full re-evaluation
+
+### Error Handling
+
+The implementation handles several edge cases:
+- Points landing exactly on constrained boundary edges (detria limitation)
+- Degenerate triangulations with collinear points
+- Memory pressure with large grids (automatic candidate limiting)
 
 ## Conclusion
 

@@ -43,6 +43,9 @@ add_executable(test_gridmesh test_gridmesh.cpp bg_detria_mesh.cpp)
 # Create the new detria integration test
 add_executable(test_detria_integration test_detria_integration.cpp bg_detria_mesh.cpp)
 
+# Create the incremental insertion demonstration
+add_executable(test_incremental_demo test_incremental_demo.cpp bg_detria_mesh.cpp)
+
 # Create the legacy terrascape executable (using the old Terra system)
 add_executable(terrascape_legacy legacy_main.cpp ${TERRA_SOURCES})
 
@@ -50,6 +53,7 @@ add_executable(terrascape_legacy legacy_main.cpp ${TERRA_SOURCES})
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_gridmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_detria_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(test_incremental_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_legacy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set output directory
@@ -62,9 +66,12 @@ set_target_properties(test_gridmesh PROPERTIES
 set_target_properties(test_detria_integration PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(test_incremental_demo PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 set_target_properties(terrascape_legacy PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
 # Install targets
-install(TARGETS terrascape_demo test_gridmesh test_detria_integration terrascape_legacy DESTINATION bin)
+install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_incremental_demo terrascape_legacy DESTINATION bin)
