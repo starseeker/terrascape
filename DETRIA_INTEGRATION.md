@@ -1,0 +1,172 @@
+# Detria Integration Documentation
+
+## Overview
+
+This document describes the integration of `bg_detria.hpp` for improved triangulation and topology management in the grid-to-mesh functionality.
+
+## Key Changes
+
+### 1. Triangulation Engine
+- **Before**: Manual triangle creation and splitting (1→3 triangulation)
+- **After**: Proper Delaunay triangulation using bg_detria.hpp
+- **Benefits**: 
+  - Optimal triangle quality
+  - Robust geometric predicates
+  - Proper edge flipping
+  - Half-edge topology management
+
+### 2. Architecture
+
+The new implementation separates concerns into two layers:
+
+#### Triangulation Layer (bg_detria.hpp)
+- Handles geometric predicates and robustness
+- Manages half-edge topology data structure  
+- Provides Delaunay edge flipping
+- Ensures triangulation validity
+
+#### Refinement Layer (bg_grid_mesh.h)
+- Error-driven candidate selection
+- Greedy point insertion strategy
+- Progressive fallback for large point sets
+- Strategy selection (AUTO, HEAP, HYBRID, SPARSE)
+
+### 3. Progressive Fallback Strategy
+
+Due to practical limits in detria with large point sets, the implementation uses progressive fallback:
+
+1. **Collect Candidates**: Gather all candidate points based on error criteria
+2. **Sort by Priority**: Order by approximation error (highest first)
+3. **Attempt Triangulation**: Try with full point set
+4. **Fallback if Needed**: If triangulation fails, reduce points by 25% and retry
+5. **Graceful Degradation**: Continue until triangulation succeeds
+
+### 4. Batch Processing Approach
+
+Unlike incremental approaches, this uses batch processing:
+
+1. **Candidate Collection**: Evaluate all grid points for error
+2. **Selection**: Choose best candidates up to point limit
+3. **Single Triangulation**: Perform one triangulation with all selected points
+4. **Result Extraction**: Convert detria output to standard format
+
+## API Compatibility
+
+The external API remains unchanged:
+
+```cpp
+template<typename T>
+MeshResult grid_to_mesh(
+    int width, int height, const T* elevations,
+    float error_threshold = 1.0f, 
+    int point_limit = 10000,
+    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
+```
+
+All existing strategies (AUTO, HEAP, HYBRID, SPARSE) work with the new backend.
+
+## Performance Characteristics
+
+### Strategy Comparison
+- **SPARSE**: Fast, regular sampling, good for previews
+- **HEAP**: High quality, error-driven, more memory intensive  
+- **HYBRID**: Balanced approach with adaptive density
+- **AUTO**: Automatically selects based on grid size and available RAM
+
+### Point Limits
+- **Optimal**: 50-200 points (full detria features)
+- **Good**: 200-500 points (progressive fallback)
+- **Fallback**: 500+ points (automatic reduction)
+
+## Example Usage
+
+### Basic Usage
+```cpp
+#include "bg_grid_mesh.h"
+
+// Create mesh from elevation grid
+auto mesh = bg::grid_to_mesh(width, height, elevations, 1.0f, 200);
+
+// Result contains proper Delaunay triangulation
+std::cout << "Vertices: " << mesh.vertices.size() << "\n";
+std::cout << "Triangles: " << mesh.triangles.size() << "\n";
+```
+
+### Strategy Selection
+```cpp
+// For preview/quick visualization
+auto preview = bg::grid_to_mesh(width, height, elevations, 5.0f, 50, 
+                                bg::MeshRefineStrategy::SPARSE);
+
+// For high quality output  
+auto detailed = bg::grid_to_mesh(width, height, elevations, 0.5f, 300,
+                                 bg::MeshRefineStrategy::HEAP);
+```
+
+## Testing
+
+Use the provided test suite to validate the integration:
+
+```bash
+# Build tests
+make test_detria_integration
+
+# Run validation
+./build/bin/test_detria_integration
+
+# Test with real data
+./build/bin/test_gridmesh crater.pgm output.obj 10.0 200
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Empty Triangle Output**: Usually indicates detria triangulation failure
+   - Solution: Reduce point limit or check for duplicate points
+
+2. **High Memory Usage**: Large point sets can be memory intensive
+   - Solution: Use SPARSE strategy or reduce point limit
+
+3. **Slow Performance**: Complex grids with many high-error regions
+   - Solution: Increase error threshold or use HYBRID strategy
+
+### Debugging
+
+Enable debug output by temporarily modifying the implementation to add:
+```cpp
+std::cerr << "Points: " << points.size() << ", Strategy: " << strategy_name << "\n";
+```
+
+## Technical Details
+
+### Detria Library Requirements
+- **C++ Standard**: C++17 (for std::optional, if constexpr)
+- **Dependencies**: Header-only, no external dependencies
+- **Precision**: Uses robust geometric predicates for numerical stability
+
+### Memory Layout
+- **Points**: std::vector<detria::PointF> (x, y coordinates)  
+- **Z-coordinates**: Stored separately (std::vector<float>)
+- **Topology**: Managed internally by detria half-edge structure
+- **Output**: Converted to standard Vertex/Triangle format
+
+### Integration Points
+- **Point Collection**: Grid sampling with error evaluation
+- **Triangulation**: Single batch call to detria::triangulate()
+- **Extraction**: forEachTriangleOfEveryLocation() callback
+- **Conversion**: detria format → bg::MeshResult format
+
+## Future Enhancements
+
+Potential improvements for future development:
+
+1. **Incremental Insertion**: Implement true incremental point insertion
+2. **Constraint Support**: Add support for constrained edges (rivers, roads)
+3. **Multi-scale**: Hierarchical mesh refinement for very large grids
+4. **Streaming**: Process grids larger than memory
+5. **GPU Acceleration**: Utilize parallel triangulation algorithms
+
+## Conclusion
+
+The detria integration provides significant improvements in triangulation quality and robustness while maintaining full API compatibility. The progressive fallback strategy ensures reliable operation across a wide range of input sizes and complexities.
