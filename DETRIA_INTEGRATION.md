@@ -4,6 +4,35 @@
 
 This document describes the integration of `bg_detria.hpp` for improved triangulation and topology management in the grid-to-mesh functionality.
 
+## Repository Cleanup
+
+As of the latest version, the repository has been cleaned up to remove redundant legacy code that has been fully superseded by the new detria-based implementation:
+
+### Removed Legacy Components
+
+**Legacy Terra System Files (Removed):**
+- `legacy_main.cpp` - Old implementation with compilation issues
+- `terra.h`, `GreedyInsert.h/cc`, `Subdivision.h/cc` - Legacy Terra library core
+- `Map.h/cc`, `Mask.h/cc`, `Quadedge.h/cc`, `Heap.h/cc` - Legacy data structures
+- `greedy.cc`, `output.cc` - Legacy algorithms
+- `Array.h`, `Geom.h`, `Vec2.h`, `Vec3.h`, `vmath.h` - Legacy utility headers
+
+**Rationale:** The new detria-based implementation provides superior algorithms, capabilities, and performance that fully supersede the legacy Terra system. The old code had compilation issues due to namespace conflicts and used inferior triangulation methods.
+
+### Current Implementation Structure
+
+**Modern Detria-based Executables (Kept):**
+- `terrascape_demo` (main.cpp) - Modern demo using bg_grid_mesh API
+- `test_detria_integration` - Comprehensive validation of detria integration
+- `test_incremental_demo` - Demonstrates TRUE incremental point insertion
+- `test_gridmesh` - Basic grid-to-mesh functionality test
+
+**Core Implementation Files:**
+- `bg_detria.hpp` - Robust Delaunay triangulation engine
+- `bg_detria_mesh.cpp/.h` - Detria integration layer
+- `bg_grid_mesh.h` - High-level grid-to-mesh API
+- `version.h` - Version information
+
 ## Key Changes
 
 ### 1. Triangulation Engine
