@@ -38,7 +38,8 @@ static float barycentricInterp(float px, float py,
 // DetriaTriangulationManager implementation
 DetriaTriangulationManager::DetriaTriangulationManager() 
     : triangulation_(std::make_unique<TriangulationT>())
-    , is_triangulated_(false) {
+    , is_triangulated_(false)
+    , triangulation_version_(0) {
 }
 
 DetriaTriangulationManager::~DetriaTriangulationManager() = default;
@@ -95,6 +96,9 @@ float DetriaTriangulationManager::getPointZ(uint32_t index) const {
 bool DetriaTriangulationManager::retriangulate() {
     if (is_triangulated_) return true;
     
+    // Clear previous triangulation to prevent outline accumulation
+    triangulation_->clear();
+    
     // Reset triangulation with all points
     triangulation_->setPoints(points_);
     triangulation_->addOutline(boundary_indices_);
@@ -104,6 +108,9 @@ bool DetriaTriangulationManager::retriangulate() {
     if (!is_triangulated_) {
         std::cerr << "Triangulation failed with " << points_.size() << " points. Error: " 
                   << triangulation_->getErrorMessage() << "\n";
+    } else {
+        // Increment version after successful triangulation
+        triangulation_version_++;
     }
     
     return is_triangulated_;
@@ -234,8 +241,23 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
             break; // All remaining candidates have acceptable error
         }
         
-        // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
+        // Check if candidate is stale (triangulation version has changed)
+        if (best.tri_version != triangulation_manager_->getVersion()) {
+            // Recalculate with current triangulation
+            CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
+            if (updated.error > error_threshold_) {
+                candidate_heap_.push(updated);
+            }
+            continue; // Try next candidate
+        }
+        
+        // Check for duplicate insertion guard
         int key = best.y * width + best.x;
+        if (inserted_keys_.find(key) != inserted_keys_.end()) {
+            continue; // Skip already inserted point
+        }
+        
+        // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
         auto it = grid_candidates_.find(key);
         if (it == grid_candidates_.end() || it->second.needs_update) {
             // Recalculate this candidate
@@ -260,6 +282,9 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
         }
         
         points_added++;
+        
+        // Mark this point as inserted to prevent duplicates
+        inserted_keys_.insert(key);
         
         // Remove this candidate from our tracking
         grid_candidates_.erase(key);
@@ -316,6 +341,7 @@ GreedyMeshRefiner::CandidatePoint GreedyMeshRefiner::createCandidateFromGrid(int
     candidate.world_x = static_cast<float>(x);
     candidate.world_y = static_cast<float>(y);
     candidate.needs_update = false;
+    candidate.tri_version = triangulation_manager_->getVersion();
     
     // Find containing triangle
     auto triangle = triangulation_manager_->findContainingTriangle(candidate.world_x, candidate.world_y);
