@@ -181,10 +181,11 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
 
 // GreedyMeshRefiner implementation
 GreedyMeshRefiner::GreedyMeshRefiner(DetriaTriangulationManager* manager, 
-                                   float error_threshold, int point_limit)
+                                   float error_threshold, int point_limit, int batch_size)
     : triangulation_manager_(manager)
     , error_threshold_(error_threshold)
     , point_limit_(point_limit)
+    , batch_size_(batch_size)
     , grid_width_(0)
     , grid_height_(0) {
 }
@@ -229,71 +230,95 @@ void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, cons
 template<typename T>
 int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* elevations) {
     int points_added = 0;
+    std::vector<CandidatePoint> batch_candidates;
+    
+    std::cout << "Starting batch insertion with batch size: " << batch_size_ << "\n";
     
     while (hasViableCandidates() && 
            triangulation_manager_->getPointCount() < static_cast<size_t>(point_limit_)) {
         
-        // Get the best candidate
-        CandidatePoint best = candidate_heap_.top();
-        candidate_heap_.pop();
+        // Collect a batch of candidates
+        batch_candidates.clear();
         
-        if (best.error < error_threshold_) {
-            break; // All remaining candidates have acceptable error
-        }
-        
-        // Check if candidate is stale (triangulation version has changed)
-        if (best.tri_version != triangulation_manager_->getVersion()) {
-            // Recalculate with current triangulation
-            CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
-            if (updated.error > error_threshold_) {
-                candidate_heap_.push(updated);
+        while (batch_candidates.size() < static_cast<size_t>(batch_size_) && 
+               hasViableCandidates() && 
+               triangulation_manager_->getPointCount() + batch_candidates.size() < static_cast<size_t>(point_limit_)) {
+            
+            // Get the best candidate
+            CandidatePoint best = candidate_heap_.top();
+            candidate_heap_.pop();
+            
+            if (best.error < error_threshold_) {
+                break; // All remaining candidates have acceptable error
             }
-            continue; // Try next candidate
-        }
-        
-        // Check for duplicate insertion guard
-        int key = best.y * width + best.x;
-        if (inserted_keys_.find(key) != inserted_keys_.end()) {
-            continue; // Skip already inserted point
-        }
-        
-        // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
-        auto it = grid_candidates_.find(key);
-        if (it == grid_candidates_.end() || it->second.needs_update) {
-            // Recalculate this candidate
-            if (it != grid_candidates_.end()) {
+            
+            // Check if candidate is stale (triangulation version has changed)
+            if (best.tri_version != triangulation_manager_->getVersion()) {
+                // Recalculate with current triangulation
                 CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
-                it->second = updated;
                 if (updated.error > error_threshold_) {
                     candidate_heap_.push(updated);
                 }
+                continue; // Try next candidate
             }
-            continue; // Try next candidate
+            
+            // Check for duplicate insertion guard
+            int key = best.y * width + best.x;
+            if (inserted_keys_.find(key) != inserted_keys_.end()) {
+                continue; // Skip already inserted point
+            }
+            
+            // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
+            auto it = grid_candidates_.find(key);
+            if (it == grid_candidates_.end() || it->second.needs_update) {
+                // Recalculate this candidate
+                if (it != grid_candidates_.end()) {
+                    CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
+                    it->second = updated;
+                    if (updated.error > error_threshold_) {
+                        candidate_heap_.push(updated);
+                    }
+                }
+                continue; // Try next candidate
+            }
+            
+            // Add to batch
+            batch_candidates.push_back(best);
         }
         
-        // Add the point with actual elevation data
-        float actual_z = static_cast<float>(elevations[best.y * width + best.x]);
-        uint32_t new_index = triangulation_manager_->addPoint(best.world_x, best.world_y, actual_z);
-        
-        // Retriangulate
-        if (!triangulation_manager_->retriangulate()) {
-            std::cerr << "Warning: Retriangulation failed after adding point\n";
+        // If no valid candidates in batch, exit
+        if (batch_candidates.empty()) {
             break;
         }
         
-        points_added++;
+        // Add all points in the batch
+        for (const auto& candidate : batch_candidates) {
+            float actual_z = static_cast<float>(elevations[candidate.y * width + candidate.x]);
+            uint32_t new_index = triangulation_manager_->addPoint(candidate.world_x, candidate.world_y, actual_z);
+            
+            // Mark this point as inserted to prevent duplicates
+            int key = candidate.y * width + candidate.x;
+            inserted_keys_.insert(key);
+            
+            // Remove this candidate from our tracking
+            grid_candidates_.erase(key);
+        }
         
-        // Mark this point as inserted to prevent duplicates
-        inserted_keys_.insert(key);
+        // Retriangulate once for the entire batch
+        if (!triangulation_manager_->retriangulate()) {
+            std::cerr << "Warning: Retriangulation failed after adding batch of " << batch_candidates.size() << " points\n";
+            break;
+        }
         
-        // Remove this candidate from our tracking
-        grid_candidates_.erase(key);
+        points_added += batch_candidates.size();
         
-        // Update affected candidates (TRUE incremental approach)
-        updateAffectedCandidates(width, height, elevations, best.world_x, best.world_y);
+        // Update affected candidates for all inserted points
+        for (const auto& candidate : batch_candidates) {
+            updateAffectedCandidates(width, height, elevations, candidate.world_x, candidate.world_y);
+        }
         
         if (points_added % 10 == 0) {
-            std::cout << "Added " << points_added << " points incrementally\n";
+            std::cout << "Added " << points_added << " points in batches (last batch: " << batch_candidates.size() << ")\n";
         }
     }
     
@@ -456,9 +481,11 @@ MeshResult grid_to_mesh_detria(
         static_cast<float>(elevations[(height - 1) * width])                 // z01: top-left
     );
     
-    // Create greedy refiner for incremental insertion
+    // Create greedy refiner for incremental insertion with batch processing
+    // Use adaptive batch size: larger batches for larger point limits, but cap at reasonable size
+    int batch_size = std::min(64, std::max(8, point_limit / 10));
     auto refiner = std::make_unique<GreedyMeshRefiner>(
-        triangulation_manager.get(), error_threshold, point_limit);
+        triangulation_manager.get(), error_threshold, point_limit, batch_size);
     
     if (strategy == MeshRefineStrategy::SPARSE) {
         // For sparse strategy, use regular sampling instead of error-driven

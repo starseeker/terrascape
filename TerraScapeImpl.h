@@ -111,6 +111,7 @@ private:
     std::priority_queue<CandidatePoint> candidate_heap_;
     float error_threshold_;
     int point_limit_;
+    int batch_size_;  // Number of points to add before retriangulation
     
     // For true incremental insertion: track candidates by grid position
     std::unordered_map<int, CandidatePoint> grid_candidates_; // key = y*width + x
@@ -119,7 +120,7 @@ private:
     
 public:
     GreedyMeshRefiner(DetriaTriangulationManager* manager, 
-                     float error_threshold, int point_limit);
+                     float error_threshold, int point_limit, int batch_size = 32);
     
     /**
      * Initialize candidates from grid (but don't add all to heap immediately)
