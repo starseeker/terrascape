@@ -283,3 +283,25 @@ IX. Recommended Implementation Order
 
 **Status Summary**: Major correctness issues resolved, performance improvements implemented (batch insertion, spatial acceleration, triangle winding), but new robustness issues discovered that prevent reliable mesh generation in many cases.
 
+## ⚠️ **CURRENT USABILITY STATUS**
+
+**CTest Suite**: ✅ **PASSING** (5/5 correctness tests, 2/2 integration tests)
+- All core correctness features work as designed
+- Triangulation versioning, duplicate prevention, deterministic behavior validated
+- Triangle winding consistency verified
+
+**Demo Programs**: ⚠️ **MIXED RESULTS** 
+- `test_triangle_winding`: ✅ Works reliably for simple cases (flat surfaces)
+- `test_correctness_fixes`: ✅ All tests pass despite some triangulation warnings  
+- `test_detria_integration`: ✅ Basic functionality works with fallback handling
+- `test_incremental_demo`: ❌ Frequent failures with "Point on constrained edge"
+- `test_batch_performance`: ❌ Often produces 0 triangles due to triangulation failures
+
+**Recommended Usage**: 
+- ✅ **Safe for simple/flat surfaces** (4 vertices, 2 triangles)
+- ⚠️ **Unreliable for complex surfaces** due to edge constraint failures
+- ✅ **Core algorithm correctness** validated by test suite
+- ❌ **Production use** not recommended until robustness issues resolved
+
+**Root Cause**: Grid point alignment causes points to land exactly on constrained boundary edges, triggering "Point X is exactly on a constrained edge" errors in the underlying detria triangulation library.
+
