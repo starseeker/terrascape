@@ -99,6 +99,9 @@ bool DetriaTriangulationManager::retriangulate() {
     // Clear previous triangulation to prevent outline accumulation
     triangulation_->clear();
     
+    // Invalidate spatial acceleration
+    spatial_accel_.is_built = false;
+    
     // Reset triangulation with all points
     triangulation_->setPoints(points_);
     triangulation_->addOutline(boundary_indices_);
@@ -116,14 +119,141 @@ bool DetriaTriangulationManager::retriangulate() {
     return is_triangulated_;
 }
 
+void DetriaTriangulationManager::buildSpatialAcceleration() {
+    if (!is_triangulated_ || spatial_accel_.is_built) return;
+    
+    // Determine bounds from points
+    if (points_.empty()) return;
+    
+    spatial_accel_.minX = spatial_accel_.maxX = points_[0].x;
+    spatial_accel_.minY = spatial_accel_.maxY = points_[0].y;
+    
+    for (const auto& point : points_) {
+        spatial_accel_.minX = std::min(spatial_accel_.minX, point.x);
+        spatial_accel_.maxX = std::max(spatial_accel_.maxX, point.x);
+        spatial_accel_.minY = std::min(spatial_accel_.minY, point.y);
+        spatial_accel_.maxY = std::max(spatial_accel_.maxY, point.y);
+    }
+    
+    // Add small padding to handle edge cases
+    float padding = 0.01f;
+    spatial_accel_.minX -= padding;
+    spatial_accel_.maxX += padding;
+    spatial_accel_.minY -= padding;
+    spatial_accel_.maxY += padding;
+    
+    // Choose grid resolution based on number of triangles
+    // Aim for roughly 4-16 triangles per cell on average
+    int triangle_count = 0;
+    triangulation_->forEachTriangle([&](detria::Triangle<uint32_t>) { triangle_count++; });
+    
+    int target_cells = std::max(4, triangle_count / 8);  // 8 triangles per cell on average
+    int grid_size = std::max(4, static_cast<int>(std::sqrt(target_cells)));
+    
+    spatial_accel_.gridWidth = grid_size;
+    spatial_accel_.gridHeight = grid_size;
+    
+    // Initialize grid
+    spatial_accel_.grid.assign(spatial_accel_.gridHeight, 
+                               std::vector<std::vector<uint32_t>>(spatial_accel_.gridWidth));
+    
+    // Add triangles to grid cells
+    uint32_t triangle_index = 0;
+    triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+        if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
+            triangle_index++;
+            return; // Invalid triangle indices
+        }
+        
+        const auto& v0 = points_[triangle.x];
+        const auto& v1 = points_[triangle.y]; 
+        const auto& v2 = points_[triangle.z];
+        
+        // Find bounding box of triangle
+        float minX = std::min({v0.x, v1.x, v2.x});
+        float maxX = std::max({v0.x, v1.x, v2.x});
+        float minY = std::min({v0.y, v1.y, v2.y});
+        float maxY = std::max({v0.y, v1.y, v2.y});
+        
+        // Convert to grid coordinates
+        float cellWidth = (spatial_accel_.maxX - spatial_accel_.minX) / spatial_accel_.gridWidth;
+        float cellHeight = (spatial_accel_.maxY - spatial_accel_.minY) / spatial_accel_.gridHeight;
+        
+        int minCellX = std::max(0, static_cast<int>((minX - spatial_accel_.minX) / cellWidth));
+        int maxCellX = std::min(spatial_accel_.gridWidth - 1, static_cast<int>((maxX - spatial_accel_.minX) / cellWidth));
+        int minCellY = std::max(0, static_cast<int>((minY - spatial_accel_.minY) / cellHeight));
+        int maxCellY = std::min(spatial_accel_.gridHeight - 1, static_cast<int>((maxY - spatial_accel_.minY) / cellHeight));
+        
+        // Add triangle to overlapping cells
+        for (int cy = minCellY; cy <= maxCellY; cy++) {
+            for (int cx = minCellX; cx <= maxCellX; cx++) {
+                spatial_accel_.grid[cy][cx].push_back(triangle_index);
+            }
+        }
+        
+        triangle_index++;
+    });
+    
+    spatial_accel_.is_built = true;
+    
+    std::cout << "Built spatial acceleration: " << spatial_accel_.gridWidth << "x" << spatial_accel_.gridHeight 
+              << " grid for " << triangle_index << " triangles\n";
+}
+
 std::vector<uint32_t> DetriaTriangulationManager::findContainingTriangle(float x, float y) const {
     if (!is_triangulated_) return {};
     
+    // Build spatial acceleration if not already built
+    const_cast<DetriaTriangulationManager*>(this)->buildSpatialAcceleration();
+    
+    if (!spatial_accel_.is_built) {
+        // Fallback to linear search if spatial acceleration failed
+        std::vector<uint32_t> result;
+        bool found = false;
+        
+        triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+            if (found) return; // Already found, skip
+            
+            if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
+                return; // Invalid triangle indices
+            }
+            
+            const auto& v0 = points_[triangle.x];
+            const auto& v1 = points_[triangle.y]; 
+            const auto& v2 = points_[triangle.z];
+            
+            if (pointInTriangle(x, y, v0, v1, v2)) {
+                result = {triangle.x, triangle.y, triangle.z};
+                found = true;
+            }
+        });
+        
+        return result;
+    }
+    
+    // Use spatial acceleration for fast lookup
+    float cellWidth = (spatial_accel_.maxX - spatial_accel_.minX) / spatial_accel_.gridWidth;
+    float cellHeight = (spatial_accel_.maxY - spatial_accel_.minY) / spatial_accel_.gridHeight;
+    
+    int cellX = static_cast<int>((x - spatial_accel_.minX) / cellWidth);
+    int cellY = static_cast<int>((y - spatial_accel_.minY) / cellHeight);
+    
+    // Clamp to valid range
+    cellX = std::max(0, std::min(cellX, spatial_accel_.gridWidth - 1));
+    cellY = std::max(0, std::min(cellY, spatial_accel_.gridHeight - 1));
+    
+    // Check triangles in the cell
+    const auto& candidates = spatial_accel_.grid[cellY][cellX];
+    
+    uint32_t triangle_index = 0;
     std::vector<uint32_t> result;
-    bool found = false;
     
     triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
-        if (found) return; // Already found, skip
+        // Only check triangles in the candidate list
+        bool should_check = std::find(candidates.begin(), candidates.end(), triangle_index) != candidates.end();
+        triangle_index++;
+        
+        if (!should_check) return;
         
         if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
             return; // Invalid triangle indices
@@ -135,7 +265,7 @@ std::vector<uint32_t> DetriaTriangulationManager::findContainingTriangle(float x
         
         if (pointInTriangle(x, y, v0, v1, v2)) {
             result = {triangle.x, triangle.y, triangle.z};
-            found = true;
+            return; // Found it, can exit early
         }
     });
     

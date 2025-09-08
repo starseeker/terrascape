@@ -30,6 +30,16 @@ private:
     bool is_triangulated_;
     uint32_t triangulation_version_;
     
+    // Spatial acceleration for fast triangle lookup
+    struct SpatialAccel {
+        float minX, minY, maxX, maxY;
+        int gridWidth, gridHeight;
+        std::vector<std::vector<std::vector<uint32_t>>> grid; // grid[y][x] = list of triangle indices
+        bool is_built;
+        
+        SpatialAccel() : is_built(false) {}
+    } spatial_accel_;
+    
 public:
     DetriaTriangulationManager();
     ~DetriaTriangulationManager();
@@ -72,6 +82,11 @@ public:
      * Returns triangle vertex indices, or empty vector if not found
      */
     std::vector<uint32_t> findContainingTriangle(float x, float y) const;
+    
+    /**
+     * Build spatial acceleration structure for fast triangle lookup
+     */
+    void buildSpatialAcceleration();
     
     /**
      * Get all triangles as vertex index triplets
