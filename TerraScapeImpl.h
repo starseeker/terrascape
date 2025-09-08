@@ -5,6 +5,7 @@
 #include <memory>
 #include <queue>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace TerraScape {
 
@@ -27,6 +28,7 @@ private:
     std::vector<PointT> points_;
     std::vector<uint32_t> boundary_indices_;
     bool is_triangulated_;
+    uint32_t triangulation_version_;
     
 public:
     DetriaTriangulationManager();
@@ -45,8 +47,9 @@ public:
     uint32_t addPoint(float x, float y, float z);
     
     /**
-     * Get current point count
+     * Get current triangulation version (incremented after each successful retriangulation)
      */
+    uint32_t getVersion() const { return triangulation_version_; }
     size_t getPointCount() const { return points_.size(); }
     
     /**
@@ -96,6 +99,7 @@ public:
         float error;           // Approximation error
         std::vector<uint32_t> containing_triangle; // Triangle containing this point
         bool needs_update;     // Whether error needs recalculation
+        uint32_t tri_version;  // Triangulation version when this candidate was computed
         
         bool operator<(const CandidatePoint& other) const {
             return error < other.error; // For max-heap
@@ -110,6 +114,7 @@ private:
     
     // For true incremental insertion: track candidates by grid position
     std::unordered_map<int, CandidatePoint> grid_candidates_; // key = y*width + x
+    std::unordered_set<int> inserted_keys_; // Guard against duplicate point insertion
     int grid_width_, grid_height_;
     
 public:
