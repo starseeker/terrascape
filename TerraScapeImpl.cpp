@@ -99,6 +99,9 @@ bool DetriaTriangulationManager::retriangulate() {
     // Clear previous triangulation to prevent outline accumulation
     triangulation_->clear();
     
+    // Invalidate spatial acceleration
+    spatial_accel_.is_built = false;
+    
     // Reset triangulation with all points
     triangulation_->setPoints(points_);
     triangulation_->addOutline(boundary_indices_);
@@ -116,14 +119,141 @@ bool DetriaTriangulationManager::retriangulate() {
     return is_triangulated_;
 }
 
+void DetriaTriangulationManager::buildSpatialAcceleration() {
+    if (!is_triangulated_ || spatial_accel_.is_built) return;
+    
+    // Determine bounds from points
+    if (points_.empty()) return;
+    
+    spatial_accel_.minX = spatial_accel_.maxX = points_[0].x;
+    spatial_accel_.minY = spatial_accel_.maxY = points_[0].y;
+    
+    for (const auto& point : points_) {
+        spatial_accel_.minX = std::min(spatial_accel_.minX, point.x);
+        spatial_accel_.maxX = std::max(spatial_accel_.maxX, point.x);
+        spatial_accel_.minY = std::min(spatial_accel_.minY, point.y);
+        spatial_accel_.maxY = std::max(spatial_accel_.maxY, point.y);
+    }
+    
+    // Add small padding to handle edge cases
+    float padding = 0.01f;
+    spatial_accel_.minX -= padding;
+    spatial_accel_.maxX += padding;
+    spatial_accel_.minY -= padding;
+    spatial_accel_.maxY += padding;
+    
+    // Choose grid resolution based on number of triangles
+    // Aim for roughly 4-16 triangles per cell on average
+    int triangle_count = 0;
+    triangulation_->forEachTriangle([&](detria::Triangle<uint32_t>) { triangle_count++; });
+    
+    int target_cells = std::max(4, triangle_count / 8);  // 8 triangles per cell on average
+    int grid_size = std::max(4, static_cast<int>(std::sqrt(target_cells)));
+    
+    spatial_accel_.gridWidth = grid_size;
+    spatial_accel_.gridHeight = grid_size;
+    
+    // Initialize grid
+    spatial_accel_.grid.assign(spatial_accel_.gridHeight, 
+                               std::vector<std::vector<uint32_t>>(spatial_accel_.gridWidth));
+    
+    // Add triangles to grid cells
+    uint32_t triangle_index = 0;
+    triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+        if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
+            triangle_index++;
+            return; // Invalid triangle indices
+        }
+        
+        const auto& v0 = points_[triangle.x];
+        const auto& v1 = points_[triangle.y]; 
+        const auto& v2 = points_[triangle.z];
+        
+        // Find bounding box of triangle
+        float minX = std::min({v0.x, v1.x, v2.x});
+        float maxX = std::max({v0.x, v1.x, v2.x});
+        float minY = std::min({v0.y, v1.y, v2.y});
+        float maxY = std::max({v0.y, v1.y, v2.y});
+        
+        // Convert to grid coordinates
+        float cellWidth = (spatial_accel_.maxX - spatial_accel_.minX) / spatial_accel_.gridWidth;
+        float cellHeight = (spatial_accel_.maxY - spatial_accel_.minY) / spatial_accel_.gridHeight;
+        
+        int minCellX = std::max(0, static_cast<int>((minX - spatial_accel_.minX) / cellWidth));
+        int maxCellX = std::min(spatial_accel_.gridWidth - 1, static_cast<int>((maxX - spatial_accel_.minX) / cellWidth));
+        int minCellY = std::max(0, static_cast<int>((minY - spatial_accel_.minY) / cellHeight));
+        int maxCellY = std::min(spatial_accel_.gridHeight - 1, static_cast<int>((maxY - spatial_accel_.minY) / cellHeight));
+        
+        // Add triangle to overlapping cells
+        for (int cy = minCellY; cy <= maxCellY; cy++) {
+            for (int cx = minCellX; cx <= maxCellX; cx++) {
+                spatial_accel_.grid[cy][cx].push_back(triangle_index);
+            }
+        }
+        
+        triangle_index++;
+    });
+    
+    spatial_accel_.is_built = true;
+    
+    std::cout << "Built spatial acceleration: " << spatial_accel_.gridWidth << "x" << spatial_accel_.gridHeight 
+              << " grid for " << triangle_index << " triangles\n";
+}
+
 std::vector<uint32_t> DetriaTriangulationManager::findContainingTriangle(float x, float y) const {
     if (!is_triangulated_) return {};
     
+    // Build spatial acceleration if not already built
+    const_cast<DetriaTriangulationManager*>(this)->buildSpatialAcceleration();
+    
+    if (!spatial_accel_.is_built) {
+        // Fallback to linear search if spatial acceleration failed
+        std::vector<uint32_t> result;
+        bool found = false;
+        
+        triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+            if (found) return; // Already found, skip
+            
+            if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
+                return; // Invalid triangle indices
+            }
+            
+            const auto& v0 = points_[triangle.x];
+            const auto& v1 = points_[triangle.y]; 
+            const auto& v2 = points_[triangle.z];
+            
+            if (pointInTriangle(x, y, v0, v1, v2)) {
+                result = {triangle.x, triangle.y, triangle.z};
+                found = true;
+            }
+        });
+        
+        return result;
+    }
+    
+    // Use spatial acceleration for fast lookup
+    float cellWidth = (spatial_accel_.maxX - spatial_accel_.minX) / spatial_accel_.gridWidth;
+    float cellHeight = (spatial_accel_.maxY - spatial_accel_.minY) / spatial_accel_.gridHeight;
+    
+    int cellX = static_cast<int>((x - spatial_accel_.minX) / cellWidth);
+    int cellY = static_cast<int>((y - spatial_accel_.minY) / cellHeight);
+    
+    // Clamp to valid range
+    cellX = std::max(0, std::min(cellX, spatial_accel_.gridWidth - 1));
+    cellY = std::max(0, std::min(cellY, spatial_accel_.gridHeight - 1));
+    
+    // Check triangles in the cell
+    const auto& candidates = spatial_accel_.grid[cellY][cellX];
+    
+    uint32_t triangle_index = 0;
     std::vector<uint32_t> result;
-    bool found = false;
     
     triangulation_->forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
-        if (found) return; // Already found, skip
+        // Only check triangles in the candidate list
+        bool should_check = std::find(candidates.begin(), candidates.end(), triangle_index) != candidates.end();
+        triangle_index++;
+        
+        if (!should_check) return;
         
         if (triangle.x >= points_.size() || triangle.y >= points_.size() || triangle.z >= points_.size()) {
             return; // Invalid triangle indices
@@ -135,7 +265,7 @@ std::vector<uint32_t> DetriaTriangulationManager::findContainingTriangle(float x
         
         if (pointInTriangle(x, y, v0, v1, v2)) {
             result = {triangle.x, triangle.y, triangle.z};
-            found = true;
+            return; // Found it, can exit early
         }
     });
     
@@ -166,13 +296,37 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
         result.vertices.push_back({pt.x, pt.y, z});
     }
     
-    // Convert triangles
+    // Convert triangles with consistent CCW winding
     auto triangles = getAllTriangles();
     for (const auto& tri : triangles) {
         if (tri.size() == 3) {
-            result.triangles.push_back({static_cast<int>(tri[0]), 
-                                       static_cast<int>(tri[1]), 
-                                       static_cast<int>(tri[2])});
+            uint32_t v0_idx = tri[0];
+            uint32_t v1_idx = tri[1]; 
+            uint32_t v2_idx = tri[2];
+            
+            // Ensure vertices are valid
+            if (v0_idx >= points_.size() || v1_idx >= points_.size() || v2_idx >= points_.size()) {
+                continue;
+            }
+            
+            const auto& v0 = points_[v0_idx];
+            const auto& v1 = points_[v1_idx];
+            const auto& v2 = points_[v2_idx];
+            
+            // Compute signed area to determine winding order
+            // Signed area = (x1-x0)(y2-y0) - (y1-y0)(x2-x0)
+            float signed_area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+            
+            // If negative, triangle is clockwise - swap v1 and v2 to make it CCW
+            if (signed_area < 0.0f) {
+                result.triangles.push_back({static_cast<int>(v0_idx), 
+                                           static_cast<int>(v2_idx),  // Swapped
+                                           static_cast<int>(v1_idx)}); // Swapped
+            } else {
+                result.triangles.push_back({static_cast<int>(v0_idx), 
+                                           static_cast<int>(v1_idx), 
+                                           static_cast<int>(v2_idx)});
+            }
         }
     }
     
@@ -181,10 +335,11 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
 
 // GreedyMeshRefiner implementation
 GreedyMeshRefiner::GreedyMeshRefiner(DetriaTriangulationManager* manager, 
-                                   float error_threshold, int point_limit)
+                                   float error_threshold, int point_limit, int batch_size)
     : triangulation_manager_(manager)
     , error_threshold_(error_threshold)
     , point_limit_(point_limit)
+    , batch_size_(batch_size)
     , grid_width_(0)
     , grid_height_(0) {
 }
@@ -229,71 +384,95 @@ void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, cons
 template<typename T>
 int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* elevations) {
     int points_added = 0;
+    std::vector<CandidatePoint> batch_candidates;
+    
+    std::cout << "Starting batch insertion with batch size: " << batch_size_ << "\n";
     
     while (hasViableCandidates() && 
            triangulation_manager_->getPointCount() < static_cast<size_t>(point_limit_)) {
         
-        // Get the best candidate
-        CandidatePoint best = candidate_heap_.top();
-        candidate_heap_.pop();
+        // Collect a batch of candidates
+        batch_candidates.clear();
         
-        if (best.error < error_threshold_) {
-            break; // All remaining candidates have acceptable error
-        }
-        
-        // Check if candidate is stale (triangulation version has changed)
-        if (best.tri_version != triangulation_manager_->getVersion()) {
-            // Recalculate with current triangulation
-            CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
-            if (updated.error > error_threshold_) {
-                candidate_heap_.push(updated);
+        while (batch_candidates.size() < static_cast<size_t>(batch_size_) && 
+               hasViableCandidates() && 
+               triangulation_manager_->getPointCount() + batch_candidates.size() < static_cast<size_t>(point_limit_)) {
+            
+            // Get the best candidate
+            CandidatePoint best = candidate_heap_.top();
+            candidate_heap_.pop();
+            
+            if (best.error < error_threshold_) {
+                break; // All remaining candidates have acceptable error
             }
-            continue; // Try next candidate
-        }
-        
-        // Check for duplicate insertion guard
-        int key = best.y * width + best.x;
-        if (inserted_keys_.find(key) != inserted_keys_.end()) {
-            continue; // Skip already inserted point
-        }
-        
-        // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
-        auto it = grid_candidates_.find(key);
-        if (it == grid_candidates_.end() || it->second.needs_update) {
-            // Recalculate this candidate
-            if (it != grid_candidates_.end()) {
+            
+            // Check if candidate is stale (triangulation version has changed)
+            if (best.tri_version != triangulation_manager_->getVersion()) {
+                // Recalculate with current triangulation
                 CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
-                it->second = updated;
                 if (updated.error > error_threshold_) {
                     candidate_heap_.push(updated);
                 }
+                continue; // Try next candidate
             }
-            continue; // Try next candidate
+            
+            // Check for duplicate insertion guard
+            int key = best.y * width + best.x;
+            if (inserted_keys_.find(key) != inserted_keys_.end()) {
+                continue; // Skip already inserted point
+            }
+            
+            // Verify this candidate is still valid (hasn't been invalidated by previous insertions)
+            auto it = grid_candidates_.find(key);
+            if (it == grid_candidates_.end() || it->second.needs_update) {
+                // Recalculate this candidate
+                if (it != grid_candidates_.end()) {
+                    CandidatePoint updated = createCandidateFromGrid(best.x, best.y, width, height, elevations);
+                    it->second = updated;
+                    if (updated.error > error_threshold_) {
+                        candidate_heap_.push(updated);
+                    }
+                }
+                continue; // Try next candidate
+            }
+            
+            // Add to batch
+            batch_candidates.push_back(best);
         }
         
-        // Add the point with actual elevation data
-        float actual_z = static_cast<float>(elevations[best.y * width + best.x]);
-        uint32_t new_index = triangulation_manager_->addPoint(best.world_x, best.world_y, actual_z);
-        
-        // Retriangulate
-        if (!triangulation_manager_->retriangulate()) {
-            std::cerr << "Warning: Retriangulation failed after adding point\n";
+        // If no valid candidates in batch, exit
+        if (batch_candidates.empty()) {
             break;
         }
         
-        points_added++;
+        // Add all points in the batch
+        for (const auto& candidate : batch_candidates) {
+            float actual_z = static_cast<float>(elevations[candidate.y * width + candidate.x]);
+            uint32_t new_index = triangulation_manager_->addPoint(candidate.world_x, candidate.world_y, actual_z);
+            
+            // Mark this point as inserted to prevent duplicates
+            int key = candidate.y * width + candidate.x;
+            inserted_keys_.insert(key);
+            
+            // Remove this candidate from our tracking
+            grid_candidates_.erase(key);
+        }
         
-        // Mark this point as inserted to prevent duplicates
-        inserted_keys_.insert(key);
+        // Retriangulate once for the entire batch
+        if (!triangulation_manager_->retriangulate()) {
+            std::cerr << "Warning: Retriangulation failed after adding batch of " << batch_candidates.size() << " points\n";
+            break;
+        }
         
-        // Remove this candidate from our tracking
-        grid_candidates_.erase(key);
+        points_added += batch_candidates.size();
         
-        // Update affected candidates (TRUE incremental approach)
-        updateAffectedCandidates(width, height, elevations, best.world_x, best.world_y);
+        // Update affected candidates for all inserted points
+        for (const auto& candidate : batch_candidates) {
+            updateAffectedCandidates(width, height, elevations, candidate.world_x, candidate.world_y);
+        }
         
         if (points_added % 10 == 0) {
-            std::cout << "Added " << points_added << " points incrementally\n";
+            std::cout << "Added " << points_added << " points in batches (last batch: " << batch_candidates.size() << ")\n";
         }
     }
     
@@ -456,9 +635,11 @@ MeshResult grid_to_mesh_detria(
         static_cast<float>(elevations[(height - 1) * width])                 // z01: top-left
     );
     
-    // Create greedy refiner for incremental insertion
+    // Create greedy refiner for incremental insertion with batch processing
+    // Use adaptive batch size: larger batches for larger point limits, but cap at reasonable size
+    int batch_size = std::min(64, std::max(8, point_limit / 10));
     auto refiner = std::make_unique<GreedyMeshRefiner>(
-        triangulation_manager.get(), error_threshold, point_limit);
+        triangulation_manager.get(), error_threshold, point_limit, batch_size);
     
     if (strategy == MeshRefineStrategy::SPARSE) {
         // For sparse strategy, use regular sampling instead of error-driven

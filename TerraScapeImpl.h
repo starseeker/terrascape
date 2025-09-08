@@ -30,6 +30,16 @@ private:
     bool is_triangulated_;
     uint32_t triangulation_version_;
     
+    // Spatial acceleration for fast triangle lookup
+    struct SpatialAccel {
+        float minX, minY, maxX, maxY;
+        int gridWidth, gridHeight;
+        std::vector<std::vector<std::vector<uint32_t>>> grid; // grid[y][x] = list of triangle indices
+        bool is_built;
+        
+        SpatialAccel() : is_built(false) {}
+    } spatial_accel_;
+    
 public:
     DetriaTriangulationManager();
     ~DetriaTriangulationManager();
@@ -74,6 +84,11 @@ public:
     std::vector<uint32_t> findContainingTriangle(float x, float y) const;
     
     /**
+     * Build spatial acceleration structure for fast triangle lookup
+     */
+    void buildSpatialAcceleration();
+    
+    /**
      * Get all triangles as vertex index triplets
      */
     std::vector<std::vector<uint32_t>> getAllTriangles() const;
@@ -111,6 +126,7 @@ private:
     std::priority_queue<CandidatePoint> candidate_heap_;
     float error_threshold_;
     int point_limit_;
+    int batch_size_;  // Number of points to add before retriangulation
     
     // For true incremental insertion: track candidates by grid position
     std::unordered_map<int, CandidatePoint> grid_candidates_; // key = y*width + x
@@ -119,7 +135,7 @@ private:
     
 public:
     GreedyMeshRefiner(DetriaTriangulationManager* manager, 
-                     float error_threshold, int point_limit);
+                     float error_threshold, int point_limit, int batch_size = 32);
     
     /**
      * Initialize candidates from grid (but don't add all to heap immediately)
