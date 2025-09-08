@@ -296,13 +296,37 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
         result.vertices.push_back({pt.x, pt.y, z});
     }
     
-    // Convert triangles
+    // Convert triangles with consistent CCW winding
     auto triangles = getAllTriangles();
     for (const auto& tri : triangles) {
         if (tri.size() == 3) {
-            result.triangles.push_back({static_cast<int>(tri[0]), 
-                                       static_cast<int>(tri[1]), 
-                                       static_cast<int>(tri[2])});
+            uint32_t v0_idx = tri[0];
+            uint32_t v1_idx = tri[1]; 
+            uint32_t v2_idx = tri[2];
+            
+            // Ensure vertices are valid
+            if (v0_idx >= points_.size() || v1_idx >= points_.size() || v2_idx >= points_.size()) {
+                continue;
+            }
+            
+            const auto& v0 = points_[v0_idx];
+            const auto& v1 = points_[v1_idx];
+            const auto& v2 = points_[v2_idx];
+            
+            // Compute signed area to determine winding order
+            // Signed area = (x1-x0)(y2-y0) - (y1-y0)(x2-x0)
+            float signed_area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+            
+            // If negative, triangle is clockwise - swap v1 and v2 to make it CCW
+            if (signed_area < 0.0f) {
+                result.triangles.push_back({static_cast<int>(v0_idx), 
+                                           static_cast<int>(v2_idx),  // Swapped
+                                           static_cast<int>(v1_idx)}); // Swapped
+            } else {
+                result.triangles.push_back({static_cast<int>(v0_idx), 
+                                           static_cast<int>(v1_idx), 
+                                           static_cast<int>(v2_idx)});
+            }
         }
     }
     
