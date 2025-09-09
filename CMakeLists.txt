@@ -31,9 +31,13 @@ add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp terrain_data_utils.cp
 # Create consolidated comprehensive test suite
 add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
 
+# Create Hawaii BigIsland performance test
+add_executable(hawaii_bigisland_test hawaii_bigisland_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(hawaii_bigisland_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -45,10 +49,15 @@ if(GDAL_FOUND)
     target_link_libraries(terrascape_tests ${GDAL_LIBRARIES})
     target_compile_options(terrascape_tests PRIVATE ${GDAL_CFLAGS_OTHER})
     
+    target_include_directories(hawaii_bigisland_test PRIVATE ${GDAL_INCLUDE_DIRS})
+    target_link_libraries(hawaii_bigisland_test ${GDAL_LIBRARIES})
+    target_compile_options(hawaii_bigisland_test PRIVATE ${GDAL_CFLAGS_OTHER})
+    
     # Also need curl for downloading
     find_package(CURL REQUIRED)
     target_link_libraries(terrascape_demo ${CURL_LIBRARIES})
     target_link_libraries(terrascape_tests ${CURL_LIBRARIES})
+    target_link_libraries(hawaii_bigisland_test ${CURL_LIBRARIES})
 endif()
 
 # Set output directory
@@ -58,12 +67,16 @@ set_target_properties(terrascape_demo PROPERTIES
 set_target_properties(terrascape_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(hawaii_bigisland_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
+add_test(NAME HawaiiBigIslandPerformanceTest COMMAND hawaii_bigisland_test)
 
 # Add GDAL-enabled terrain data tests if GDAL is available
 if(GDAL_FOUND)
