@@ -1249,26 +1249,43 @@ namespace detria
             template<typename Vec2, typename Idx>
             inline Orientation sos_orient2d_tiebreak(const Vec2& a, Idx ia, const Vec2& b, Idx ib, const Vec2& c, Idx ic)
             {
-                // Classic Simulation of Simplicity (SoS) for orient2d
-                // When points are collinear, use lexicographic ordering to break ties
+                // Robust Simulation of Simplicity (SoS) for orient2d
+                // Use proper lexicographic ordering of points with index-based tie-breaking
                 
                 // Handle identical indices (should not happen in practice)
                 if (ia == ib || ib == ic || ia == ic) {
                     return Orientation::CCW; 
                 }
                 
-                // SoS rule: use the lexicographic minimum index to determine orientation
-                // This simulates infinitesimal perturbations that preserve geometric consistency
-                Idx min_idx = std::min({ia, ib, ic});
+                // Sort the three points by their coordinates and indices using lexicographic ordering
+                struct PointWithIndex {
+                    Vec2 point;
+                    Idx index;
+                    
+                    bool operator<(const PointWithIndex& other) const {
+                        if (point.x != other.point.x) return point.x < other.point.x;
+                        if (point.y != other.point.y) return point.y < other.point.y;
+                        return index < other.index;
+                    }
+                };
                 
-                // The orientation depends on the position of the minimum index
-                if (min_idx == ia) {
-                    return (ib < ic) ? Orientation::CCW : Orientation::CW;
-                } else if (min_idx == ib) {
-                    return (ia < ic) ? Orientation::CW : Orientation::CCW; 
-                } else { // min_idx == ic
-                    return (ia < ib) ? Orientation::CCW : Orientation::CW;
+                std::vector<PointWithIndex> sorted_points = {
+                    {a, ia}, {b, ib}, {c, ic}
+                };
+                std::sort(sorted_points.begin(), sorted_points.end());
+                
+                // Use a simple but consistent rule: if the original order matches
+                // the lexicographic order, return CCW; otherwise CW
+                bool same_order = true;
+                if ((sorted_points[0].index == ia && sorted_points[1].index == ib && sorted_points[2].index == ic) ||
+                    (sorted_points[0].index == ib && sorted_points[1].index == ic && sorted_points[2].index == ia) ||
+                    (sorted_points[0].index == ic && sorted_points[1].index == ia && sorted_points[2].index == ib)) {
+                    same_order = true;
+                } else {
+                    same_order = false;
                 }
+                
+                return same_order ? Orientation::CCW : Orientation::CW;
             }
 
             // SoS incircle tie-breaker: when four points are cocircular, use index-based ordering
@@ -1276,10 +1293,29 @@ namespace detria
             inline CircleLocation sos_incircle_tiebreak(const Vec2& a, Idx ia, const Vec2& b, Idx ib, 
                                                        const Vec2& c, Idx ic, const Vec2& d, Idx id)
             {
-                // Simple but correct approach: use the index of the test point relative to triangle vertices
-                // If test point index is smaller than average, it's inside; otherwise outside
-                Idx avg_triangle_index = (ia + ib + ic) / 3;
-                return (id < avg_triangle_index) ? CircleLocation::Inside : CircleLocation::Outside;
+                // Robust SoS approach: use lexicographic ordering to determine consistent result
+                // Sort triangle vertices by their lexicographic order
+                struct PointWithIndex {
+                    Vec2 point;
+                    Idx index;
+                    
+                    bool operator<(const PointWithIndex& other) const {
+                        if (point.x != other.point.x) return point.x < other.point.x;
+                        if (point.y != other.point.y) return point.y < other.point.y;
+                        return index < other.index;
+                    }
+                };
+                
+                std::vector<PointWithIndex> triangle_points = {
+                    {a, ia}, {b, ib}, {c, ic}
+                };
+                std::sort(triangle_points.begin(), triangle_points.end());
+                
+                PointWithIndex test_point = {d, id};
+                
+                // Use a consistent rule: if test point is lexicographically smaller than
+                // the median triangle point, it's inside; otherwise outside
+                return (test_point < triangle_points[1]) ? CircleLocation::Inside : CircleLocation::Outside;
             }
         }
 
