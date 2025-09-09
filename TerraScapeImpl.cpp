@@ -650,8 +650,9 @@ MeshResult grid_to_mesh_detria(
         std::vector<std::tuple<float, float, float>> sparse_points;
         for (int y = step; y < height; y += step) {
             for (int x = step; x < width; x += step) {
-                bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
-                if (!is_corner && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
+                // Avoid points on boundary edges - they must be strictly interior
+                bool on_boundary = (x == 0 || x == width - 1 || y == 0 || y == height - 1);
+                if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
                     float px = static_cast<float>(x);
                     float py = static_cast<float>(y);
                     float pz = static_cast<float>(elevations[y * width + x]);
