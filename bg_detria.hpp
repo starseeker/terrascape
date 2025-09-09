@@ -3279,24 +3279,40 @@ namespace detria
             });
 
             // Since the points are sorted, duplicates must be next to each other (if any)
-            for (size_t i = 1; i < _numPoints; ++i)
+            // Instead of failing on duplicates, filter them out to allow triangulation to proceed
+            size_t writeIndex = 0;
+            for (size_t i = 0; i < _numPoints; ++i)
             {
-                Idx prevIndex = sortedPoints[i - 1];
                 Idx currentIndex = sortedPoints[i];
-
-                Vector2 prev = getPoint(prevIndex);
                 Vector2 current = getPoint(currentIndex);
-
-                if (prev.x == current.x && prev.y == current.y) DETRIA_UNLIKELY
+                
+                // Check if this point is a duplicate of the previous unique point
+                bool isDuplicate = false;
+                if (writeIndex > 0)
                 {
-                    return fail(TE_DuplicatePointsFound
+                    Idx prevUniqueIndex = sortedPoints[writeIndex - 1];
+                    Vector2 prevUnique = getPoint(prevUniqueIndex);
+                    
+                    if (current.x == prevUnique.x && current.y == prevUnique.y) DETRIA_UNLIKELY
                     {
-                        current.x,
-                        current.y,
-                        prevIndex,
-                        currentIndex
-                    });
+                        isDuplicate = true;
+                    }
                 }
+                
+                if (!isDuplicate)
+                {
+                    sortedPoints[writeIndex] = currentIndex;
+                    writeIndex++;
+                }
+            }
+            
+            // Resize sortedPoints to only contain unique points
+            sortedPoints.resize(writeIndex);
+            
+            // Check if we still have enough points for triangulation after removing duplicates
+            if (sortedPoints.size() < 3) DETRIA_UNLIKELY
+            {
+                return fail(TE_LessThanThreePoints{ });
             }
 
             // Set initial convex hull vertex - the first sorted point is guaranteed to be part of the convex hull
