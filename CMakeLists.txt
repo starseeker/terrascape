@@ -41,6 +41,9 @@ add_executable(test_sos_logic test_sos_logic.cpp)
 # Create SoS simple test
 add_executable(test_sos_simple test_sos_simple.cpp)
 
+# Create consolidated comprehensive test suite
+add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_gridmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -52,6 +55,7 @@ target_include_directories(test_triangle_winding PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_include_directories(test_sos_comprehensive PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_sos_logic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_sos_simple PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set output directory
 set_target_properties(terrascape_demo PROPERTIES
@@ -84,10 +88,14 @@ set_target_properties(test_sos_logic PROPERTIES
 set_target_properties(test_sos_simple PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(terrascape_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_incremental_demo test_correctness_fixes test_batch_performance test_triangle_winding test_sos_comprehensive test_sos_logic test_sos_simple DESTINATION bin)
+install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_incremental_demo test_correctness_fixes test_batch_performance test_triangle_winding test_sos_comprehensive test_sos_logic test_sos_simple terrascape_tests DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME CorrectnessFixesTest COMMAND test_correctness_fixes)
 add_test(NAME DetriaIntegrationTest COMMAND test_detria_integration)
+add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
