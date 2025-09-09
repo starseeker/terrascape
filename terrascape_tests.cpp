@@ -467,17 +467,28 @@ bool test_strategy_integration() {
 }
 
 bool test_crater_pgm_processing() {
-    // Test processing the crater.pgm file
+    // Test processing the crater.pgm file (try multiple paths)
     int width, height;
     std::vector<float> elevations;
     
-    // Try to read crater.pgm
-    if (!readPGMToFloatArray("crater.pgm", width, height, elevations)) {
-        std::cout << "  Warning: crater.pgm not found or not readable, skipping test" << std::endl;
+    std::vector<std::string> possible_paths = {"crater.pgm", "../crater.pgm", "../../crater.pgm"};
+    bool found = false;
+    std::string used_path;
+    
+    for (const auto& path : possible_paths) {
+        if (readPGMToFloatArray(path.c_str(), width, height, elevations)) {
+            found = true;
+            used_path = path;
+            break;
+        }
+    }
+    
+    if (!found) {
+        std::cout << "  Warning: crater.pgm not found in any expected location, skipping test" << std::endl;
         return true; // Not a failure, just skip
     }
     
-    std::cout << "  Successfully read crater.pgm: " << width << "x" << height << " pixels" << std::endl;
+    std::cout << "  Successfully read crater.pgm from " << used_path << ": " << width << "x" << height << " pixels" << std::endl;
     
     // Process with reasonable parameters to avoid the duplicate point issue
     float error_threshold = 50.0f; // Higher threshold to reduce points
