@@ -35,24 +35,4 @@ install(TARGETS terrascape_demo terrascape_tests DESTINATION bin)
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
 
-# Add SoS performance tests
-add_executable(sos_performance_tests 
-    /tmp/sos_performance_tests.cpp 
-    TerraScapeImpl.cpp
-)
-target_include_directories(sos_performance_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-set_target_properties(sos_performance_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-add_test(NAME SoSPerformanceTests COMMAND sos_performance_tests)
-
-# Add SoS analysis tests
-add_executable(sos_analysis 
-    /tmp/sos_analysis.cpp 
-    TerraScapeImpl.cpp
-)
-target_include_directories(sos_analysis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-set_target_properties(sos_analysis PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-add_test(NAME SoSAnalysis COMMAND sos_analysis)
+# Additional tests can be added here if needed
