@@ -1249,42 +1249,26 @@ namespace detria
             template<typename Vec2, typename Idx>
             inline Orientation sos_orient2d_tiebreak(const Vec2& a, Idx ia, const Vec2& b, Idx ib, const Vec2& c, Idx ic)
             {
-                // Standard Simulation of Simplicity for orient2d
-                // We simulate perturbing each point i by (ε^i, ε^(2i)) where ε is infinitesimal
-                // This creates a deterministic tie-breaking rule that preserves geometric consistency
+                // Classic Simulation of Simplicity (SoS) for orient2d
+                // When points are collinear, use lexicographic ordering to break ties
                 
-                // Proper SoS implementation: compare point indices lexicographically
-                // First, check if any two indices are the same (degenerate case)
+                // Handle identical indices (should not happen in practice)
                 if (ia == ib || ib == ic || ia == ic) {
-                    return Orientation::CW; // Arbitrary but consistent choice for degenerate cases
+                    return Orientation::CCW; 
                 }
                 
-                // Use lexicographic comparison to determine orientation
-                // This simulates the effect of infinitesimal perturbations
-                // The key insight is to use the indices directly in a deterministic way
+                // SoS rule: use the lexicographic minimum index to determine orientation
+                // This simulates infinitesimal perturbations that preserve geometric consistency
+                Idx min_idx = std::min({ia, ib, ic});
                 
-                // Create a determinant-like computation using indices
-                // The sign depends on the permutation of indices relative to sorted order
-                Idx sorted_indices[3] = {ia, ib, ic};
-                std::sort(sorted_indices, sorted_indices + 3);
-                
-                // Count how many swaps are needed to get from original to sorted order
-                int swaps = 0;
-                Idx temp_indices[3] = {ia, ib, ic};
-                
-                // Simple bubble sort to count swaps
-                for (int i = 0; i < 2; i++) {
-                    for (int j = 0; j < 2 - i; j++) {
-                        if (temp_indices[j] > temp_indices[j + 1]) {
-                            std::swap(temp_indices[j], temp_indices[j + 1]);
-                            swaps++;
-                        }
-                    }
+                // The orientation depends on the position of the minimum index
+                if (min_idx == ia) {
+                    return (ib < ic) ? Orientation::CCW : Orientation::CW;
+                } else if (min_idx == ib) {
+                    return (ia < ic) ? Orientation::CW : Orientation::CCW; 
+                } else { // min_idx == ic
+                    return (ia < ib) ? Orientation::CCW : Orientation::CW;
                 }
-                
-                // Even number of swaps -> CCW, odd -> CW
-                // This gives us a consistent tie-breaking rule
-                return (swaps % 2 == 0) ? Orientation::CCW : Orientation::CW;
             }
 
             // SoS incircle tie-breaker: when four points are cocircular, use index-based ordering
@@ -3355,10 +3339,10 @@ namespace detria
                     TVertex vertex0 = _topology.getEdge(edge).vertex;
                     TVertex vertex1 = _topology.getEdge(_topology.getOpposite(edge)).vertex;
 
-                    math::Orientation orientation = orient2d(
-                        getPoint(vertex0.index),
-                        getPoint(vertex1.index),
-                        position
+                    math::Orientation orientation = orient2d_sos(
+                        getPoint(vertex0.index), vertex0.index,
+                        getPoint(vertex1.index), vertex1.index,
+                        position, originalIndex // Use the current point's index
                     );
 
                     // Don't consider point as visible if exactly on the line
@@ -3577,7 +3561,7 @@ namespace detria
                 // https://people.eecs.berkeley.edu/~jrs/papers/elemj.pdf
                 // But we'd need to make sure that every edge is only processed once
 
-                math::CircleLocation loc = incircle(vertex0Position, vertex1Position, otherVertex1Position, otherVertex0Position);
+                math::CircleLocation loc = incircle_sos(vertex0Position, vertex0.index, vertex1Position, vertex1.index, otherVertex1Position, otherVertex1.index, otherVertex0Position, otherVertex0.index);
                 if (loc == math::CircleLocation::Inside)
                 {
                     // Flip edge
@@ -4117,10 +4101,10 @@ namespace detria
                     TVertex prevPrevVertex = _constrainedEdgeReTriangulationStack[_constrainedEdgeReTriangulationStack.size() - 2];
                     TVertex prevVertex = _constrainedEdgeReTriangulationStack[_constrainedEdgeReTriangulationStack.size() - 1];
 
-                    math::Orientation orientation = orient2d(
-                        getPoint(prevPrevVertex.index),
-                        getPoint(prevVertex.index),
-                        getPoint(currentVertex.index)
+                    math::Orientation orientation = orient2d_sos(
+                        getPoint(prevPrevVertex.index), prevPrevVertex.index,
+                        getPoint(prevVertex.index), prevVertex.index,
+                        getPoint(currentVertex.index), currentVertex.index
                     );
 
                     if (orientation == requiredOrientation)
@@ -4553,11 +4537,6 @@ namespace detria
                 {
                     // Use SoS tie-breaking when points are exactly collinear
                     auto sos_result = math::sos::sos_orient2d_tiebreak(a, ia, b, ib, c, ic);
-                    // Debug: This should help us verify SoS is working
-                    #ifdef SAFETY
-                    std::cout << "SoS tie-breaking applied: indices (" << ia << "," << ib << "," << ic 
-                              << ") -> " << (int)sos_result << std::endl;
-                    #endif
                     return sos_result;
                 }
             }
