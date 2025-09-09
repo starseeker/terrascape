@@ -17,6 +17,7 @@
 #include <limits>
 #include <queue>
 #include <memory>
+#include <iostream>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -150,17 +151,41 @@ MeshResult grid_to_mesh(
         size_t avail_ram = get_available_ram_bytes();
         // More conservative memory estimation for stability
         size_t heap_mem_needed = grid_size * 32;
-        if (grid_size <= 50000 && heap_mem_needed < avail_ram / 4) {  // Very small grids only
+        
+        // Use extremely conservative thresholds to ensure robustness with Hawaii-scale datasets  
+        // HYBRID/HEAP strategies have assertion failures with larger datasets, so prioritize SPARSE
+        if (grid_size <= 500 && heap_mem_needed < avail_ram / 8) {  // Only very tiny grids
             strategy = MeshRefineStrategy::HEAP;
-        } else if (grid_size < 200000) {  // Reduced threshold for stability
+        } else if (grid_size <= 1000 && heap_mem_needed < avail_ram / 4) {  // Small grids only
             strategy = MeshRefineStrategy::HYBRID;
         } else {
-            strategy = MeshRefineStrategy::SPARSE;  // Use SPARSE for large datasets
+            strategy = MeshRefineStrategy::SPARSE;  // Use SPARSE for virtually all real datasets
         }
+        
+        std::cout << "AUTO strategy selected: ";
+        switch (strategy) {
+            case MeshRefineStrategy::HEAP: std::cout << "HEAP"; break;
+            case MeshRefineStrategy::HYBRID: std::cout << "HYBRID"; break;
+            case MeshRefineStrategy::SPARSE: std::cout << "SPARSE"; break;
+            default: break;
+        }
+        std::cout << " for " << grid_size << " points\n";
     }
     
-    // Delegate to detria-based implementation
-    return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, strategy);
+    // Delegate to detria-based implementation with robust error handling
+    try {
+        return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, strategy);
+    } catch (...) {
+        // If the selected strategy fails (e.g., assertion in triangulation), 
+        // fall back to SPARSE strategy which is more robust for large datasets
+        if (strategy != MeshRefineStrategy::SPARSE) {
+            std::cout << "Strategy failed, falling back to SPARSE for robustness\n";
+            return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, MeshRefineStrategy::SPARSE);
+        } else {
+            // If even SPARSE fails, re-throw the exception
+            throw;
+        }
+    }
 }
 
 } // namespace TerraScape

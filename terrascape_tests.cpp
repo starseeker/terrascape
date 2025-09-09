@@ -6,6 +6,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include "TerraScape.hpp"
 #include "TerraScapeImpl.h"
 #include "bg_detria.hpp"
@@ -595,6 +596,70 @@ bool test_bil_to_pgm_conversion() {
     return success;
 }
 
+bool test_synthetic_bigisland_terrain() {
+    // Test synthetic BigIsland-style terrain generation and processing
+    std::cout << "  Testing synthetic Hawaii BigIsland terrain generation..." << std::endl;
+    
+    const int width = 200;
+    const int height = 150;
+    std::vector<float> elevations(width * height);
+    
+    // Generate BigIsland-style terrain with volcanic peaks
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Normalize coordinates to [0,1]
+            float fx = static_cast<float>(x) / (width - 1);
+            float fy = static_cast<float>(y) / (height - 1);
+            
+            // Create two main volcanic peaks (Mauna Kea and Mauna Loa)
+            float maunakea_x = 0.3f, maunakea_y = 0.4f;
+            float maunaloa_x = 0.6f, maunaloa_y = 0.6f;
+            
+            float dist_kea = std::sqrt((fx - maunakea_x) * (fx - maunakea_x) + 
+                                      (fy - maunakea_y) * (fy - maunakea_y));
+            float dist_loa = std::sqrt((fx - maunaloa_x) * (fx - maunaloa_x) + 
+                                      (fy - maunaloa_y) * (fy - maunaloa_y));
+            
+            // Volcanic cone elevation profiles
+            float kea_elev = std::max(0.0f, 4200.0f * (1.0f - dist_kea * 3.0f));
+            float loa_elev = std::max(0.0f, 4170.0f * (1.0f - dist_loa * 3.0f));
+            
+            // Coastal effects - lower elevation near edges
+            float coastal_factor = std::min({fx * 2.0f, (1.0f - fx) * 2.0f, 
+                                           fy * 2.0f, (1.0f - fy) * 2.0f, 1.0f});
+            
+            // Combine elevations
+            float elevation = std::max(kea_elev, loa_elev) * coastal_factor;
+            
+            // Ensure non-negative elevation
+            elevation = std::max(0.0f, elevation);
+            
+            elevations[y * width + x] = elevation;
+        }
+    }
+    
+    // Test mesh generation from synthetic terrain
+    auto minmax = std::minmax_element(elevations.begin(), elevations.end());
+    float elev_range = *minmax.second - *minmax.first;
+    
+    std::cout << "    Elevation range: " << *minmax.first << "m to " << *minmax.second << "m" << std::endl;
+    
+    // Test with AUTO strategy
+    auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
+                                        elev_range * 0.01f, 1000, TerraScape::MeshRefineStrategy::AUTO);
+    
+    bool success = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+    
+    if (success) {
+        float reduction = 100.0f * (1.0f - static_cast<float>(mesh.vertices.size()) / (width * height));
+        std::cout << "    Generated mesh: " << mesh.vertices.size() << " vertices (" 
+                  << std::fixed << std::setprecision(1) << reduction << "% reduction), " 
+                  << mesh.triangles.size() << " triangles" << std::endl;
+    }
+    
+    return success;
+}
+
 // =============================================================================
 // Main Test Runner
 // =============================================================================
@@ -647,6 +712,7 @@ int main() {
     suite.beginCategory(5);
     suite.addTest(test_terrain_data_utilities(), "Terrain Data Utilities");
     suite.addTest(test_sample_terrain_generation(), "Sample Terrain Generation");
+    suite.addTest(test_synthetic_bigisland_terrain(), "Synthetic BigIsland Terrain");
     suite.addTest(test_gdal_availability(), "GDAL Availability Check");
     if (TerrainDataUtils::isGdalAvailable()) {
         suite.addTest(test_bil_to_pgm_conversion(), "BIL to PGM Conversion");
