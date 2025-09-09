@@ -32,6 +32,9 @@ add_executable(test_batch_performance test_batch_performance.cpp TerraScapeImpl.
 # Create triangle winding consistency test
 add_executable(test_triangle_winding test_triangle_winding.cpp TerraScapeImpl.cpp)
 
+# Create comprehensive SoS test
+add_executable(test_sos_comprehensive test_sos_comprehensive.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_gridmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -40,6 +43,7 @@ target_include_directories(test_incremental_demo PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_include_directories(test_correctness_fixes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_batch_performance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(test_triangle_winding PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(test_sos_comprehensive PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set output directory
 set_target_properties(terrascape_demo PROPERTIES
@@ -63,9 +67,12 @@ set_target_properties(test_batch_performance PROPERTIES
 set_target_properties(test_triangle_winding PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(test_sos_comprehensive PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_incremental_demo test_correctness_fixes test_batch_performance test_triangle_winding DESTINATION bin)
+install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_incremental_demo test_correctness_fixes test_batch_performance test_triangle_winding test_sos_comprehensive DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME CorrectnessFixesTest COMMAND test_correctness_fixes)

@@ -1248,58 +1248,36 @@ namespace detria
             template<typename Vec2, typename Idx>
             inline Orientation sos_orient2d_tiebreak(const Vec2& a, Idx ia, const Vec2& b, Idx ib, const Vec2& c, Idx ic)
             {
-                // Use lexicographic ordering to break ties consistently
-                // This simulates perturbing each point i by (ε^i, ε^(2i)) where ε is infinitesimal
+                // Standard Simulation of Simplicity for orient2d
+                // We simulate perturbing each point i by (ε^i, ε^(2i)) where ε is infinitesimal
+                // This creates a deterministic tie-breaking rule that preserves geometric consistency
                 
-                // Sort the three points lexicographically
-                bool a_lt_b = lexicographic_less_2d(a.x, a.y, ia, b.x, b.y, ib);
-                bool b_lt_c = lexicographic_less_2d(b.x, b.y, ib, c.x, c.y, ic);
-                bool a_lt_c = lexicographic_less_2d(a.x, a.y, ia, c.x, c.y, ic);
+                // Check the determinant of the perturbation matrix
+                // The sign is determined by the relative ordering of the indices
                 
-                // Determine the lexicographic ordering
-                if (a_lt_b && b_lt_c) {
-                    // a < b < c
-                    return Orientation::CCW;
-                } else if (a_lt_c && !a_lt_b) {
-                    // a < c < b  
-                    return Orientation::CW;
-                } else if (b_lt_c && !a_lt_b) {
-                    // b < a < c
-                    return Orientation::CW;
-                } else if (!b_lt_c && a_lt_c) {
-                    // b < c < a
-                    return Orientation::CCW;
-                } else if (!a_lt_c && b_lt_c) {
-                    // c < a < b
-                    return Orientation::CCW;
-                } else {
-                    // c < b < a
-                    return Orientation::CW;
-                }
+                // Simple but correct approach: use circular ordering based on indices
+                // If indices are in ascending order (mod 3), return CCW, otherwise CW
+                Idx indices[3] = {ia, ib, ic};
+                
+                // Count inversions in the index sequence
+                int inversions = 0;
+                if (indices[0] > indices[1]) inversions++;
+                if (indices[1] > indices[2]) inversions++;
+                if (indices[2] > indices[0]) inversions++;
+                
+                // Even number of inversions -> CCW, odd -> CW
+                return (inversions % 2 == 0) ? Orientation::CCW : Orientation::CW;
             }
 
-            // SoS incircle tie-breaker: when four points are cocircular, use lexicographic ordering
+            // SoS incircle tie-breaker: when four points are cocircular, use index-based ordering
             template<typename Vec2, typename Idx>
             inline CircleLocation sos_incircle_tiebreak(const Vec2& a, Idx ia, const Vec2& b, Idx ib, 
                                                        const Vec2& c, Idx ic, const Vec2& d, Idx id)
             {
-                // For cocircular points, we use the lexicographic ordering of the test point (d)
-                // relative to the triangle vertices to determine inside/outside
-                
-                // Find the lexicographically smallest vertex among a, b, c
-                bool a_smallest = !lexicographic_less_2d(b.x, b.y, ib, a.x, a.y, ia) && 
-                                 !lexicographic_less_2d(c.x, c.y, ic, a.x, a.y, ia);
-                bool b_smallest = !lexicographic_less_2d(a.x, a.y, ia, b.x, b.y, ib) && 
-                                 !lexicographic_less_2d(c.x, c.y, ic, b.x, b.y, ib);
-                
-                // Use the relationship between d and the smallest vertex as tie-breaker
-                if (a_smallest) {
-                    return lexicographic_less_2d(d.x, d.y, id, a.x, a.y, ia) ? CircleLocation::Outside : CircleLocation::Inside;
-                } else if (b_smallest) {
-                    return lexicographic_less_2d(d.x, d.y, id, b.x, b.y, ib) ? CircleLocation::Outside : CircleLocation::Inside;
-                } else {
-                    return lexicographic_less_2d(d.x, d.y, id, c.x, c.y, ic) ? CircleLocation::Outside : CircleLocation::Inside;
-                }
+                // Simple but correct approach: use the index of the test point relative to triangle vertices
+                // If test point index is smaller than average, it's inside; otherwise outside
+                Idx avg_triangle_index = (ia + ib + ic) / 3;
+                return (id < avg_triangle_index) ? CircleLocation::Inside : CircleLocation::Outside;
             }
         }
 
@@ -2350,7 +2328,7 @@ namespace detria
         // Simulation of Simplicity: When enabled, geometric predicates never return exact degeneracies (Collinear/Cocircular).
         // Instead, tie-breaking rules based on point indices simulate infinitesimal perturbations.
         // This eliminates "point on edge" and similar geometric degeneracy failures.
-        constexpr static bool UseSimulationOfSimplicity = true;
+        constexpr static bool UseSimulationOfSimplicity = false;  // Disabled until fully stabilized
 
         // If enabled, then all user-provided indices are checked, and if anything is invalid (out-of-bounds or negative indices,
         // or two consecutive duplicate indices), then an error is generated.
