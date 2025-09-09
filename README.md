@@ -34,6 +34,19 @@ make -j4
 - C++17 compatible compiler
 - Standard C++ library
 
+### Optional Dependencies
+
+- **GDAL (Geospatial Data Abstraction Library)**: For processing real-world terrain data
+  - Install: `sudo apt install libgdal-dev gdal-bin` (Ubuntu/Debian)
+  - When available, enables:
+    - Download and processing of real terrain data from Hawaii dataset
+    - Conversion of BIL (Band Interleaved by Line) files to PGM format
+    - Mesh validation against original terrain data
+    - Advanced terrain data processing tools
+
+- **libcurl**: For downloading terrain datasets (required when GDAL is enabled)
+  - Install: `sudo apt install libcurl4-openssl-dev` (Ubuntu/Debian)
+
 ### Basic Usage
 
 ```cpp
@@ -63,7 +76,36 @@ auto mesh = TerraScape::grid_to_mesh(
 
 # Comprehensive test suite
 ./build/bin/terrascape_tests
+
+# Real terrain data processor (requires GDAL)
+./build/bin/terrain_data_processor --help
 ```
+
+### Working with Real Terrain Data
+
+When GDAL is available, TerraScape can process real-world terrain data:
+
+```bash
+# Download Hawaii terrain data and process with TerraScape
+./build/bin/terrain_data_processor
+
+# Download terrain data only
+./build/bin/terrain_data_processor --download-only
+
+# Process existing terrain data with validation
+./build/bin/terrain_data_processor --process-only --validate
+
+# Run terrain data tests
+make download_terrain_data  # Download Hawaii terrain files
+ctest -R RealTerrainDataTest  # Test with real terrain data
+```
+
+The terrain data processor can:
+- Download BIL files from the Hawaii 10-meter DEM dataset
+- Convert BIL elevation data to PGM format using GDAL
+- Generate optimized meshes from real terrain data
+- Validate generated meshes against original elevation data
+- Create sample terrain data when real data is unavailable
 
 ## API Reference
 
@@ -202,6 +244,13 @@ maxval
 elevation1 elevation2 ... elevationN
 ```
 
+### Input: BIL (Band Interleaved by Line) - via GDAL
+When GDAL is available, TerraScape can process BIL elevation files:
+- Binary elevation data with accompanying header files
+- Commonly used for geographic elevation datasets
+- Automatically converted to PGM format for processing
+- Supports various coordinate systems and projections
+
 ### Output: OBJ (Wavefront)
 ```
 v x1 y1 z1
@@ -221,6 +270,7 @@ TerraScape includes a comprehensive test suite that validates:
 - **Robustness**: Triangle winding consistency, error threshold enforcement
 - **SoS Functionality**: Geometric predicate tie-breaking, degeneracy handling
 - **Integration**: Different refinement strategies, format support
+- **Terrain Data Processing**: GDAL integration, real-world data handling
 
 Run tests with:
 ```bash
@@ -228,6 +278,21 @@ cd build
 ctest --verbose
 # or run the consolidated test suite:
 ./bin/terrascape_tests
+```
+
+### Real Terrain Data Testing
+
+When GDAL is available, additional tests validate real-world terrain processing:
+
+```bash
+# Test with sample terrain data
+./bin/terrain_data_processor
+
+# Run specific terrain data tests
+ctest -R RealTerrainDataTest -V
+
+# Download real Hawaii terrain data for testing
+make download_terrain_data
 ```
 
 ## Known Issues and Limitations

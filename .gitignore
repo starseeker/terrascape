@@ -15,6 +15,18 @@ Makefile
 *.mesh
 core
 
+# Generated terrain data (GDAL feature)
+terrain_data/
+*.bil
+*.hdr
+*.prj
+*.stx
+*.zip
+
+# Generated meshes
+*_mesh.obj
+crater_mesh.obj
+
 # IDE files
 .vscode/
 .idea/
@@ -25,6 +37,9 @@ core
 # OS files
 .DS_Store
 Thumbs.db
+
+# Test artifacts
+/tmp/
 
 # Old documentation and test files (removed during v0.8 cleanup)
 # SoS_README.md - consolidated into main README.md
