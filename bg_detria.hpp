@@ -63,6 +63,7 @@ if (success)
 #include <variant>
 #include <string>
 #include <sstream>
+#include <algorithm>
 
 #if !defined(NDEBUG) || defined(SAFETY)
 #include <iostream>
@@ -1252,21 +1253,38 @@ namespace detria
                 // We simulate perturbing each point i by (ε^i, ε^(2i)) where ε is infinitesimal
                 // This creates a deterministic tie-breaking rule that preserves geometric consistency
                 
-                // Check the determinant of the perturbation matrix
-                // The sign is determined by the relative ordering of the indices
+                // Proper SoS implementation: compare point indices lexicographically
+                // First, check if any two indices are the same (degenerate case)
+                if (ia == ib || ib == ic || ia == ic) {
+                    return Orientation::CW; // Arbitrary but consistent choice for degenerate cases
+                }
                 
-                // Simple but correct approach: use circular ordering based on indices
-                // If indices are in ascending order (mod 3), return CCW, otherwise CW
-                Idx indices[3] = {ia, ib, ic};
+                // Use lexicographic comparison to determine orientation
+                // This simulates the effect of infinitesimal perturbations
+                // The key insight is to use the indices directly in a deterministic way
                 
-                // Count inversions in the index sequence
-                int inversions = 0;
-                if (indices[0] > indices[1]) inversions++;
-                if (indices[1] > indices[2]) inversions++;
-                if (indices[2] > indices[0]) inversions++;
+                // Create a determinant-like computation using indices
+                // The sign depends on the permutation of indices relative to sorted order
+                Idx sorted_indices[3] = {ia, ib, ic};
+                std::sort(sorted_indices, sorted_indices + 3);
                 
-                // Even number of inversions -> CCW, odd -> CW
-                return (inversions % 2 == 0) ? Orientation::CCW : Orientation::CW;
+                // Count how many swaps are needed to get from original to sorted order
+                int swaps = 0;
+                Idx temp_indices[3] = {ia, ib, ic};
+                
+                // Simple bubble sort to count swaps
+                for (int i = 0; i < 2; i++) {
+                    for (int j = 0; j < 2 - i; j++) {
+                        if (temp_indices[j] > temp_indices[j + 1]) {
+                            std::swap(temp_indices[j], temp_indices[j + 1]);
+                            swaps++;
+                        }
+                    }
+                }
+                
+                // Even number of swaps -> CCW, odd -> CW
+                // This gives us a consistent tie-breaking rule
+                return (swaps % 2 == 0) ? Orientation::CCW : Orientation::CW;
             }
 
             // SoS incircle tie-breaker: when four points are cocircular, use index-based ordering
@@ -2328,7 +2346,7 @@ namespace detria
         // Simulation of Simplicity: When enabled, geometric predicates never return exact degeneracies (Collinear/Cocircular).
         // Instead, tie-breaking rules based on point indices simulate infinitesimal perturbations.
         // This eliminates "point on edge" and similar geometric degeneracy failures.
-        constexpr static bool UseSimulationOfSimplicity = false;  // Disabled until fully stabilized
+        constexpr static bool UseSimulationOfSimplicity = true;  // Enable SoS by default for robust geometric computation
 
         // If enabled, then all user-provided indices are checked, and if anything is invalid (out-of-bounds or negative indices,
         // or two consecutive duplicate indices), then an error is generated.

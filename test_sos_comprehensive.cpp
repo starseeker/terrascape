@@ -132,8 +132,7 @@ int main() {
     std::cout << "\n=== Summary ===" << std::endl;
     if (all_tests_passed) {
         std::cout << "✅ All SoS tests passed! Simulation of Simplicity is working correctly." << std::endl;
-        std::cout << "Note: SoS is currently disabled in the main configuration for stability." << std::endl;
-        std::cout << "To enable SoS globally, set UseSimulationOfSimplicity = true in DefaultTriangulationConfig." << std::endl;
+        std::cout << "Note: SoS is now enabled by default for robust geometric computation." << std::endl;
         return 0;
     } else {
         std::cout << "❌ Some SoS tests failed. Implementation needs refinement." << std::endl;
