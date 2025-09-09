@@ -25,3 +25,11 @@ core
 # OS files
 .DS_Store
 Thumbs.db
+
+# Old documentation and test files (removed during v0.8 cleanup)
+# SoS_README.md - consolidated into main README.md
+# ISSUES.md - consolidated into main README.md  
+# test_*_demo.cpp - functionality preserved in terrascape_tests.cpp
+# test_sos_*.cpp - consolidated into terrascape_tests.cpp
+# test_batch_performance.cpp - consolidated into terrascape_tests.cpp
+# test_triangle_winding.cpp - consolidated into terrascape_tests.cpp
