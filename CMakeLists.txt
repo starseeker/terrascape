@@ -100,16 +100,32 @@ if(GDAL_FOUND)
     # Add test for real terrain data processing
     add_test(NAME RealTerrainDataTest COMMAND terrain_data_processor)
     
-    # Custom target to download terrain data
+    # Custom target to download and extract Hawaii BigIsland terrain data
+    add_custom_target(download_hawaii_bigisland
+        COMMAND ${CMAKE_COMMAND} -E echo "Downloading Hawaii BigIsland terrain data..."
+        COMMAND ${CMAKE_BINARY_DIR}/bin/terrain_data_processor --download-only
+        COMMAND ${CMAKE_COMMAND} -E echo "Extracting bigisland.zip..."
+        COMMAND ${CMAKE_COMMAND} -E chdir ${CMAKE_BINARY_DIR}/terrain_data tar xf bigisland.zip
+        DEPENDS terrain_data_processor
+        COMMENT "Downloading and extracting Hawaii BigIsland terrain data for real terrain testing"
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    
+    # Custom target to download all terrain data
     add_custom_target(download_terrain_data
         COMMAND ${CMAKE_BINARY_DIR}/bin/terrain_data_processor --download-only
         DEPENDS terrain_data_processor
         COMMENT "Downloading Hawaii terrain data for testing"
     )
     
+    # Make hawaii_bigisland_test depend on terrain data when GDAL is available
+    add_dependencies(hawaii_bigisland_test terrain_data_processor)
+    
     message(STATUS "GDAL terrain processing features enabled")
-    message(STATUS "  - Use 'make download_terrain_data' to download Hawaii terrain files")
+    message(STATUS "  - Use 'make download_hawaii_bigisland' to download and extract BigIsland terrain data")
+    message(STATUS "  - Use 'make download_terrain_data' to download all Hawaii terrain files")
     message(STATUS "  - Run 'ctest -R RealTerrainDataTest' to test with real terrain data")
+    message(STATUS "  - Run 'ctest -R HawaiiBigIslandPerformanceTest' to test BigIsland performance with real data")
 endif()
 
 # Additional tests can be added here if needed
