@@ -412,13 +412,14 @@ void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, cons
                         static_cast<float>(width-1), static_cast<float>(height-1));
     
     // Use aggressive sampling for large grids to avoid memory explosion
-    int max_initial_candidates = 25000; // Limit initial candidates
+    int max_initial_candidates = 10000; // Reduce further for stability
     int sample_step = 1;
     
     // Calculate sampling step to stay under limit
     int total_points = width * height;
     if (total_points > max_initial_candidates) {
         sample_step = static_cast<int>(std::sqrt(static_cast<double>(total_points) / max_initial_candidates));
+        sample_step = std::max(2, sample_step); // Minimum step of 2 for large grids
     }
     
     // Ensure triangulation is up to date
@@ -552,8 +553,18 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
         
         // Retriangulate once for the entire batch
         if (!triangulation_manager_->retriangulate()) {
-            std::cerr << "Warning: Retriangulation failed after adding batch of " << batch_candidates.size() << " points\n";
-            break;
+            std::cerr << "Warning: Retriangulation failed after adding batch of " << batch_candidates.size() << " points" << std::endl;
+            std::cerr << "Implementing progressive fallback strategy..." << std::endl;
+            
+            // Progressive fallback: try smaller batches or reduce point density
+            if (batch_size_ > 8) {
+                batch_size_ = std::max(4, batch_size_ / 2); // Reduce batch size
+                std::cout << "Reduced batch size to " << batch_size_ << " for stability" << std::endl;
+            } else {
+                // If batch size is already small, stop adding points to preserve stability
+                std::cout << "Stopping point insertion to maintain triangulation stability" << std::endl;
+                break;
+            }
         }
         
         points_added += batch_candidates.size();
@@ -577,13 +588,18 @@ void GreedyMeshRefiner::updateAffectedCandidates(int width, int height, const T*
     total_candidate_updates_++;
     
     // Use much smaller, more targeted radius to reduce update overhead
-    float search_radius = std::min(8.0f, std::max(width, height) / 40.0f);
+    float search_radius = std::min(6.0f, std::max(width, height) / 60.0f); // Reduced further
+    
+    // Cap the number of candidates to update per insertion for stability
+    int max_updates_per_insertion = 50;
     
     // Use spatial index for efficient lookup
     auto affected_keys = spatial_index_.getCandidatesInRadius(inserted_x, inserted_y, search_radius);
     
     int updated_count = 0;
     for (int key : affected_keys) {
+        if (updated_count >= max_updates_per_insertion) break; // Safety limit
+        
         auto it = grid_candidates_.find(key);
         if (it != grid_candidates_.end()) {
             // Check distance more precisely to avoid unnecessary updates
