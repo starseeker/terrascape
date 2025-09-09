@@ -14,36 +14,15 @@ add_definitions(-DSAFETY)
 # Create the terrascape_demo executable (using TerraScape.hpp with detria)
 add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp)
 
-# Create the new grid mesh test executable (using TerraScape.hpp with detria)
-add_executable(test_gridmesh test_gridmesh.cpp TerraScapeImpl.cpp)
-
-# Create the new detria integration test
-add_executable(test_detria_integration test_detria_integration.cpp TerraScapeImpl.cpp)
-
-# Create focused correctness tests  
-add_executable(test_correctness_fixes test_correctness_fixes.cpp TerraScapeImpl.cpp)
-
 # Create consolidated comprehensive test suite
 add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp)
 
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(test_gridmesh PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(test_detria_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(test_correctness_fixes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Set output directory
 set_target_properties(terrascape_demo PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(test_gridmesh PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(test_detria_integration PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(test_correctness_fixes PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 set_target_properties(terrascape_tests PROPERTIES
@@ -51,9 +30,7 @@ set_target_properties(terrascape_tests PROPERTIES
 )
 
 # Install targets
-install(TARGETS terrascape_demo test_gridmesh test_detria_integration test_correctness_fixes terrascape_tests DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests DESTINATION bin)
 
 # Add CTest tests
-add_test(NAME CorrectnessFixesTest COMMAND test_correctness_fixes)
-add_test(NAME DetriaIntegrationTest COMMAND test_detria_integration)
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
