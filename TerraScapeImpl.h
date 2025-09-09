@@ -121,6 +121,22 @@ public:
         }
     };
     
+    // Spatial acceleration for candidate management
+    struct CandidateSpatialIndex {
+        float minX, minY, maxX, maxY;
+        int gridWidth, gridHeight;
+        float cellWidth, cellHeight;
+        std::vector<std::vector<std::vector<int>>> grid; // grid[y][x] = list of candidate keys
+        bool is_built;
+        
+        CandidateSpatialIndex() : is_built(false) {}
+        
+        void build(int grid_w, int grid_h, float min_x, float min_y, float max_x, float max_y);
+        void addCandidate(int key, float x, float y);
+        std::vector<int> getCandidatesInRadius(float x, float y, float radius) const;
+        void clear();
+    };
+    
 private:
     DetriaTriangulationManager* triangulation_manager_;
     std::priority_queue<CandidatePoint> candidate_heap_;
@@ -128,37 +144,62 @@ private:
     int point_limit_;
     int batch_size_;  // Number of points to add before retriangulation
     
-    // For true incremental insertion: track candidates by grid position
+    // Improved candidate management with spatial indexing
     std::unordered_map<int, CandidatePoint> grid_candidates_; // key = y*width + x
     std::unordered_set<int> inserted_keys_; // Guard against duplicate point insertion
+    CandidateSpatialIndex spatial_index_; // Spatial acceleration for candidates
     int grid_width_, grid_height_;
+    
+    // Performance monitoring
+    mutable size_t total_candidate_updates_;
+    mutable size_t total_error_calculations_;
     
 public:
     GreedyMeshRefiner(DetriaTriangulationManager* manager, 
                      float error_threshold, int point_limit, int batch_size = 32);
     
     /**
-     * Initialize candidates from grid (but don't add all to heap immediately)
+     * Initialize candidates from grid using lazy loading strategy
+     * Only loads candidates in high-error regions initially
      */
     template<typename T>
     void initializeCandidatesFromGrid(int width, int height, const T* elevations);
     
     /**
-     * Perform TRUE incremental greedy refinement:
-     * - Find best candidate
-     * - Insert single point
-     * - Update only affected candidates
-     * - Repeat until done
+     * Lazily generate candidates around high-error regions
+     */
+    template<typename T>
+    void generateCandidatesInRegion(int width, int height, const T* elevations, 
+                                   int min_x, int min_y, int max_x, int max_y);
+    
+    /**
+     * Perform optimized incremental greedy refinement with smart candidate updates
      */
     template<typename T>
     int refineIncrementally(int width, int height, const T* elevations);
     
     /**
-     * Update candidate errors for triangles affected by the last point insertion
+     * Smart candidate update that only affects nearby candidates
      */
     template<typename T>
     void updateAffectedCandidates(int width, int height, const T* elevations, 
                                  float inserted_x, float inserted_y);
+    
+    /**
+     * Get performance statistics
+     */
+    void getPerformanceStats(size_t& updates, size_t& calculations) const {
+        updates = total_candidate_updates_;
+        calculations = total_error_calculations_;
+    }
+    
+    /**
+     * Reset performance counters
+     */
+    void resetPerformanceStats() {
+        total_candidate_updates_ = 0;
+        total_error_calculations_ = 0;
+    }
     
     /**
      * Get the current best candidate without removing it

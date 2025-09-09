@@ -148,14 +148,14 @@ MeshResult grid_to_mesh(
     if (strategy == MeshRefineStrategy::AUTO) {
         size_t grid_size = size_t(width) * size_t(height);
         size_t avail_ram = get_available_ram_bytes();
-        // Estimate: Each heap entry ~32 bytes; threshold = 0.5GB
+        // More conservative memory estimation for stability
         size_t heap_mem_needed = grid_size * 32;
-        if (grid_size <= 500000 && heap_mem_needed < avail_ram / 2) {
+        if (grid_size <= 50000 && heap_mem_needed < avail_ram / 4) {  // Very small grids only
             strategy = MeshRefineStrategy::HEAP;
-        } else if (grid_size < 5000000) {
+        } else if (grid_size < 200000) {  // Reduced threshold for stability
             strategy = MeshRefineStrategy::HYBRID;
         } else {
-            strategy = MeshRefineStrategy::SPARSE;
+            strategy = MeshRefineStrategy::SPARSE;  // Use SPARSE for large datasets
         }
     }
     
