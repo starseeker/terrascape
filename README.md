@@ -11,6 +11,7 @@ TerraScape provides efficient grid-to-mesh conversion with robust geometric algo
 - **Advanced Delaunay Triangulation**: Uses robust geometric predicates and half-edge topology management
 - **Greedy Error-Driven Refinement**: Iteratively adds points where they reduce approximation error most
 - **Multiple Refinement Strategies**: AUTO, HEAP, HYBRID, and SPARSE modes for different use cases
+- **Simulation of Simplicity (SoS)**: Robust handling of geometric degeneracies (experimental)
 - **Template-Based API**: Works with float, double, or any numeric elevation type
 - **Modern C++**: Clean C++17 implementation with STL containers
 - **Cross-Platform**: Builds on Windows, Linux, and macOS
@@ -57,17 +58,11 @@ auto mesh = TerraScape::grid_to_mesh(
 ### Demo Applications
 
 ```bash
-# Basic grid-to-mesh conversion
+# Main demo application
 ./build/bin/terrascape_demo
 
-# Test different refinement strategies
-./build/bin/test_detria_integration
-
-# Demonstrate incremental insertion
-./build/bin/test_incremental_demo
-
-# Basic functionality test
-./build/bin/test_gridmesh
+# Comprehensive test suite
+./build/bin/terrascape_tests
 ```
 
 ## API Reference
@@ -126,6 +121,42 @@ TerraScape uses a two-layer architecture:
 - **Progressive Fallback**: Graceful handling of triangulation limits
 - **Memory Management**: Automatic strategy selection based on available RAM
 
+## Simulation of Simplicity (SoS)
+
+TerraScape includes experimental support for Simulation of Simplicity to handle geometric degeneracies robustly.
+
+### Features
+
+- **SoS Geometric Predicates**: Eliminates exact collinear/cocircular cases through deterministic tie-breaking
+- **Index-Based Tie-Breaking**: Uses point indices to simulate infinitesimal perturbations
+- **Configurable**: Can be enabled per-triangulation instance
+- **Backward Compatible**: Disabled by default, existing functionality unaffected
+
+### Usage
+
+```cpp
+// Custom config with SoS enabled
+template<typename Point, typename Idx>
+struct SoSTriangulationConfig : public detria::DefaultTriangulationConfig<Point, Idx> {
+    constexpr static bool UseSimulationOfSimplicity = true;
+};
+
+// Use SoS-enabled triangulation
+detria::Triangulation<detria::PointD, uint32_t, SoSTriangulationConfig<detria::PointD, uint32_t>> tri;
+```
+
+### Current Status
+
+**Working Features:**
+- SoS framework fully implemented and functional
+- Basic triangulations with collinear points work correctly
+- Deterministic and consistent tie-breaking
+
+**Known Limitations:**
+- Complex scenarios with multiple degeneracies can cause issues
+- Disabled by default for stability
+- Requires further testing for production use
+
 ## Core Concepts from Original Papers
 
 ### From Scape (1995)
@@ -178,8 +209,34 @@ f v4 v5 v6
 ...
 ```
 
+## Testing
+
+TerraScape includes a comprehensive test suite that validates:
+
+- **Correctness**: Triangulation versioning, duplicate prevention, deterministic behavior
+- **Performance**: Batch insertion efficiency, spatial acceleration
+- **Robustness**: Triangle winding consistency, error threshold enforcement
+- **SoS Functionality**: Geometric predicate tie-breaking, degeneracy handling
+- **Integration**: Different refinement strategies, format support
+
+Run tests with:
+```bash
+cd build
+ctest --verbose
+# or run the consolidated test suite:
+./bin/terrascape_tests
+```
+
+## Known Issues and Limitations
+
+1. **Triangulation Robustness**: Some edge cases can cause "Point on constrained edge" failures
+2. **Memory Usage**: Large grids may require significant RAM for HEAP strategy
+3. **SoS Integration**: Experimental feature, not recommended for production use
+4. **Binary PGM**: Currently only textual PGM format supported
+
 ## Version History
 
+- **v0.8**: Documentation consolidation, test suite unification, SoS integration
 - **v0.7**: TerraScape refactoring with consolidated API and improved naming
 - **v0.6**: Detria integration with robust Delaunay triangulation
 - **v0.5**: Incremental insertion implementation
@@ -203,6 +260,8 @@ The core insight from the original papers remains valid: greedy insertion based 
 ## References
 
 - Garland, M. and Heckbert, P. "Fast Polygonal Approximation of Terrains and Height Fields" (CMU-CS-95-181, 1995)
+- Edelsbrunner, H. & Mücke, E.P. "Simulation of Simplicity: A Technique to Cope with Degenerate Cases in Geometric Algorithms"
+- Shewchuk, J.R. "Robust Adaptive Floating-Point Geometric Predicates"
 - Original Terra software: http://www.cs.cmu.edu/~garland/scape/
 
 ## Contributing
