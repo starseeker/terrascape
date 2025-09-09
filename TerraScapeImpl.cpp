@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iostream>
 #include <unordered_map>
+#include <chrono>
 
 namespace TerraScape {
 
@@ -341,7 +342,57 @@ GreedyMeshRefiner::GreedyMeshRefiner(DetriaTriangulationManager* manager,
     , point_limit_(point_limit)
     , batch_size_(batch_size)
     , grid_width_(0)
-    , grid_height_(0) {
+    , grid_height_(0)
+    , total_candidate_updates_(0)
+    , total_error_calculations_(0) {
+}
+
+// CandidateSpatialIndex implementation
+void GreedyMeshRefiner::CandidateSpatialIndex::build(int grid_w, int grid_h, 
+                                                    float min_x, float min_y, float max_x, float max_y) {
+    gridWidth = std::max(8, std::min(64, grid_w / 16)); // Adaptive grid size
+    gridHeight = std::max(8, std::min(64, grid_h / 16));
+    minX = min_x;
+    minY = min_y;
+    maxX = max_x;
+    maxY = max_y;
+    cellWidth = (maxX - minX) / gridWidth;
+    cellHeight = (maxY - minY) / gridHeight;
+    
+    grid.assign(gridHeight, std::vector<std::vector<int>>(gridWidth));
+    is_built = true;
+}
+
+void GreedyMeshRefiner::CandidateSpatialIndex::addCandidate(int key, float x, float y) {
+    if (!is_built) return;
+    
+    int cellX = std::max(0, std::min(gridWidth - 1, static_cast<int>((x - minX) / cellWidth)));
+    int cellY = std::max(0, std::min(gridHeight - 1, static_cast<int>((y - minY) / cellHeight)));
+    
+    grid[cellY][cellX].push_back(key);
+}
+
+std::vector<int> GreedyMeshRefiner::CandidateSpatialIndex::getCandidatesInRadius(float x, float y, float radius) const {
+    std::vector<int> result;
+    if (!is_built) return result;
+    
+    int min_cellX = std::max(0, static_cast<int>((x - radius - minX) / cellWidth));
+    int max_cellX = std::min(gridWidth - 1, static_cast<int>((x + radius - minX) / cellWidth));
+    int min_cellY = std::max(0, static_cast<int>((y - radius - minY) / cellHeight));
+    int max_cellY = std::min(gridHeight - 1, static_cast<int>((y + radius - minY) / cellHeight));
+    
+    for (int cy = min_cellY; cy <= max_cellY; ++cy) {
+        for (int cx = min_cellX; cx <= max_cellX; ++cx) {
+            result.insert(result.end(), grid[cy][cx].begin(), grid[cy][cx].end());
+        }
+    }
+    
+    return result;
+}
+
+void GreedyMeshRefiner::CandidateSpatialIndex::clear() {
+    grid.clear();
+    is_built = false;
 }
 
 template<typename T>
@@ -352,6 +403,23 @@ void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, cons
     // Clear existing data
     grid_candidates_.clear();
     candidate_heap_ = std::priority_queue<CandidatePoint>();
+    spatial_index_.clear();
+    
+    std::cout << "Starting optimized incremental point insertion" << std::endl;
+    
+    // Build spatial index for candidates
+    spatial_index_.build(width, height, 0.0f, 0.0f, 
+                        static_cast<float>(width-1), static_cast<float>(height-1));
+    
+    // Use aggressive sampling for large grids to avoid memory explosion
+    int max_initial_candidates = 25000; // Limit initial candidates
+    int sample_step = 1;
+    
+    // Calculate sampling step to stay under limit
+    int total_points = width * height;
+    if (total_points > max_initial_candidates) {
+        sample_step = static_cast<int>(std::sqrt(static_cast<double>(total_points) / max_initial_candidates));
+    }
     
     // Ensure triangulation is up to date
     if (!triangulation_manager_->retriangulate()) {
@@ -359,26 +427,50 @@ void GreedyMeshRefiner::initializeCandidatesFromGrid(int width, int height, cons
         return;
     }
     
-    // Initialize all grid candidates but only add viable ones to heap
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            // Skip corner points (already in triangulation)
-            bool is_corner = (x == 0 || x == width - 1) && (y == 0 || y == height - 1);
-            if (is_corner) continue;
-            
+    int active_candidates = 0;
+    
+    // Generate initial candidate set with smart sampling
+    for (int y = sample_step; y < height - sample_step; y += sample_step) {
+        for (int x = sample_step; x < width - sample_step; x += sample_step) {
             CandidatePoint candidate = createCandidateFromGrid(x, y, width, height, elevations);
+            
             int key = y * width + x;
             grid_candidates_[key] = candidate;
+            spatial_index_.addCandidate(key, candidate.world_x, candidate.world_y);
             
-            // Add to heap if error is significant
+            // Only add to heap if error is significant
+            if (candidate.error > error_threshold_) {
+                candidate_heap_.push(candidate);
+                active_candidates++;
+            }
+        }
+    }
+    
+    std::cout << "Initialized " << grid_candidates_.size() << " grid candidates (step=" << sample_step 
+              << "), " << active_candidates << " in active heap" << std::endl;
+}
+
+template<typename T>
+void GreedyMeshRefiner::generateCandidatesInRegion(int width, int height, const T* elevations,
+                                                  int min_x, int min_y, int max_x, int max_y) {
+    // Generate additional candidates in a specific region when needed
+    for (int y = min_y; y <= max_y; ++y) {
+        for (int x = min_x; x <= max_x; ++x) {
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            int key = y * width + x;
+            if (grid_candidates_.find(key) != grid_candidates_.end()) continue; // Already exists
+            if (inserted_keys_.find(key) != inserted_keys_.end()) continue; // Already inserted
+            
+            CandidatePoint candidate = createCandidateFromGrid(x, y, width, height, elevations);
+            grid_candidates_[key] = candidate;
+            spatial_index_.addCandidate(key, candidate.world_x, candidate.world_y);
+            
             if (candidate.error > error_threshold_) {
                 candidate_heap_.push(candidate);
             }
         }
     }
-    
-    std::cout << "Initialized " << grid_candidates_.size() << " grid candidates, " 
-              << candidate_heap_.size() << " in active heap\n";
 }
 
 template<typename T>
@@ -482,38 +574,59 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
 template<typename T>
 void GreedyMeshRefiner::updateAffectedCandidates(int width, int height, const T* elevations, 
                                                 float inserted_x, float inserted_y) {
-    // Find grid points that might be affected by this insertion
-    // Use a reasonable search radius based on typical triangle sizes
-    float search_radius = std::max(width, height) / 20.0f;
-    auto affected_points = findAffectedGridPoints(inserted_x, inserted_y, search_radius);
+    total_candidate_updates_++;
+    
+    // Use much smaller, more targeted radius to reduce update overhead
+    float search_radius = std::min(8.0f, std::max(width, height) / 40.0f);
+    
+    // Use spatial index for efficient lookup
+    auto affected_keys = spatial_index_.getCandidatesInRadius(inserted_x, inserted_y, search_radius);
     
     int updated_count = 0;
-    for (const auto& grid_point : affected_points) {
-        int x = grid_point.first;
-        int y = grid_point.second;
-        int key = y * width + x;
-        
+    for (int key : affected_keys) {
         auto it = grid_candidates_.find(key);
         if (it != grid_candidates_.end()) {
-            // Recalculate this candidate's error
-            CandidatePoint updated = createCandidateFromGrid(x, y, width, height, elevations);
-            it->second = updated;
-            it->second.needs_update = false;
+            // Check distance more precisely to avoid unnecessary updates
+            float dx = it->second.world_x - inserted_x;
+            float dy = it->second.world_y - inserted_y;
+            float distance_sq = dx * dx + dy * dy;
             
-            // Add to heap if error is still significant
-            if (updated.error > error_threshold_) {
-                candidate_heap_.push(updated);
+            // Only update if really close to the insertion point
+            if (distance_sq <= search_radius * search_radius) {
+                // Recalculate this candidate's error
+                CandidatePoint updated = createCandidateFromGrid(it->second.x, it->second.y, width, height, elevations);
+                it->second = updated;
+                it->second.needs_update = false;
+                
+                // Add to heap if error is still significant
+                if (updated.error > error_threshold_) {
+                    candidate_heap_.push(updated);
+                }
+                updated_count++;
             }
-            updated_count++;
         }
     }
     
-    std::cout << "Updated " << updated_count << " affected candidates\n";
+    // Generate additional candidates in the immediate vicinity if needed
+    if (updated_count < 10) { // If very few candidates were affected, generate more
+        int region_size = 3; // Small region around insertion point
+        generateCandidatesInRegion(width, height, elevations,
+                                 static_cast<int>(inserted_x) - region_size,
+                                 static_cast<int>(inserted_y) - region_size,
+                                 static_cast<int>(inserted_x) + region_size,
+                                 static_cast<int>(inserted_y) + region_size);
+    }
+    
+    if (updated_count > 0) {
+        std::cout << "Updated " << updated_count << " affected candidates" << std::endl;
+    }
 }
 
 template<typename T>
 GreedyMeshRefiner::CandidatePoint GreedyMeshRefiner::createCandidateFromGrid(int x, int y, int width, int height, 
                                                          const T* elevations) {
+    total_error_calculations_++;
+    
     CandidatePoint candidate;
     candidate.x = x;
     candidate.y = y;
@@ -691,8 +804,8 @@ MeshResult grid_to_mesh_detria(
         std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
                   << " total points\n";
     } else {
-        // HEAP and HYBRID: Use TRUE incremental insertion with error-driven selection
-        std::cout << "Starting TRUE incremental point insertion for error-driven strategy\n";
+        // HEAP and HYBRID: Use optimized incremental insertion with error-driven selection
+        auto start_time = std::chrono::high_resolution_clock::now();
         
         // Initialize all candidates from grid
         refiner->initializeCandidatesFromGrid(width, height, elevations);
@@ -700,8 +813,18 @@ MeshResult grid_to_mesh_detria(
         // Perform incremental refinement
         int points_added = refiner->refineIncrementally(width, height, elevations);
         
-        std::cout << "TRUE incremental insertion completed. Added " << points_added 
-                  << " points incrementally.\n";
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        
+        // Get performance statistics
+        size_t updates, calculations;
+        refiner->getPerformanceStats(updates, calculations);
+        
+        std::cout << "Optimized incremental insertion completed in " << duration.count() << "ms" << std::endl;
+        std::cout << "Added " << points_added << " points with " << calculations 
+                  << " error calculations and " << updates << " candidate updates" << std::endl;
+        std::cout << "Performance: " << (calculations > 0 ? static_cast<double>(points_added) / calculations * 100 : 0) 
+                  << "% efficiency (points/calculations)" << std::endl;
     }
     
     // Convert to final mesh result
