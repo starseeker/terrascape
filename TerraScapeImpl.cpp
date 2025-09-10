@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <map>
+#include <set>
 #include <tuple>
 
 namespace TerraScape {
@@ -932,47 +933,55 @@ VolumetricMeshResult make_volumetric_mesh_separated(const MeshResult& surface_me
     
     const float epsilon = 1e-6f;  // Tolerance for height comparison
     
-    // Analyze surface vertices to categorize triangles
-    std::vector<bool> vertex_above_base(surface_mesh.vertices.size());
-    std::vector<bool> vertex_below_base(surface_mesh.vertices.size());
-    std::vector<bool> vertex_at_base(surface_mesh.vertices.size());
-    
-    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
-        float height_diff = surface_mesh.vertices[i].z - z_base;
-        vertex_above_base[i] = height_diff > epsilon;
-        vertex_below_base[i] = height_diff < -epsilon;
-        vertex_at_base[i] = std::abs(height_diff) <= epsilon;
-    }
-    
-    // Separate triangles into positive, negative, and degenerate categories
+    // Separate triangles based on their centroid height relative to z_base
     std::vector<Triangle> positive_triangles, negative_triangles;
     
     for (const Triangle& tri : surface_mesh.triangles) {
-        bool v0_above = vertex_above_base[tri.v0];
-        bool v1_above = vertex_above_base[tri.v1]; 
-        bool v2_above = vertex_above_base[tri.v2];
+        // Calculate triangle centroid
+        const Vertex& v0 = surface_mesh.vertices[tri.v0];
+        const Vertex& v1 = surface_mesh.vertices[tri.v1];
+        const Vertex& v2 = surface_mesh.vertices[tri.v2];
         
-        bool v0_below = vertex_below_base[tri.v0];
-        bool v1_below = vertex_below_base[tri.v1];
-        bool v2_below = vertex_below_base[tri.v2];
+        float centroid_z = (v0.z + v1.z + v2.z) / 3.0f;
+        float height_diff = centroid_z - z_base;
         
-        bool all_above = v0_above && v1_above && v2_above;
-        bool all_below = v0_below && v1_below && v2_below;
-        
-        if (all_above) {
+        if (height_diff > epsilon) {
             positive_triangles.push_back(tri);
-        } else if (all_below) {
+        } else if (height_diff < -epsilon) {
             negative_triangles.push_back(tri);
         }
-        // Skip triangles that span the base level (mixed or at base level) to avoid degeneracies
+        // Skip triangles at exactly the base level (height_diff within epsilon) to avoid degeneracies
     }
     
     // Create positive volume mesh if we have positive triangles
     if (!positive_triangles.empty()) {
-        // Create a surface mesh with only positive triangles
+        // Create a surface mesh with only positive triangles and their vertices
         MeshResult positive_surface;
-        positive_surface.vertices = surface_mesh.vertices;
-        positive_surface.triangles = positive_triangles;
+        
+        // Find all vertices used by positive triangles
+        std::set<int> positive_vertex_indices;
+        for (const Triangle& tri : positive_triangles) {
+            positive_vertex_indices.insert(tri.v0);
+            positive_vertex_indices.insert(tri.v1);
+            positive_vertex_indices.insert(tri.v2);
+        }
+        
+        // Create vertex mapping from old indices to new indices
+        std::map<int, int> vertex_mapping;
+        for (int old_idx : positive_vertex_indices) {
+            int new_idx = static_cast<int>(positive_surface.vertices.size());
+            vertex_mapping[old_idx] = new_idx;
+            positive_surface.vertices.push_back(surface_mesh.vertices[old_idx]);
+        }
+        
+        // Remap triangles to use new vertex indices
+        for (const Triangle& tri : positive_triangles) {
+            positive_surface.triangles.push_back({
+                vertex_mapping[tri.v0],
+                vertex_mapping[tri.v1],
+                vertex_mapping[tri.v2]
+            });
+        }
         
         // Generate positive volumetric mesh using existing logic
         result.positive_volume = make_volumetric_mesh(positive_surface, z_base);
@@ -981,10 +990,33 @@ VolumetricMeshResult make_volumetric_mesh_separated(const MeshResult& surface_me
     
     // Create negative volume mesh if we have negative triangles
     if (!negative_triangles.empty()) {
-        // Create a surface mesh with only negative triangles
+        // Create a surface mesh with only negative triangles and their vertices
         MeshResult negative_surface;
-        negative_surface.vertices = surface_mesh.vertices;
-        negative_surface.triangles = negative_triangles;
+        
+        // Find all vertices used by negative triangles
+        std::set<int> negative_vertex_indices;
+        for (const Triangle& tri : negative_triangles) {
+            negative_vertex_indices.insert(tri.v0);
+            negative_vertex_indices.insert(tri.v1);
+            negative_vertex_indices.insert(tri.v2);
+        }
+        
+        // Create vertex mapping from old indices to new indices
+        std::map<int, int> vertex_mapping;
+        for (int old_idx : negative_vertex_indices) {
+            int new_idx = static_cast<int>(negative_surface.vertices.size());
+            vertex_mapping[old_idx] = new_idx;
+            negative_surface.vertices.push_back(surface_mesh.vertices[old_idx]);
+        }
+        
+        // Remap triangles to use new vertex indices
+        for (const Triangle& tri : negative_triangles) {
+            negative_surface.triangles.push_back({
+                vertex_mapping[tri.v0],
+                vertex_mapping[tri.v1],
+                vertex_mapping[tri.v2]
+            });
+        }
         
         // Generate negative volumetric mesh with reversed normals
         result.negative_volume.is_volumetric = true;

@@ -40,12 +40,16 @@ add_executable(volumetric_test volumetric_test.cpp TerraScapeImpl.cpp terrain_da
 # Create separated volumetric mesh test
 add_executable(volumetric_separated_test volumetric_separated_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
 
+# Create separated volumetric mesh example
+add_executable(volumetric_separated_example volumetric_separated_example.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(hawaii_bigisland_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(volumetric_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(volumetric_separated_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(volumetric_separated_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -82,6 +86,9 @@ set_target_properties(volumetric_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 set_target_properties(volumetric_separated_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+set_target_properties(volumetric_separated_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
