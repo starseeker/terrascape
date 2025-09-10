@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <map>
 #include "TerraScape.hpp"
 #include "TerraScapeImpl.h"
 #include "bg_detria.hpp"
@@ -40,6 +41,7 @@ private:
         "Performance Tests",
         "Simulation of Simplicity Tests",
         "Integration Tests",
+        "Volumetric Mesh Tests",
         "Terrain Data Tests"
     };
 
@@ -661,6 +663,98 @@ bool test_synthetic_bigisland_terrain() {
 }
 
 // =============================================================================
+// Volumetric Mesh Tests
+// =============================================================================
+
+bool test_volumetric_mesh_basic() {
+    // Test basic volumetric mesh generation
+    const int width = 5, height = 5;
+    std::vector<float> elevations(width * height);
+    
+    // Create a simple hill
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float dx = x - 2.0f;
+            float dy = y - 2.0f;
+            elevations[y * width + x] = 5.0f - std::sqrt(dx*dx + dy*dy);
+        }
+    }
+    
+    // Generate surface mesh
+    auto surface_mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
+                                               0.1f, 1000, TerraScape::MeshRefineStrategy::HEAP);
+    
+    // Generate volumetric mesh
+    float z_base = 0.0f;
+    auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(),
+                                                              z_base, 0.1f, 1000, 
+                                                              TerraScape::MeshRefineStrategy::HEAP);
+    
+    // Verify volumetric properties
+    bool has_correct_vertices = volumetric_mesh.vertices.size() == 2 * surface_mesh.vertices.size();
+    bool is_flagged_volumetric = volumetric_mesh.is_volumetric;
+    bool has_more_triangles = volumetric_mesh.triangles.size() > surface_mesh.triangles.size();
+    
+    return has_correct_vertices && is_flagged_volumetric && has_more_triangles;
+}
+
+bool test_volumetric_mesh_manifold() {
+    // Test that volumetric mesh is manifold (each edge shared by exactly 2 triangles)
+    const int width = 4, height = 4;
+    std::vector<float> elevations(width * height, 1.0f); // Flat plane
+    
+    auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(), 0.0f);
+    
+    // Count edge occurrences
+    std::map<TerraScape::Edge, int> edge_count;
+    for (const auto& tri : volumetric_mesh.triangles) {
+        edge_count[TerraScape::Edge(tri.v0, tri.v1)]++;
+        edge_count[TerraScape::Edge(tri.v1, tri.v2)]++;
+        edge_count[TerraScape::Edge(tri.v2, tri.v0)]++;
+    }
+    
+    // Check manifold condition: each edge appears exactly twice
+    bool is_manifold = true;
+    for (const auto& [edge, count] : edge_count) {
+        if (count != 2) {
+            is_manifold = false;
+            break;
+        }
+    }
+    
+    return is_manifold;
+}
+
+bool test_volumetric_mesh_base_level() {
+    // Test different base levels
+    const int width = 3, height = 3;
+    std::vector<float> elevations(width * height);
+    
+    // Create simple pyramid
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            elevations[y * width + x] = 5.0f - std::max(std::abs(x - 1), std::abs(y - 1));
+        }
+    }
+    
+    float z_base = -10.0f;
+    auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(), z_base);
+    
+    // Check that base vertices have correct z-coordinate
+    size_t surface_vertex_count = volumetric_mesh.vertices.size() / 2;
+    bool correct_base_level = true;
+    
+    for (size_t i = surface_vertex_count; i < volumetric_mesh.vertices.size(); ++i) {
+        if (std::abs(volumetric_mesh.vertices[i].z - z_base) > 1e-6f) {
+            correct_base_level = false;
+            break;
+        }
+    }
+    
+    return correct_base_level;
+}
+
+// =============================================================================
 // Main Test Runner
 // =============================================================================
 
@@ -708,8 +802,14 @@ int main() {
     suite.addTest(test_strategy_integration(), "Strategy Integration");
     suite.addTest(test_large_grid_handling(), "Large Grid Handling");
     
-    // Terrain Data Tests
+    // Volumetric Mesh Tests
     suite.beginCategory(5);
+    suite.addTest(test_volumetric_mesh_basic(), "Volumetric Mesh Basic Functionality");
+    suite.addTest(test_volumetric_mesh_manifold(), "Volumetric Mesh Manifold Property");
+    suite.addTest(test_volumetric_mesh_base_level(), "Volumetric Mesh Base Level");
+    
+    // Terrain Data Tests
+    suite.beginCategory(6);
     suite.addTest(test_terrain_data_utilities(), "Terrain Data Utilities");
     suite.addTest(test_sample_terrain_generation(), "Sample Terrain Generation");
     suite.addTest(test_synthetic_bigisland_terrain(), "Synthetic BigIsland Terrain");

@@ -5,6 +5,8 @@
 #include <iostream>
 #include <unordered_map>
 #include <chrono>
+#include <map>
+#include <tuple>
 
 namespace TerraScape {
 
@@ -851,5 +853,98 @@ MeshResult grid_to_mesh_detria(
 template MeshResult grid_to_mesh_detria<float>(int width, int height, const float* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<double>(int width, int height, const double* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<int>(int width, int height, const int* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+
+// === Volumetric Mesh Generation Implementation ===
+
+std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles) {
+    std::map<Edge, int> edge_count;
+    
+    // Count occurrences of each edge
+    for (const Triangle& tri : triangles) {
+        edge_count[Edge(tri.v0, tri.v1)]++;
+        edge_count[Edge(tri.v1, tri.v2)]++;
+        edge_count[Edge(tri.v2, tri.v0)]++;
+    }
+    
+    // Boundary edges appear exactly once
+    std::vector<Edge> boundary_edges;
+    for (const auto& [edge, count] : edge_count) {
+        if (count == 1) {
+            boundary_edges.push_back(edge);
+        }
+    }
+    
+    return boundary_edges;
+}
+
+MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_base) {
+    MeshResult volumetric_result;
+    volumetric_result.is_volumetric = true;
+    
+    // Copy surface vertices
+    volumetric_result.vertices = surface_mesh.vertices;
+    
+    // Create base vertices (same x,y but z = z_base)
+    std::vector<int> base_vertex_mapping(surface_mesh.vertices.size());
+    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
+        const Vertex& surface_vertex = surface_mesh.vertices[i];
+        Vertex base_vertex = {surface_vertex.x, surface_vertex.y, z_base};
+        base_vertex_mapping[i] = static_cast<int>(volumetric_result.vertices.size());
+        volumetric_result.vertices.push_back(base_vertex);
+    }
+    
+    // Copy surface triangles (maintain orientation)
+    volumetric_result.triangles = surface_mesh.triangles;
+    
+    // Find boundary edges
+    std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
+    
+    // Create side faces connecting surface boundary to base boundary
+    for (const Edge& edge : boundary_edges) {
+        int surface_v0 = edge.v0;
+        int surface_v1 = edge.v1;
+        int base_v0 = base_vertex_mapping[surface_v0];
+        int base_v1 = base_vertex_mapping[surface_v1];
+        
+        // Create two triangles to form a quad face
+        // Triangle 1: surface_v0 -> surface_v1 -> base_v0 (CCW when viewed from outside)
+        volumetric_result.triangles.push_back({surface_v0, surface_v1, base_v0});
+        
+        // Triangle 2: surface_v1 -> base_v1 -> base_v0 (CCW when viewed from outside)
+        volumetric_result.triangles.push_back({surface_v1, base_v1, base_v0});
+    }
+    
+    // Create base triangles (reverse orientation compared to surface for inward-facing normals)
+    for (const Triangle& surface_tri : surface_mesh.triangles) {
+        int base_v0 = base_vertex_mapping[surface_tri.v0];
+        int base_v1 = base_vertex_mapping[surface_tri.v1];
+        int base_v2 = base_vertex_mapping[surface_tri.v2];
+        
+        // Reverse winding order for base (so normals point inward)
+        volumetric_result.triangles.push_back({base_v0, base_v2, base_v1});
+    }
+    
+    return volumetric_result;
+}
+
+template<typename T>
+MeshResult grid_to_mesh_volumetric(
+    int width, int height, const T* elevations,
+    float z_base,
+    float error_threshold, int point_limit,
+    MeshRefineStrategy strategy)
+{
+    // First generate the surface mesh
+    MeshResult surface_mesh = grid_to_mesh_detria(width, height, elevations, 
+                                                  error_threshold, point_limit, strategy);
+    
+    // Convert to volumetric mesh
+    return make_volumetric_mesh(surface_mesh, z_base);
+}
+
+// Explicit instantiations for volumetric mesh generation
+template MeshResult grid_to_mesh_volumetric<float>(int width, int height, const float* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template MeshResult grid_to_mesh_volumetric<double>(int width, int height, const double* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template MeshResult grid_to_mesh_volumetric<int>(int width, int height, const int* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 
 } // namespace TerraScape

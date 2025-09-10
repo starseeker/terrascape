@@ -72,6 +72,7 @@ struct Triangle {
 struct MeshResult {
     std::vector<Vertex> vertices;
     std::vector<Triangle> triangles;
+    bool is_volumetric = false;  // Indicates if this is a volumetric (closed manifold) mesh
 };
 
 // --- Forward declarations for implementation ---
@@ -135,6 +136,35 @@ MeshResult grid_to_mesh_detria(
     int width, int height, const T* elevations,
     float error_threshold, int point_limit,
     MeshRefineStrategy strategy);
+
+// --- Helper functions for volumetric mesh generation ---
+struct Edge {
+    int v0, v1;
+    
+    Edge(int a, int b) : v0(std::min(a, b)), v1(std::max(a, b)) {}
+    
+    bool operator<(const Edge& other) const {
+        return std::tie(v0, v1) < std::tie(other.v0, other.v1);
+    }
+    
+    bool operator==(const Edge& other) const {
+        return v0 == other.v0 && v1 == other.v1;
+    }
+};
+
+// Find boundary edges of a surface mesh (edges that belong to only one triangle)
+std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles);
+
+// Convert surface mesh to volumetric mesh by adding base and side faces
+MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_base);
+
+// --- Forward declaration of volumetric mesh function ---
+template<typename T>
+MeshResult grid_to_mesh_volumetric(
+    int width, int height, const T* elevations,
+    float z_base = 0.0f,
+    float error_threshold = 1.0f, int point_limit = 10000,
+    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO);
 
 // --- Main API: Core mesh generation with detria integration ---
 // This function provides the primary interface for converting elevation grids
