@@ -75,6 +75,14 @@ struct MeshResult {
     bool is_volumetric = false;  // Indicates if this is a volumetric (closed manifold) mesh
 };
 
+// Result structure for volumetric mesh generation that separates positive and negative volumes
+struct VolumetricMeshResult {
+    MeshResult positive_volume;  // Mesh for areas where surface height > z_base
+    MeshResult negative_volume;  // Mesh for areas where surface height < z_base (with reversed normals)
+    bool has_positive_volume = false;
+    bool has_negative_volume = false;
+};
+
 // --- Forward declarations for implementation ---
 class DetriaTriangulationManager;
 class GreedyMeshRefiner;
@@ -158,9 +166,20 @@ std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles);
 // Convert surface mesh to volumetric mesh by adding base and side faces
 MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_base);
 
+// Convert surface mesh to volumetric mesh with separated positive/negative volumes
+VolumetricMeshResult make_volumetric_mesh_separated(const MeshResult& surface_mesh, float z_base);
+
 // --- Forward declaration of volumetric mesh function ---
 template<typename T>
 MeshResult grid_to_mesh_volumetric(
+    int width, int height, const T* elevations,
+    float z_base = 0.0f,
+    float error_threshold = 1.0f, int point_limit = 10000,
+    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO);
+
+// --- Forward declaration of separated volumetric mesh function ---
+template<typename T>
+VolumetricMeshResult grid_to_mesh_volumetric_separated(
     int width, int height, const T* elevations,
     float z_base = 0.0f,
     float error_threshold = 1.0f, int point_limit = 10000,
