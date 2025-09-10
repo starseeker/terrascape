@@ -34,10 +34,14 @@ add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp terrain_
 # Create Hawaii BigIsland performance test
 add_executable(hawaii_bigisland_test hawaii_bigisland_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
 
+# Create volumetric mesh test
+add_executable(volumetric_test volumetric_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(hawaii_bigisland_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(volumetric_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -70,13 +74,17 @@ set_target_properties(terrascape_tests PROPERTIES
 set_target_properties(hawaii_bigisland_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(volumetric_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
 add_test(NAME HawaiiBigIslandPerformanceTest COMMAND hawaii_bigisland_test)
+add_test(NAME VolumetricMeshTest COMMAND volumetric_test)
 
 # Add GDAL-enabled terrain data tests if GDAL is available
 if(GDAL_FOUND)
