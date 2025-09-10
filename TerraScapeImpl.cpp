@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <map>
+#include <set>
 #include <tuple>
 
 namespace TerraScape {
@@ -927,6 +928,146 @@ MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_base) {
     return volumetric_result;
 }
 
+VolumetricMeshResult make_volumetric_mesh_separated(const MeshResult& surface_mesh, float z_base) {
+    VolumetricMeshResult result;
+    
+    const float epsilon = 1e-6f;  // Tolerance for height comparison
+    
+    // Separate triangles based on their centroid height relative to z_base
+    std::vector<Triangle> positive_triangles, negative_triangles;
+    
+    for (const Triangle& tri : surface_mesh.triangles) {
+        // Calculate triangle centroid
+        const Vertex& v0 = surface_mesh.vertices[tri.v0];
+        const Vertex& v1 = surface_mesh.vertices[tri.v1];
+        const Vertex& v2 = surface_mesh.vertices[tri.v2];
+        
+        float centroid_z = (v0.z + v1.z + v2.z) / 3.0f;
+        float height_diff = centroid_z - z_base;
+        
+        if (height_diff > epsilon) {
+            positive_triangles.push_back(tri);
+        } else if (height_diff < -epsilon) {
+            negative_triangles.push_back(tri);
+        }
+        // Skip triangles at exactly the base level (height_diff within epsilon) to avoid degeneracies
+    }
+    
+    // Create positive volume mesh if we have positive triangles
+    if (!positive_triangles.empty()) {
+        // Create a surface mesh with only positive triangles and their vertices
+        MeshResult positive_surface;
+        
+        // Find all vertices used by positive triangles
+        std::set<int> positive_vertex_indices;
+        for (const Triangle& tri : positive_triangles) {
+            positive_vertex_indices.insert(tri.v0);
+            positive_vertex_indices.insert(tri.v1);
+            positive_vertex_indices.insert(tri.v2);
+        }
+        
+        // Create vertex mapping from old indices to new indices
+        std::map<int, int> vertex_mapping;
+        for (int old_idx : positive_vertex_indices) {
+            int new_idx = static_cast<int>(positive_surface.vertices.size());
+            vertex_mapping[old_idx] = new_idx;
+            positive_surface.vertices.push_back(surface_mesh.vertices[old_idx]);
+        }
+        
+        // Remap triangles to use new vertex indices
+        for (const Triangle& tri : positive_triangles) {
+            positive_surface.triangles.push_back({
+                vertex_mapping[tri.v0],
+                vertex_mapping[tri.v1],
+                vertex_mapping[tri.v2]
+            });
+        }
+        
+        // Generate positive volumetric mesh using existing logic
+        result.positive_volume = make_volumetric_mesh(positive_surface, z_base);
+        result.has_positive_volume = true;
+    }
+    
+    // Create negative volume mesh if we have negative triangles
+    if (!negative_triangles.empty()) {
+        // Create a surface mesh with only negative triangles and their vertices
+        MeshResult negative_surface;
+        
+        // Find all vertices used by negative triangles
+        std::set<int> negative_vertex_indices;
+        for (const Triangle& tri : negative_triangles) {
+            negative_vertex_indices.insert(tri.v0);
+            negative_vertex_indices.insert(tri.v1);
+            negative_vertex_indices.insert(tri.v2);
+        }
+        
+        // Create vertex mapping from old indices to new indices
+        std::map<int, int> vertex_mapping;
+        for (int old_idx : negative_vertex_indices) {
+            int new_idx = static_cast<int>(negative_surface.vertices.size());
+            vertex_mapping[old_idx] = new_idx;
+            negative_surface.vertices.push_back(surface_mesh.vertices[old_idx]);
+        }
+        
+        // Remap triangles to use new vertex indices
+        for (const Triangle& tri : negative_triangles) {
+            negative_surface.triangles.push_back({
+                vertex_mapping[tri.v0],
+                vertex_mapping[tri.v1],
+                vertex_mapping[tri.v2]
+            });
+        }
+        
+        // Generate negative volumetric mesh with reversed normals
+        result.negative_volume.is_volumetric = true;
+        
+        // Copy surface vertices
+        result.negative_volume.vertices = negative_surface.vertices;
+        
+        // Create base vertices at z_base
+        std::vector<int> base_vertex_mapping(negative_surface.vertices.size());
+        for (size_t i = 0; i < negative_surface.vertices.size(); ++i) {
+            const Vertex& surface_vertex = negative_surface.vertices[i];
+            Vertex base_vertex = {surface_vertex.x, surface_vertex.y, z_base};
+            base_vertex_mapping[i] = static_cast<int>(result.negative_volume.vertices.size());
+            result.negative_volume.vertices.push_back(base_vertex);
+        }
+        
+        // Add surface triangles with reversed winding (since we want inverted normals for negative volume)
+        for (const Triangle& surface_tri : negative_surface.triangles) {
+            result.negative_volume.triangles.push_back({surface_tri.v0, surface_tri.v2, surface_tri.v1});
+        }
+        
+        // Find boundary edges
+        std::vector<Edge> boundary_edges = find_boundary_edges(negative_surface.triangles);
+        
+        // Create side faces connecting surface boundary to base boundary (reversed winding)
+        for (const Edge& edge : boundary_edges) {
+            int surface_v0 = edge.v0;
+            int surface_v1 = edge.v1;
+            int base_v0 = base_vertex_mapping[surface_v0];
+            int base_v1 = base_vertex_mapping[surface_v1];
+            
+            // Reverse winding for negative volume
+            result.negative_volume.triangles.push_back({surface_v0, base_v0, surface_v1});
+            result.negative_volume.triangles.push_back({surface_v1, base_v0, base_v1});
+        }
+        
+        // Create base triangles with same orientation as surface (since surface is already reversed)
+        for (const Triangle& surface_tri : negative_surface.triangles) {
+            int base_v0 = base_vertex_mapping[surface_tri.v0];
+            int base_v1 = base_vertex_mapping[surface_tri.v1];
+            int base_v2 = base_vertex_mapping[surface_tri.v2];
+            
+            result.negative_volume.triangles.push_back({base_v0, base_v1, base_v2});
+        }
+        
+        result.has_negative_volume = true;
+    }
+    
+    return result;
+}
+
 template<typename T>
 MeshResult grid_to_mesh_volumetric(
     int width, int height, const T* elevations,
@@ -942,9 +1083,29 @@ MeshResult grid_to_mesh_volumetric(
     return make_volumetric_mesh(surface_mesh, z_base);
 }
 
+template<typename T>
+VolumetricMeshResult grid_to_mesh_volumetric_separated(
+    int width, int height, const T* elevations,
+    float z_base,
+    float error_threshold, int point_limit,
+    MeshRefineStrategy strategy)
+{
+    // First generate the surface mesh
+    MeshResult surface_mesh = grid_to_mesh_detria(width, height, elevations, 
+                                                  error_threshold, point_limit, strategy);
+    
+    // Convert to separated volumetric meshes
+    return make_volumetric_mesh_separated(surface_mesh, z_base);
+}
+
 // Explicit instantiations for volumetric mesh generation
 template MeshResult grid_to_mesh_volumetric<float>(int width, int height, const float* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_volumetric<double>(int width, int height, const double* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_volumetric<int>(int width, int height, const int* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+
+// Explicit instantiations for separated volumetric mesh generation
+template VolumetricMeshResult grid_to_mesh_volumetric_separated<float>(int width, int height, const float* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template VolumetricMeshResult grid_to_mesh_volumetric_separated<double>(int width, int height, const double* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template VolumetricMeshResult grid_to_mesh_volumetric_separated<int>(int width, int height, const int* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 
 } // namespace TerraScape
