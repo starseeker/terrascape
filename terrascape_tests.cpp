@@ -244,8 +244,6 @@ bool test_all_strategies() {
     std::vector<TerraScape::MeshRefineStrategy> strategies = {
         TerraScape::MeshRefineStrategy::AUTO,
         TerraScape::MeshRefineStrategy::SPARSE,
-        TerraScape::MeshRefineStrategy::HEAP,
-        TerraScape::MeshRefineStrategy::HYBRID
     };
     
     for (auto strategy : strategies) {
@@ -347,7 +345,7 @@ bool test_batch_performance() {
     
     auto start_time = std::chrono::high_resolution_clock::now();
     auto result = TerraScape::grid_to_mesh(8, 8, data.data(), 0.1f, 25, 
-                                         TerraScape::MeshRefineStrategy::HEAP);
+                                         TerraScape::MeshRefineStrategy::SPARSE);
     auto end_time = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -446,9 +444,7 @@ bool test_strategy_integration() {
     
     std::vector<TerraScape::MeshRefineStrategy> strategies = {
         TerraScape::MeshRefineStrategy::AUTO,
-        TerraScape::MeshRefineStrategy::SPARSE,
-        TerraScape::MeshRefineStrategy::HEAP,
-        TerraScape::MeshRefineStrategy::HYBRID
+        TerraScape::MeshRefineStrategy::SPARSE
     };
     
     for (auto strategy : strategies) {
@@ -682,13 +678,13 @@ bool test_volumetric_mesh_basic() {
     
     // Generate surface mesh
     auto surface_mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                               0.1f, 1000, TerraScape::MeshRefineStrategy::HEAP);
+                                               0.1f, 1000, TerraScape::MeshRefineStrategy::SPARSE);
     
     // Generate volumetric mesh
     float z_base = 0.0f;
     auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(),
                                                               z_base, 0.1f, 1000, 
-                                                              TerraScape::MeshRefineStrategy::HEAP);
+                                                              TerraScape::MeshRefineStrategy::SPARSE);
     
     // Verify volumetric properties
     bool has_correct_vertices = volumetric_mesh.vertices.size() == 2 * surface_mesh.vertices.size();

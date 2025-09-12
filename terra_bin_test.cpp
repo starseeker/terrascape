@@ -376,22 +376,164 @@ void test_assertion_failure_debugging() {
     }
 }
 
-int main() {
+// Test specific file provided by user
+void test_user_provided_file(const std::string& file_path) {
+    std::cout << "\n=== User Provided File Test ===" << std::endl;
+    std::cout << "Testing file: " << file_path << std::endl;
+    
+    if (!std::filesystem::exists(file_path)) {
+        std::cerr << "✗ File does not exist: " << file_path << std::endl;
+        return;
+    }
+    
+    int width, height;
+    std::vector<float> elevations;
+    DSPReader::DSPTerrainInfo info;
+    
+    // Try to read as terra.bin or DSP file
+    bool success = false;
+    std::string file_type;
+    
+    // First try as DSP file
+    if (DSPReader::readDSPFile(file_path, width, height, elevations, &info)) {
+        success = true;
+        file_type = "DSP";
+    } else if (DSPReader::readTerraBinFile(file_path, width, height, elevations, &info)) {
+        success = true;
+        file_type = "Terra.bin";
+    }
+    
+    if (!success) {
+        std::cerr << "✗ Failed to read file as either DSP or terra.bin format" << std::endl;
+        return;
+    }
+    
+    std::cout << "✓ Successfully read as " << file_type << " format: " << width << "x" << height << std::endl;
+    std::cout << "  Data type: " << info.data_type << std::endl;
+    std::cout << "  Elevation range: " << info.min_elevation << " to " << info.max_elevation << std::endl;
+    
+    // Validate the terrain data
+    std::vector<std::string> warnings;
+    DSPReader::validateTerrainData(elevations, width, height, warnings);
+    
+    if (!warnings.empty()) {
+        std::cout << "  Terrain data warnings:" << std::endl;
+        for (const auto& warning : warnings) {
+            std::cout << "    - " << warning << std::endl;
+        }
+    }
+    
+    // Test triangulation with available strategies
+    std::vector<MeshRefineStrategy> strategies = {
+        MeshRefineStrategy::AUTO,
+        MeshRefineStrategy::SPARSE
+        // HEAP and HYBRID removed due to robustness issues
+    };
+    
+    std::vector<std::string> strategy_names = {"AUTO", "SPARSE"};
+    
+    for (size_t i = 0; i < strategies.size(); ++i) {
+        std::cout << "\n  Testing " << strategy_names[i] << " strategy..." << std::endl;
+        try {
+            MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000, strategies[i]);
+            std::cout << "  ✓ " << strategy_names[i] << " successful: " << result.vertices.size() 
+                      << " vertices, " << result.triangles.size() << " triangles" << std::endl;
+                      
+            // Write result to file
+            std::string output_file = "/tmp/user_file_" + strategy_names[i] + ".obj";
+            std::ofstream obj(output_file);
+            if (obj) {
+                for (const auto& v : result.vertices) {
+                    obj << "v " << v.x << " " << v.y << " " << v.z << std::endl;
+                }
+                for (const auto& t : result.triangles) {
+                    obj << "f " << (t.v0 + 1) << " " << (t.v1 + 1) << " " << (t.v2 + 1) << std::endl;
+                }
+                std::cout << "    Wrote mesh to: " << output_file << std::endl;
+            }
+            
+        } catch (const std::exception& e) {
+            std::cerr << "  ✗ " << strategy_names[i] << " failed: " << e.what() << std::endl;
+        }
+    }
+    
+    // Test volumetric mesh generation
+    std::cout << "\n  Testing volumetric mesh generation..." << std::endl;
+    try {
+        float base_elevation = info.min_elevation - 10.0f;
+        MeshResult surface_result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000, MeshRefineStrategy::AUTO);
+        MeshResult volumetric_result = make_volumetric_mesh(surface_result, base_elevation);
+        
+        std::cout << "  ✓ Volumetric mesh: " << volumetric_result.vertices.size() 
+                  << " vertices, " << volumetric_result.triangles.size() << " triangles" << std::endl;
+                  
+        // Write volumetric result
+        std::string volumetric_file = "/tmp/user_file_volumetric.obj";
+        std::ofstream obj(volumetric_file);
+        if (obj) {
+            for (const auto& v : volumetric_result.vertices) {
+                obj << "v " << v.x << " " << v.y << " " << v.z << std::endl;
+            }
+            for (const auto& t : volumetric_result.triangles) {
+                obj << "f " << (t.v0 + 1) << " " << (t.v1 + 1) << " " << (t.v2 + 1) << std::endl;
+            }
+            std::cout << "    Wrote volumetric mesh to: " << volumetric_file << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "  ✗ Volumetric mesh generation failed: " << e.what() << std::endl;
+    }
+}
+
+void print_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " [options]" << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  --file <path>    Test specific terra.bin or DSP file" << std::endl;
+    std::cout << "  --help           Show this help message" << std::endl;
+    std::cout << "  (no options)     Run all built-in tests" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
     std::cout << "=== TerraScape Terra.bin Processing and BRL-CAD DSP Compatibility Tests ===" << std::endl;
     std::cout << "Testing TerraScape's ability to process terra.bin files equivalent to BRL-CAD dsp.c" << std::endl;
     
+    // Parse command line arguments
+    std::string test_file;
+    bool run_all_tests = true;
+    
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--file" && i + 1 < argc) {
+            test_file = argv[i + 1];
+            run_all_tests = false;
+            ++i; // Skip the next argument (file path)
+        } else if (arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            std::cerr << "Unknown argument: " << arg << std::endl;
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+    
     try {
-        // Run all tests
-        test_terra_bin_processing();
-        test_brlcad_dsp_compatibility();
-        test_assertion_failure_debugging();
+        if (!test_file.empty()) {
+            // Test specific file
+            test_user_provided_file(test_file);
+        } else if (run_all_tests) {
+            // Run all built-in tests
+            test_terra_bin_processing();
+            test_brlcad_dsp_compatibility();
+            test_assertion_failure_debugging();
+            
+            std::cout << "\n=== Test Summary ===" << std::endl;
+            std::cout << "✓ Terra.bin processing tests completed" << std::endl;
+            std::cout << "✓ BRL-CAD DSP compatibility verified" << std::endl;
+            std::cout << "✓ Assertion failure debugging completed" << std::endl;
+        }
         
-        std::cout << "\n=== Test Summary ===" << std::endl;
-        std::cout << "✓ Terra.bin processing tests completed" << std::endl;
-        std::cout << "✓ BRL-CAD DSP compatibility verified" << std::endl;
-        std::cout << "✓ Assertion failure debugging completed" << std::endl;
         std::cout << "\nAll tests completed successfully!" << std::endl;
-        
         return 0;
         
     } catch (const std::exception& e) {

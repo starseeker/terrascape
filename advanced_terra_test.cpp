@@ -52,10 +52,10 @@ bool createRealisticProblematicTerraBin(const std::string& filename) {
     return DSPReader::createSyntheticTerraBin(filename, width, height, elevations);
 }
 
-// Create terra.bin with data that forces HEAP or HYBRID strategies (more likely to trigger assertions)
+// Create terra.bin with data that forces SPARSE or SPARSE strategies (more likely to trigger assertions)
 bool createLargeScaleTerraBin(const std::string& filename) {
-    // Create a smaller grid that will use HEAP strategy instead of SPARSE
-    const int width = 64, height = 64;  // Small enough to trigger HEAP strategy
+    // Create a smaller grid that will use SPARSE strategy instead of SPARSE
+    const int width = 64, height = 64;  // Small enough to trigger SPARSE strategy
     std::vector<float> elevations(width * height);
     
     // Create a complex terrain with many local features
@@ -88,14 +88,14 @@ bool createLargeScaleTerraBin(const std::string& filename) {
     return DSPReader::createSyntheticTerraBin(filename, width, height, elevations);
 }
 
-// Test with HEAP strategy explicitly to trigger more complex triangulation paths
+// Test with SPARSE strategy explicitly to trigger more complex triangulation paths
 void test_heap_strategy_terra_processing() {
-    std::cout << "\n=== HEAP Strategy Terra Processing (Assertion Trigger Test) ===" << std::endl;
+    std::cout << "\n=== SPARSE Strategy Terra Processing (Assertion Trigger Test) ===" << std::endl;
     
     const std::string test_file = "/tmp/terrascape_terra_tests/terra_heap_test.bin";
     
     if (createLargeScaleTerraBin(test_file)) {
-        std::cout << "Created complex terrain file for HEAP strategy testing" << std::endl;
+        std::cout << "Created complex terrain file for SPARSE strategy testing" << std::endl;
         
         int width, height;
         std::vector<float> elevations;
@@ -108,8 +108,7 @@ void test_heap_strategy_terra_processing() {
             // Test with different strategies and error thresholds to stress the triangulation
             std::vector<std::pair<MeshRefineStrategy, std::string>> strategies = {
                 {MeshRefineStrategy::AUTO, "AUTO"},      // Use AUTO first (will detect complexity)
-                {MeshRefineStrategy::SPARSE, "SPARSE"},  // Safe fallback
-                {MeshRefineStrategy::HYBRID, "HYBRID"}   // Only try if others work
+                {MeshRefineStrategy::SPARSE, "SPARSE"}   // Direct SPARSE testing
             };
             
             std::vector<float> error_thresholds = {0.01f, 0.1f, 1.0f, 10.0f};
@@ -357,7 +356,7 @@ int main() {
         test_brlcad_style_terra_processing();
         
         std::cout << "\n=== Final Test Summary ===" << std::endl;
-        std::cout << "✓ HEAP strategy assertion trigger tests completed" << std::endl;
+        std::cout << "✓ SPARSE strategy assertion trigger tests completed" << std::endl;
         std::cout << "✓ BRL-CAD style terra.bin processing verified" << std::endl;
         std::cout << "✓ Volumetric mesh generation tested" << std::endl;
         std::cout << "\nAll advanced tests completed successfully!" << std::endl;

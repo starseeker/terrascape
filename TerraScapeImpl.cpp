@@ -1342,84 +1342,124 @@ MeshResult grid_to_mesh_detria(
         processed_elevations[(height - 1) * width]                 // z01: top-left
     );
     
-    // Create greedy refiner for incremental insertion with batch processing
-    // Use adaptive batch size: larger batches for larger point limits, but cap at reasonable size
-    int batch_size = std::min(64, std::max(8, point_limit / 10));
-    auto refiner = std::make_unique<GreedyMeshRefiner>(
-        triangulation_manager.get(), error_threshold, point_limit, batch_size);
+    // === ROBUST SPARSE STRATEGY IMPLEMENTATION ===
+    // Use improved sparse sampling with adaptive density and progressive fallback
     
-    if (strategy == MeshRefineStrategy::SPARSE) {
-        // For sparse strategy, use regular sampling instead of error-driven
-        int step = std::max(1, std::max(width, height) / 10);  // Denser sampling for better results
-        std::cout << "Using SPARSE strategy with step=" << step << "\n";
-        
-        // Build list of sparse points first
-        std::vector<std::tuple<float, float, float>> sparse_points;
-        for (int y = step; y < height; y += step) {
-            for (int x = step; x < width; x += step) {
-                // Avoid points on boundary edges - they must be strictly interior
-                bool on_boundary = (x == 0 || x == width - 1 || y == 0 || y == height - 1);
-                if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
-                    float px = static_cast<float>(x);
-                    float py = static_cast<float>(y);
-                    float pz = processed_elevations[y * width + x];
-                    sparse_points.emplace_back(px, py, pz);
-                }
-            }
-        }
-        
-        // Add points with progressive fallback if triangulation fails
-        size_t points_to_try = sparse_points.size();
-        bool success = false;
-        
-        while (!success && points_to_try > 0) {
-            // Reset and add boundary + subset of sparse points
-            triangulation_manager = std::make_unique<DetriaTriangulationManager>();
-            triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
-                processed_elevations[0],
-                processed_elevations[width - 1],
-                processed_elevations[(height - 1) * width + width - 1],
-                processed_elevations[(height - 1) * width]);
-            
-            // Add subset of sparse points
-            for (size_t i = 0; i < points_to_try; ++i) {
-                const auto& pt = sparse_points[i];
-                triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
-            }
-            
-            success = triangulation_manager->retriangulate();
-            
-            if (!success) {
-                points_to_try = points_to_try * 3 / 4; // Reduce by 25%
-                std::cout << "SPARSE triangulation failed, trying with " << points_to_try << " points\n";
-            }
-        }
-        
-        std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
-                  << " total points\n";
-    } else {
-        // HEAP and HYBRID: Use optimized incremental insertion with error-driven selection
-        auto start_time = std::chrono::high_resolution_clock::now();
-        
-        // Initialize all candidates from grid
-        refiner->initializeCandidatesFromGrid(width, height, processed_elevations);
-        
-        // Perform incremental refinement
-        int points_added = refiner->refineIncrementally(width, height, processed_elevations);
-        
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        
-        // Get performance statistics
-        size_t updates, calculations;
-        refiner->getPerformanceStats(updates, calculations);
-        
-        std::cout << "Optimized incremental insertion completed in " << duration.count() << "ms" << std::endl;
-        std::cout << "Added " << points_added << " points with " << calculations 
-                  << " error calculations and " << updates << " candidate updates" << std::endl;
-        std::cout << "Performance: " << (calculations > 0 ? static_cast<double>(points_added) / calculations * 100 : 0) 
-                  << "% efficiency (points/calculations)" << std::endl;
+    // Calculate adaptive step size based on grid size and point limit
+    int base_step = std::max(1, std::max(width, height) / 20);  // Start with denser sampling
+    float step_multiplier = 1.0f;
+    
+    // Adjust step based on point limit to respect memory constraints
+    size_t expected_points = (width / base_step) * (height / base_step);
+    if (expected_points > static_cast<size_t>(point_limit)) {
+        step_multiplier = std::sqrt(static_cast<float>(expected_points) / point_limit);
     }
+    
+    int step = std::max(1, static_cast<int>(base_step * step_multiplier));
+    std::cout << "Using SPARSE strategy with step=" << step << " (adaptive density)\n";
+    
+    // Build list of sparse points with improved distribution
+    std::vector<std::tuple<float, float, float>> sparse_points;
+    
+    // Add center points first (usually most important for terrain)
+    int center_x = width / 2;
+    int center_y = height / 2;
+    if (center_x > 0 && center_x < width - 1 && center_y > 0 && center_y < height - 1) {
+        sparse_points.emplace_back(static_cast<float>(center_x), static_cast<float>(center_y), 
+                                  processed_elevations[center_y * width + center_x]);
+    }
+    
+    // Add points in a regular grid pattern, avoiding boundaries
+    for (int y = step; y < height; y += step) {
+        for (int x = step; x < width; x += step) {
+            // Avoid points on boundary edges - they must be strictly interior
+            bool on_boundary = (x == 0 || x == width - 1 || y == 0 || y == height - 1);
+            if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
+                float px = static_cast<float>(x);
+                float py = static_cast<float>(y);
+                float pz = processed_elevations[y * width + x];
+                sparse_points.emplace_back(px, py, pz);
+            }
+        }
+    }
+    
+    // Add edge midpoints for better boundary representation
+    if (sparse_points.size() < static_cast<size_t>(point_limit - 8)) {
+        // Bottom edge midpoint
+        int mid_x = width / 2;
+        if (mid_x > 0 && mid_x < width - 1) {
+            sparse_points.emplace_back(static_cast<float>(mid_x), 1.0f, 
+                                      processed_elevations[1 * width + mid_x]);
+        }
+        
+        // Top edge midpoint
+        if (mid_x > 0 && mid_x < width - 1) {
+            sparse_points.emplace_back(static_cast<float>(mid_x), static_cast<float>(height - 2), 
+                                      processed_elevations[(height - 2) * width + mid_x]);
+        }
+        
+        // Left edge midpoint
+        int mid_y = height / 2;
+        if (mid_y > 0 && mid_y < height - 1) {
+            sparse_points.emplace_back(1.0f, static_cast<float>(mid_y), 
+                                      processed_elevations[mid_y * width + 1]);
+        }
+        
+        // Right edge midpoint
+        if (mid_y > 0 && mid_y < height - 1) {
+            sparse_points.emplace_back(static_cast<float>(width - 2), static_cast<float>(mid_y), 
+                                      processed_elevations[mid_y * width + (width - 2)]);
+        }
+    }
+    
+    std::cout << "Generated " << sparse_points.size() << " sparse sampling points\n";
+    
+    // Add points with progressive fallback if triangulation fails
+    size_t points_to_try = sparse_points.size();
+    bool success = false;
+    int attempt = 0;
+    const int MAX_ATTEMPTS = 5;
+    
+    while (!success && points_to_try > 0 && attempt < MAX_ATTEMPTS) {
+        attempt++;
+        std::cout << "Triangulation attempt " << attempt << " with " << points_to_try << " points\n";
+        
+        // Reset triangulation manager for new attempt
+        triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+        triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+            processed_elevations[0],
+            processed_elevations[width - 1],
+            processed_elevations[(height - 1) * width + width - 1],
+            processed_elevations[(height - 1) * width]);
+        
+        // Add subset of sparse points
+        for (size_t i = 0; i < points_to_try; ++i) {
+            const auto& pt = sparse_points[i];
+            triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
+        }
+        
+        success = triangulation_manager->retriangulate();
+        
+        if (!success) {
+            points_to_try = points_to_try * 2 / 3; // Reduce by 33%
+            std::cout << "Triangulation failed, reducing to " << points_to_try << " points\n";
+        }
+    }
+    
+    if (!success) {
+        std::cout << "Warning: Sparse triangulation failed, using minimal boundary mesh\n";
+        // Return minimal boundary mesh as last resort
+        triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+        triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+            processed_elevations[0],
+            processed_elevations[width - 1],
+            processed_elevations[(height - 1) * width + width - 1],
+            processed_elevations[(height - 1) * width]);
+        triangulation_manager->retriangulate(); // Should succeed with just boundary
+    }
+    
+    std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
+              << " total points\n";
     
     // Convert to final mesh result
     return triangulation_manager->toMeshResult();

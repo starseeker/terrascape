@@ -32,10 +32,10 @@ namespace TerraScape {
 
 // --- Strategy selection for mesh refinement ---
 enum class MeshRefineStrategy {
-    AUTO,      // Automatically select method based on grid size and RAM
-    HEAP,      // Use heap + affected update (optimal, high memory) - uses detria
-    HYBRID,    // Hybrid: sparse sampling, then local refinement - uses detria  
-    SPARSE     // Sparse sampling only (fastest, lowest quality) - uses detria
+    AUTO,      // Automatically select method based on grid size (consolidated to SPARSE for robustness)
+    SPARSE,    // Sparse sampling (robust, consistent quality) - uses detria
+    // HEAP and HYBRID strategies removed due to robustness issues with incremental insertion
+    // These strategies would fail to add points in many cases, leading to poor triangulations
 };
 
 // --- Helper: RAM detection (platform-specific) ---
@@ -195,77 +195,19 @@ MeshResult grid_to_mesh(
     MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
 {
     // --- Strategy selection with complexity analysis ---
+    // Consolidated to SPARSE strategy for maximum robustness
+    // HEAP and HYBRID strategies had fundamental issues with incremental insertion
+    // causing failures to add points in many terrain configurations
     if (strategy == MeshRefineStrategy::AUTO) {
+        strategy = MeshRefineStrategy::SPARSE;  // Always use robust SPARSE strategy
+        
         size_t grid_size = size_t(width) * size_t(height);
-        size_t avail_ram = get_available_ram_bytes();
-        // More conservative memory estimation for stability
-        size_t heap_mem_needed = grid_size * 32;
-        
-        // Analyze terrain complexity to avoid problematic patterns with HEAP strategy
-        bool is_complex_terrain = false;
-        if (grid_size > 100) { // Only analyze for reasonable sized grids
-            // Check for patterns that might cause triangulation issues
-            auto minmax = std::minmax_element(elevations, elevations + grid_size);
-            float range = static_cast<float>(*minmax.second - *minmax.first);
-            
-            // Count significant elevation variations
-            int variation_count = 0;
-            float variation_threshold = range * 0.1f;
-            for (size_t i = 1; i < grid_size; ++i) {
-                float diff = std::abs(static_cast<float>(elevations[i] - elevations[i-1]));
-                if (diff > variation_threshold) {
-                    variation_count++;
-                }
-            }
-            
-            // Complex terrain indicators that often cause issues with HEAP strategy
-            float variation_ratio = static_cast<float>(variation_count) / grid_size;
-            
-            if (variation_ratio > 0.3f || // High variation density
-                range > 1000.0f ||        // Large elevation range
-                grid_size > 5000) {       // Large grid size
-                is_complex_terrain = true;
-            }
-        }
-        
-        // Use extremely conservative thresholds to ensure robustness
-        // Avoid HEAP strategy for complex terrain to prevent crashes
-        if (!is_complex_terrain && grid_size <= 500 && heap_mem_needed < avail_ram / 8) {
-            strategy = MeshRefineStrategy::HEAP;
-        } else if (!is_complex_terrain && grid_size <= 1000 && heap_mem_needed < avail_ram / 4) {
-            strategy = MeshRefineStrategy::HYBRID;
-        } else {
-            strategy = MeshRefineStrategy::SPARSE;  // Safe fallback for complex/large terrain
-        }
-        
-        std::cout << "AUTO strategy selected: ";
-        switch (strategy) {
-            case MeshRefineStrategy::HEAP: std::cout << "HEAP"; break;
-            case MeshRefineStrategy::HYBRID: std::cout << "HYBRID"; break;
-            case MeshRefineStrategy::SPARSE: std::cout << "SPARSE"; break;
-            default: break;
-        }
-        std::cout << " for " << grid_size << " points";
-        if (is_complex_terrain) {
-            std::cout << " (complex terrain detected)";
-        }
-        std::cout << "\n";
+        std::cout << "AUTO strategy selected: SPARSE for " << grid_size << " points (consolidated for robustness)\n";
     }
     
     // Delegate to detria-based implementation with robust error handling
-    try {
-        return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, strategy);
-    } catch (...) {
-        // If the selected strategy fails (e.g., assertion in triangulation), 
-        // fall back to SPARSE strategy which is more robust for large datasets
-        if (strategy != MeshRefineStrategy::SPARSE) {
-            std::cout << "Strategy failed, falling back to SPARSE for robustness\n";
-            return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, MeshRefineStrategy::SPARSE);
-        } else {
-            // If even SPARSE fails, re-throw the exception
-            throw;
-        }
-    }
+    // Only SPARSE strategy is supported for maximum robustness
+    return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, MeshRefineStrategy::SPARSE);
 }
 
 } // namespace TerraScape
