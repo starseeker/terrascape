@@ -43,6 +43,12 @@ add_executable(volumetric_separated_test volumetric_separated_test.cpp TerraScap
 # Create separated volumetric mesh example
 add_executable(volumetric_separated_example volumetric_separated_example.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
 
+# Create preprocessing robustness test
+add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+
+# Create assertion failure prevention test  
+add_executable(assertion_failure_tests assertion_failure_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -50,6 +56,10 @@ target_include_directories(hawaii_bigisland_test PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_include_directories(volumetric_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(volumetric_separated_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(volumetric_separated_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_include_directories(preprocessing_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_include_directories(assertion_failure_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -91,15 +101,23 @@ set_target_properties(volumetric_separated_test PROPERTIES
 set_target_properties(volumetric_separated_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(preprocessing_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+set_target_properties(assertion_failure_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests assertion_failure_tests DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
 add_test(NAME HawaiiBigIslandPerformanceTest COMMAND hawaii_bigisland_test)
 add_test(NAME VolumetricMeshTest COMMAND volumetric_test)
 add_test(NAME VolumetricSeparatedMeshTest COMMAND volumetric_separated_test)
+add_test(NAME PreprocessingRobustnessTest COMMAND preprocessing_tests)
+add_test(NAME AssertionFailurePreventionTest COMMAND assertion_failure_tests)
 
 # Add GDAL-enabled terrain data tests if GDAL is available
 if(GDAL_FOUND)
