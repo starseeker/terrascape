@@ -241,15 +241,11 @@ bool test_pgm_loading() {
 
 bool test_all_strategies() {
     auto data = create_single_peak(6, 6);
-    std::vector<TerraScape::MeshRefineStrategy> strategies = {
-        TerraScape::MeshRefineStrategy::AUTO,
-        TerraScape::MeshRefineStrategy::SPARSE,
-    };
     
-    for (auto strategy : strategies) {
-        auto result = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20, strategy);
-        if (result.vertices.size() < 4) return false; // Should at least have corners
-    }
+    // Test the unified grid-aware triangulation approach
+    auto result = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
+    if (result.vertices.size() < 4) return false; // Should at least have corners
+    
     return true;
 }
 
@@ -258,24 +254,15 @@ bool test_all_strategies() {
 // =============================================================================
 
 bool test_triangulation_versioning() {
-    TerraScape::DetriaTriangulationManager manager;
+    // Test that we get consistent results from multiple calls
+    auto data = create_single_peak(6, 6);
     
-    // Initialize with boundary
-    manager.initializeBoundary(0.0f, 0.0f, 5.0f, 5.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-    uint32_t initial_version = manager.getVersion();
+    auto result1 = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
+    auto result2 = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
     
-    // Add a point and retriangulate
-    manager.addPoint(2.5f, 2.5f, 1.0f);
-    manager.retriangulate();
-    uint32_t after_first = manager.getVersion();
-    
-    // Add another point and retriangulate
-    manager.addPoint(1.5f, 1.5f, 0.5f);
-    manager.retriangulate();
-    uint32_t after_second = manager.getVersion();
-    
-    // Version should increment after each successful retriangulation
-    return (after_first > initial_version) && (after_second > after_first);
+    // Should produce identical results (deterministic)
+    return (result1.vertices.size() == result2.vertices.size()) && 
+           (result1.triangles.size() == result2.triangles.size());
 }
 
 bool test_duplicate_guard() {
@@ -344,8 +331,7 @@ bool test_batch_performance() {
     auto data = create_complex_surface(8, 8);
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto result = TerraScape::grid_to_mesh(8, 8, data.data(), 0.1f, 25, 
-                                         TerraScape::MeshRefineStrategy::SPARSE);
+    auto result = TerraScape::grid_to_mesh(8, 8, data.data(), 0.1f, 25);
     auto end_time = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -442,28 +428,23 @@ bool test_sos_triangulation() {
 bool test_strategy_integration() {
     auto data = create_single_peak(5, 5);
     
-    std::vector<TerraScape::MeshRefineStrategy> strategies = {
-        TerraScape::MeshRefineStrategy::AUTO,
-        TerraScape::MeshRefineStrategy::SPARSE
-    };
+    // Test the unified grid-aware triangulation approach
+    auto result = TerraScape::grid_to_mesh(5, 5, data.data(), 1.0f, 15);
     
-    for (auto strategy : strategies) {
-        auto result = TerraScape::grid_to_mesh(5, 5, data.data(), 1.0f, 15, strategy);
-        
-        // Basic validation: should have corners and some triangles
-        if (result.vertices.size() < 4 || result.triangles.size() < 2) {
+    // Basic validation: should have corners and some triangles
+    if (result.vertices.size() < 4 || result.triangles.size() < 2) {
+        return false;
+    }
+    
+    // Validate all triangle indices are valid
+    for (const auto& triangle : result.triangles) {
+        if (triangle.v0 >= static_cast<int>(result.vertices.size()) ||
+            triangle.v1 >= static_cast<int>(result.vertices.size()) ||
+            triangle.v2 >= static_cast<int>(result.vertices.size())) {
             return false;
         }
-        
-        // Validate all triangle indices are valid
-        for (const auto& triangle : result.triangles) {
-            if (triangle.v0 >= static_cast<int>(result.vertices.size()) ||
-                triangle.v1 >= static_cast<int>(result.vertices.size()) ||
-                triangle.v2 >= static_cast<int>(result.vertices.size())) {
-                return false;
-            }
-        }
     }
+    
     return true;
 }
 
@@ -642,9 +623,9 @@ bool test_synthetic_bigisland_terrain() {
     
     std::cout << "    Elevation range: " << *minmax.first << "m to " << *minmax.second << "m" << std::endl;
     
-    // Test with AUTO strategy
+    // Test with grid-aware triangulation
     auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                        elev_range * 0.01f, 1000, TerraScape::MeshRefineStrategy::AUTO);
+                                        elev_range * 0.01f, 1000);
     
     bool success = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
     
@@ -678,13 +659,12 @@ bool test_volumetric_mesh_basic() {
     
     // Generate surface mesh
     auto surface_mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                               0.1f, 1000, TerraScape::MeshRefineStrategy::SPARSE);
+                                               0.1f, 1000);
     
     // Generate volumetric mesh
     float z_base = 0.0f;
     auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(),
-                                                              z_base, 0.1f, 1000, 
-                                                              TerraScape::MeshRefineStrategy::SPARSE);
+                                                              z_base, 0.1f, 1000);
     
     // Verify volumetric properties
     bool has_correct_vertices = volumetric_mesh.vertices.size() == 2 * surface_mesh.vertices.size();

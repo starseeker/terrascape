@@ -103,7 +103,7 @@ void test_terra_bin_processing() {
                 std::cout << "  Trying SPARSE strategy..." << std::endl;
                 try {
                     MeshResult sparse_result = grid_to_mesh(width, height, elevations.data(), 
-                                                           1.0f, 10000, MeshRefineStrategy::SPARSE);
+                                                           1.0f, 10000);
                     std::cout << "  ✓ SPARSE strategy successful: " << sparse_result.vertices.size() 
                               << " vertices, " << sparse_result.triangles.size() << " triangles" << std::endl;
                 } catch (const std::exception& e2) {
@@ -124,7 +124,7 @@ void test_terra_bin_processing() {
                     }
                     
                     MeshResult processed_result = grid_to_mesh(width, height, preprocessed.processed_elevations.data(), 
-                                                             adjusted_threshold, 10000, MeshRefineStrategy::SPARSE);
+                                                             adjusted_threshold, 10000);
                     std::cout << "  ✓ Preprocessed triangulation successful: " << processed_result.vertices.size() 
                               << " vertices, " << processed_result.triangles.size() << " triangles" << std::endl;
                               
@@ -197,7 +197,7 @@ void test_terra_bin_processing() {
                     // Try with different parameters
                     try {
                         MeshResult sparse_result = grid_to_mesh(width, height, elevations.data(), 
-                                                               0.1f, 1000, MeshRefineStrategy::SPARSE);
+                                                               0.1f, 1000);
                         std::cout << "  ✓ SPARSE with relaxed parameters worked: " 
                                   << sparse_result.vertices.size() << " vertices" << std::endl;
                     } catch (const std::exception& e2) {
@@ -423,45 +423,35 @@ void test_user_provided_file(const std::string& file_path) {
         }
     }
     
-    // Test triangulation with available strategies
-    std::vector<MeshRefineStrategy> strategies = {
-        MeshRefineStrategy::AUTO,
-        MeshRefineStrategy::SPARSE
-        // HEAP and HYBRID removed due to robustness issues
-    };
-    
-    std::vector<std::string> strategy_names = {"AUTO", "SPARSE"};
-    
-    for (size_t i = 0; i < strategies.size(); ++i) {
-        std::cout << "\n  Testing " << strategy_names[i] << " strategy..." << std::endl;
-        try {
-            MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000, strategies[i]);
-            std::cout << "  ✓ " << strategy_names[i] << " successful: " << result.vertices.size() 
-                      << " vertices, " << result.triangles.size() << " triangles" << std::endl;
-                      
-            // Write result to file
-            std::string output_file = "/tmp/user_file_" + strategy_names[i] + ".obj";
-            std::ofstream obj(output_file);
-            if (obj) {
-                for (const auto& v : result.vertices) {
-                    obj << "v " << v.x << " " << v.y << " " << v.z << std::endl;
-                }
-                for (const auto& t : result.triangles) {
-                    obj << "f " << (t.v0 + 1) << " " << (t.v1 + 1) << " " << (t.v2 + 1) << std::endl;
-                }
-                std::cout << "    Wrote mesh to: " << output_file << std::endl;
+    // Test grid-aware triangulation
+    std::cout << "\n  Testing grid-aware triangulation..." << std::endl;
+    try {
+        MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
+        std::cout << "  ✓ Grid-aware successful: " << result.vertices.size() 
+                  << " vertices, " << result.triangles.size() << " triangles" << std::endl;
+                  
+        // Write result to file
+        std::string output_file = "/tmp/user_file_grid_aware.obj";
+        std::ofstream obj(output_file);
+        if (obj) {
+            for (const auto& v : result.vertices) {
+                obj << "v " << v.x << " " << v.y << " " << v.z << std::endl;
             }
-            
-        } catch (const std::exception& e) {
-            std::cerr << "  ✗ " << strategy_names[i] << " failed: " << e.what() << std::endl;
+            for (const auto& t : result.triangles) {
+                obj << "f " << (t.v0 + 1) << " " << (t.v1 + 1) << " " << (t.v2 + 1) << std::endl;
+            }
+            std::cout << "    Wrote mesh to: " << output_file << std::endl;
         }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "  ✗ Grid-aware failed: " << e.what() << std::endl;
     }
     
     // Test volumetric mesh generation
     std::cout << "\n  Testing volumetric mesh generation..." << std::endl;
     try {
         float base_elevation = info.min_elevation - 10.0f;
-        MeshResult surface_result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000, MeshRefineStrategy::AUTO);
+        MeshResult surface_result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
         MeshResult volumetric_result = make_volumetric_mesh(surface_result, base_elevation);
         
         std::cout << "  ✓ Volumetric mesh: " << volumetric_result.vertices.size() 

@@ -105,77 +105,68 @@ void test_heap_strategy_terra_processing() {
             std::cout << "Read terrain: " << width << "x" << height << std::endl;
             std::cout << "Elevation range: " << info.min_elevation << " to " << info.max_elevation << std::endl;
             
-            // Test with different strategies and error thresholds to stress the triangulation
-            std::vector<std::pair<MeshRefineStrategy, std::string>> strategies = {
-                {MeshRefineStrategy::AUTO, "AUTO"},      // Use AUTO first (will detect complexity)
-                {MeshRefineStrategy::SPARSE, "SPARSE"}   // Direct SPARSE testing
-            };
-            
+            // Test with different error thresholds to stress the triangulation
             std::vector<float> error_thresholds = {0.01f, 0.1f, 1.0f, 10.0f};
             
-            for (const auto& strategy_pair : strategies) {
-                for (float error_threshold : error_thresholds) {
-                    std::cout << "\nTesting " << strategy_pair.second 
-                              << " strategy with error threshold " << error_threshold << std::endl;
+            for (float error_threshold : error_thresholds) {
+                std::cout << "\nTesting grid-aware triangulation with error threshold " << error_threshold << std::endl;
                               
+                try {
+                    MeshResult result = grid_to_mesh(width, height, elevations.data(), 
+                                                   error_threshold, 5000);
+                    std::cout << "  ✓ Success: " << result.vertices.size() 
+                              << " vertices, " << result.triangles.size() << " triangles" << std::endl;
+                              
+                    // Test volumetric mesh generation
+                    float base_elevation = info.min_elevation - 5.0f;
+                    std::vector<Vertex> volumetric_vertices = result.vertices;
+                    std::vector<Triangle> volumetric_triangles = result.triangles;
+                    
+                    // Add base vertices
+                    for (const auto& v : result.vertices) {
+                        volumetric_vertices.push_back({v.x, v.y, base_elevation});
+                    }
+                    
+                    // Add base triangles
+                    int vertex_offset = result.vertices.size();
+                    for (const auto& t : result.triangles) {
+                        volumetric_triangles.push_back({
+                            t.v0 + vertex_offset,
+                            t.v2 + vertex_offset,  // Inverted winding
+                            t.v1 + vertex_offset
+                        });
+                    }
+                    
+                    std::cout << "  ✓ Volumetric mesh: " << volumetric_vertices.size() 
+                              << " vertices, " << volumetric_triangles.size() << " triangles" << std::endl;
+                              
+                } catch (const std::exception& e) {
+                    std::cerr << "  ✗ Failed: " << e.what() << std::endl;
+                    
+                    // If we get a failure, this is what we want to debug and fix
+                    std::cout << "  Debugging failure..." << std::endl;
+                    
+                    // Try with preprocessing enabled explicitly
                     try {
-                        MeshResult result = grid_to_mesh(width, height, elevations.data(), 
-                                                       error_threshold, 5000, strategy_pair.first);
-                        std::cout << "  ✓ Success: " << result.vertices.size() 
-                                  << " vertices, " << result.triangles.size() << " triangles" << std::endl;
-                                  
-                        // Test volumetric mesh generation
-                        float base_elevation = info.min_elevation - 5.0f;
-                        std::vector<Vertex> volumetric_vertices = result.vertices;
-                        std::vector<Triangle> volumetric_triangles = result.triangles;
+                        float adjusted_threshold = error_threshold;
+                        auto preprocessed = preprocess_input_data(width, height, elevations.data(), 
+                                                                 adjusted_threshold, true);
                         
-                        // Add base vertices
-                        for (const auto& v : result.vertices) {
-                            volumetric_vertices.push_back({v.x, v.y, base_elevation});
-                        }
-                        
-                        // Add base triangles
-                        int vertex_offset = result.vertices.size();
-                        for (const auto& t : result.triangles) {
-                            volumetric_triangles.push_back({
-                                t.v0 + vertex_offset,
-                                t.v2 + vertex_offset,  // Inverted winding
-                                t.v1 + vertex_offset
-                            });
-                        }
-                        
-                        std::cout << "  ✓ Volumetric mesh: " << volumetric_vertices.size() 
-                                  << " vertices, " << volumetric_triangles.size() << " triangles" << std::endl;
-                                  
-                    } catch (const std::exception& e) {
-                        std::cerr << "  ✗ Failed: " << e.what() << std::endl;
-                        
-                        // If we get a failure, this is what we want to debug and fix
-                        std::cout << "  Debugging failure..." << std::endl;
-                        
-                        // Try with preprocessing enabled explicitly
-                        try {
-                            float adjusted_threshold = error_threshold;
-                            auto preprocessed = preprocess_input_data(width, height, elevations.data(), 
-                                                                     adjusted_threshold, true);
-                            
-                            if (preprocessed.has_warnings) {
-                                std::cout << "  Preprocessing applied with warnings:" << std::endl;
-                                for (const auto& warning : preprocessed.warnings) {
-                                    std::cout << "    - " << warning << std::endl;
-                                }
+                        if (preprocessed.has_warnings) {
+                            std::cout << "  Preprocessing applied with warnings:" << std::endl;
+                            for (const auto& warning : preprocessed.warnings) {
+                                std::cout << "    - " << warning << std::endl;
                             }
-                            
-                            MeshResult fixed_result = grid_to_mesh(width, height, 
-                                                                 preprocessed.processed_elevations.data(), 
-                                                                 adjusted_threshold, 5000, 
-                                                                 MeshRefineStrategy::SPARSE);
-                            std::cout << "  ✓ Fixed with preprocessing: " << fixed_result.vertices.size() 
-                                      << " vertices" << std::endl;
-                                      
-                        } catch (const std::exception& e2) {
-                            std::cerr << "  ✗ Even preprocessing failed: " << e2.what() << std::endl;
                         }
+                        
+                        MeshResult fixed_result = grid_to_mesh(width, height, 
+                                                             preprocessed.processed_elevations.data(), 
+                                                             adjusted_threshold, 5000);
+                        std::cout << "  ✓ Fixed with preprocessing: " << fixed_result.vertices.size() 
+                                  << " vertices" << std::endl;
+                                  
+                    } catch (const std::exception& e2) {
+                        std::cerr << "  ✗ Even preprocessing failed: " << e2.what() << std::endl;
                     }
                 }
             }
@@ -330,8 +321,7 @@ void test_brlcad_style_terra_processing() {
                     std::cout << "Applied preprocessing, trying SPARSE strategy..." << std::endl;
                     MeshResult sparse_result = grid_to_mesh(width, height, 
                                                            preprocessed.processed_elevations.data(), 
-                                                           adjusted_threshold, 10000, 
-                                                           MeshRefineStrategy::SPARSE);
+                                                           adjusted_threshold, 10000);
                     std::cout << "✓ SPARSE with preprocessing: " << sparse_result.vertices.size() 
                               << " vertices, " << sparse_result.triangles.size() << " triangles" << std::endl;
                               
