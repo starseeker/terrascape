@@ -230,4 +230,27 @@ private:
                                                            float search_radius) const;
 };
 
+// --- Input Preprocessing for Robustness ---
+
+struct PreprocessingResult {
+    std::vector<float> processed_elevations;  // Converted to float and preprocessed
+    float adjusted_error_threshold;           // Clamped to reasonable minimum
+    bool has_warnings = false;                // Whether any warnings were issued
+    std::vector<std::string> warnings;       // Diagnostic messages
+    bool is_degenerate = false;              // Whether input is degenerate (all flat/collinear)
+    bool needs_jitter = false;               // Whether small jitter was added
+    float scale_factor = 1.0f;               // Applied coordinate scaling
+    float z_offset = 0.0f;                   // Applied Z offset for normalization
+};
+
+/**
+ * Preprocess input elevation data to handle degenerate cases and improve robustness.
+ * This function implements the hardening recommendations to prevent assertion failures
+ * in the triangulation library.
+ */
+template<typename T>
+PreprocessingResult preprocess_input_data(
+    int width, int height, const T* elevations, 
+    float& error_threshold, bool enable_jitter = true);
+
 } // namespace TerraScape

@@ -8,6 +8,8 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <random>
+#include <limits>
 
 namespace TerraScape {
 
@@ -744,6 +746,163 @@ template void GreedyMeshRefiner::updateAffectedCandidates<float>(int width, int 
 template void GreedyMeshRefiner::updateAffectedCandidates<double>(int width, int height, const double* elevations, float inserted_x, float inserted_y);
 template void GreedyMeshRefiner::updateAffectedCandidates<int>(int width, int height, const int* elevations, float inserted_x, float inserted_y);
 
+// --- Input Preprocessing Implementation ---
+
+template<typename T>
+PreprocessingResult preprocess_input_data(
+    int width, int height, const T* elevations, 
+    float& error_threshold, bool enable_jitter)
+{
+    PreprocessingResult result;
+    result.processed_elevations.reserve(size_t(width) * size_t(height));
+    
+    // Step 1: Convert to float and find min/max
+    float min_z = std::numeric_limits<float>::max();
+    float max_z = std::numeric_limits<float>::lowest();
+    int invalid_count = 0;
+    
+    for (int i = 0; i < width * height; ++i) {
+        float z = static_cast<float>(elevations[i]);
+        if (!std::isfinite(z)) {
+            invalid_count++;
+            z = 0.0f; // Temporary fallback, will be fixed below
+        }
+        result.processed_elevations.push_back(z);
+        if (std::isfinite(z)) {
+            min_z = std::min(min_z, z);
+            max_z = std::max(max_z, z);
+        }
+    }
+    
+    // Step 2: Handle invalid values (NaN, inf) by interpolation
+    if (invalid_count > 0) {
+        for (int i = 0; i < width * height; ++i) {
+            float& z = result.processed_elevations[i];
+            if (!std::isfinite(static_cast<float>(elevations[i]))) {
+                // Replace invalid values with interpolated values from neighbors
+                float replacement = min_z; // Default fallback
+                int valid_neighbors = 0;
+                
+                int y = i / width;
+                int x = i % width;
+                
+                // Check 8-connected neighbors
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dy == 0) continue;
+                        
+                        int nx = x + dx;
+                        int ny = y + dy;
+                        
+                        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                            int neighbor_idx = ny * width + nx;
+                            float neighbor_z = static_cast<float>(elevations[neighbor_idx]);
+                            if (std::isfinite(neighbor_z)) {
+                                replacement += neighbor_z;
+                                valid_neighbors++;
+                            }
+                        }
+                    }
+                }
+                
+                if (valid_neighbors > 0) {
+                    z = replacement / (valid_neighbors + 1); // Include the default fallback
+                } else {
+                    z = min_z;  // Fallback to minimum valid value
+                }
+            }
+        }
+        
+        result.warnings.push_back("Replaced " + std::to_string(invalid_count) + 
+                                 " invalid values (NaN/inf) with interpolated values");
+        result.has_warnings = true;
+        
+        // Recalculate min/max after fixing invalid values
+        min_z = *std::min_element(result.processed_elevations.begin(), result.processed_elevations.end());
+        max_z = *std::max_element(result.processed_elevations.begin(), result.processed_elevations.end());
+    }
+    
+    // Step 3: Check for completely flat grid (ONLY add jitter if perfectly flat)
+    float elevation_range = max_z - min_z;
+    const float PERFECTLY_FLAT_THRESHOLD = 0.0f; // Only for perfectly flat data
+    
+    if (elevation_range <= PERFECTLY_FLAT_THRESHOLD) {
+        result.is_degenerate = true;
+        result.warnings.push_back("Grid is completely flat (elevation range: " + 
+                                 std::to_string(elevation_range) + ")");
+        result.has_warnings = true;
+        
+        if (enable_jitter) {
+            // Add minimal jitter only to break exact coplanarity for triangulation
+            result.needs_jitter = true;
+            std::random_device rd;
+            std::mt19937 gen(rd());
+            std::uniform_real_distribution<float> dis(-1e-9f, 1e-9f); // Much smaller jitter
+            
+            for (int i = 0; i < width * height; ++i) {
+                result.processed_elevations[i] += dis(gen);
+            }
+            
+            result.warnings.push_back("Added minimal jitter to break exact coplanarity for triangulation");
+            
+            // Recalculate min/max after jitter
+            min_z = *std::min_element(result.processed_elevations.begin(), result.processed_elevations.end());
+            max_z = *std::max_element(result.processed_elevations.begin(), result.processed_elevations.end());
+        }
+    }
+    
+    // Step 4: Clamp error threshold to reasonable minimum (more conservative)
+    const float MIN_ERROR_THRESHOLD = 1e-8f; // Smaller minimum to avoid changing most inputs
+    result.adjusted_error_threshold = error_threshold;
+    
+    if (error_threshold <= 0.0f) {
+        result.adjusted_error_threshold = MIN_ERROR_THRESHOLD;
+        result.warnings.push_back("Error threshold was zero or negative (" + std::to_string(error_threshold) + 
+                                 "), set to " + std::to_string(MIN_ERROR_THRESHOLD));
+        result.has_warnings = true;
+    }
+    
+    // Step 5: Check for extremely badly scaled coordinates (only extreme cases)
+    float max_coord = std::max(static_cast<float>(width), static_cast<float>(height));
+    float max_elevation_abs = std::max(std::abs(min_z), std::abs(max_z));
+    
+    // Only normalize for truly extreme cases that would cause numerical issues
+    const float EXTREME_LARGE_THRESHOLD = 1e9f;
+    const float EXTREME_SMALL_THRESHOLD = 1e-9f;
+    
+    if (max_coord > EXTREME_LARGE_THRESHOLD || max_elevation_abs > EXTREME_LARGE_THRESHOLD || 
+        (max_elevation_abs > 0 && max_elevation_abs < EXTREME_SMALL_THRESHOLD)) {
+        
+        // Normalize elevations to reasonable range
+        if (elevation_range > 0) {
+            result.scale_factor = 1000.0f / elevation_range;  // Scale to ~1000 unit range
+            result.z_offset = -min_z;  // Shift minimum to zero
+            
+            for (float& z : result.processed_elevations) {
+                z = (z + result.z_offset) * result.scale_factor;
+            }
+            
+            // Adjust error threshold proportionally
+            result.adjusted_error_threshold *= result.scale_factor;
+            
+            result.warnings.push_back("Normalized extreme coordinate values (scale: " + 
+                                     std::to_string(result.scale_factor) + 
+                                     ", offset: " + std::to_string(result.z_offset) + ")");
+            result.has_warnings = true;
+        }
+    }
+    
+    // Log warnings if any were generated
+    if (result.has_warnings) {
+        std::cout << "Input preprocessing warnings:\n";
+        for (const auto& warning : result.warnings) {
+            std::cout << "  - " << warning << "\n";
+        }
+    }
+    
+    return result;
+}
+
 // --- Main grid_to_mesh_detria implementation ---
 template<typename T>
 MeshResult grid_to_mesh_detria(
@@ -751,6 +910,36 @@ MeshResult grid_to_mesh_detria(
     float error_threshold, int point_limit,
     MeshRefineStrategy strategy)
 {
+    // === PREPROCESSING FOR ROBUSTNESS ===
+    // Preprocess input data to handle degenerate cases and prevent assertion failures
+    float adjusted_error_threshold = error_threshold;
+    PreprocessingResult preprocessing = preprocess_input_data(width, height, elevations, adjusted_error_threshold);
+    
+    // Use preprocessed data for all subsequent operations
+    const float* processed_elevations = preprocessing.processed_elevations.data();
+    error_threshold = preprocessing.adjusted_error_threshold;
+    
+    // If the input is severely degenerate (completely flat), return a minimal mesh
+    if (preprocessing.is_degenerate && !preprocessing.needs_jitter) {
+        MeshResult simple_result;
+        
+        // Create a simple quad mesh for flat grids
+        simple_result.vertices = {
+            {0.0f, 0.0f, processed_elevations[0]},                                    // bottom-left
+            {static_cast<float>(width - 1), 0.0f, processed_elevations[width - 1]},  // bottom-right
+            {static_cast<float>(width - 1), static_cast<float>(height - 1), 
+             processed_elevations[(height - 1) * width + width - 1]},                // top-right
+            {0.0f, static_cast<float>(height - 1), processed_elevations[(height - 1) * width]} // top-left
+        };
+        
+        simple_result.triangles = {
+            {0, 1, 2},  // First triangle
+            {0, 2, 3}   // Second triangle
+        };
+        
+        return simple_result;
+    }
+    
     // Create triangulation manager and initialize with boundary
     auto triangulation_manager = std::make_unique<DetriaTriangulationManager>();
     
@@ -761,10 +950,10 @@ MeshResult grid_to_mesh_detria(
     
     triangulation_manager->initializeBoundary(
         minX, minY, maxX, maxY,
-        static_cast<float>(elevations[0]),                                    // z00: bottom-left
-        static_cast<float>(elevations[width - 1]),                           // z10: bottom-right
-        static_cast<float>(elevations[(height - 1) * width + width - 1]),    // z11: top-right
-        static_cast<float>(elevations[(height - 1) * width])                 // z01: top-left
+        processed_elevations[0],                                    // z00: bottom-left
+        processed_elevations[width - 1],                           // z10: bottom-right
+        processed_elevations[(height - 1) * width + width - 1],    // z11: top-right
+        processed_elevations[(height - 1) * width]                 // z01: top-left
     );
     
     // Create greedy refiner for incremental insertion with batch processing
@@ -787,7 +976,7 @@ MeshResult grid_to_mesh_detria(
                 if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
                     float px = static_cast<float>(x);
                     float py = static_cast<float>(y);
-                    float pz = static_cast<float>(elevations[y * width + x]);
+                    float pz = processed_elevations[y * width + x];
                     sparse_points.emplace_back(px, py, pz);
                 }
             }
@@ -801,10 +990,10 @@ MeshResult grid_to_mesh_detria(
             // Reset and add boundary + subset of sparse points
             triangulation_manager = std::make_unique<DetriaTriangulationManager>();
             triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
-                static_cast<float>(elevations[0]),
-                static_cast<float>(elevations[width - 1]),
-                static_cast<float>(elevations[(height - 1) * width + width - 1]),
-                static_cast<float>(elevations[(height - 1) * width]));
+                processed_elevations[0],
+                processed_elevations[width - 1],
+                processed_elevations[(height - 1) * width + width - 1],
+                processed_elevations[(height - 1) * width]);
             
             // Add subset of sparse points
             for (size_t i = 0; i < points_to_try; ++i) {
@@ -827,10 +1016,10 @@ MeshResult grid_to_mesh_detria(
         auto start_time = std::chrono::high_resolution_clock::now();
         
         // Initialize all candidates from grid
-        refiner->initializeCandidatesFromGrid(width, height, elevations);
+        refiner->initializeCandidatesFromGrid(width, height, processed_elevations);
         
         // Perform incremental refinement
-        int points_added = refiner->refineIncrementally(width, height, elevations);
+        int points_added = refiner->refineIncrementally(width, height, processed_elevations);
         
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -854,6 +1043,11 @@ MeshResult grid_to_mesh_detria(
 template MeshResult grid_to_mesh_detria<float>(int width, int height, const float* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<double>(int width, int height, const double* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<int>(int width, int height, const int* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+
+// Explicit instantiations for preprocessing function
+template PreprocessingResult preprocess_input_data<float>(int width, int height, const float* elevations, float& error_threshold, bool enable_jitter);
+template PreprocessingResult preprocess_input_data<double>(int width, int height, const double* elevations, float& error_threshold, bool enable_jitter);
+template PreprocessingResult preprocess_input_data<int>(int width, int height, const int* elevations, float& error_threshold, bool enable_jitter);
 
 // === Volumetric Mesh Generation Implementation ===
 
