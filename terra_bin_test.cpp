@@ -1,5 +1,4 @@
 #include "TerraScape.hpp"
-#include "TerraScapeImpl.h"
 #include "dsp_reader.hpp"
 #include <iostream>
 #include <vector>

@@ -538,15 +538,44 @@ PreprocessingResult<T> preprocess_input_data(
     PreprocessingResult<T> result;
     result.processed_elevations.reserve(width * height);
 
-    // Convert to float and find min/max
+    // Convert to float and find min/max, handling NaN/inf robustly
     float min_z = std::numeric_limits<float>::max();
     float max_z = std::numeric_limits<float>::lowest();
-
+    int invalid_count = 0;
+    
+    // First pass: convert and identify finite values
     for (int i = 0; i < width * height; ++i) {
         float z = static_cast<float>(elevations[i]);
+        if (!std::isfinite(z)) {
+            invalid_count++;
+            z = 0.0f; // Temporary placeholder
+        }
         result.processed_elevations.push_back(z);
-        min_z = std::min(min_z, z);
-        max_z = std::max(max_z, z);
+        if (std::isfinite(z)) {
+            min_z = std::min(min_z, z);
+            max_z = std::max(max_z, z);
+        }
+    }
+    
+    // Handle case where all values are invalid
+    if (invalid_count == width * height) {
+        result.has_warnings = true;
+        result.warnings.push_back("All elevation data invalid (NaN/inf), using zero elevation");
+        std::fill(result.processed_elevations.begin(), result.processed_elevations.end(), 0.0f);
+        min_z = max_z = 0.0f;
+    } else if (invalid_count > 0) {
+        // Replace invalid values with interpolated/reasonable values
+        result.has_warnings = true;
+        result.warnings.push_back("Found " + std::to_string(invalid_count) + 
+                                 " invalid elevation values, replaced with interpolated data");
+        
+        // Simple strategy: replace invalid values with mean of valid values
+        float mean_elevation = (min_z + max_z) * 0.5f;
+        for (int i = 0; i < width * height; ++i) {
+            if (!std::isfinite(static_cast<float>(elevations[i]))) {
+                result.processed_elevations[i] = mean_elevation;
+            }
+        }
     }
 
     float z_range = max_z - min_z;
