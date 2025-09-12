@@ -4,10 +4,10 @@
  * TerraScape - Advanced Terrain Mesh Generation Library
  *
  * This library provides efficient grid-to-mesh conversion with advanced
- * Delaunay triangulation and greedy refinement algorithms.
+ * triangulation and refinement algorithms.
  *
- * Based on the Terra and Scape terrain simplification algorithms with
- * modern C++ implementation using robust geometric predicates.
+ * Greedy Cuts advancing front triangulation is used for grid heightfields,
+ * with adaptive error control, mesh-quality constraints, and multi-pass refinement.
  */
 
 #include <vector>
@@ -37,10 +37,6 @@
 #endif
 
 namespace TerraScape {
-
-// Grid-aware advancing front triangulation is now the single, optimal approach
-// for gridded terrain data. No strategy selection needed - the algorithm
-// naturally handles collinear points and leverages grid structure.
 
 // --- Helper: RAM detection (platform-specific) ---
 inline size_t get_available_ram_bytes() {
@@ -87,10 +83,7 @@ struct VolumetricMeshResult {
     bool has_negative_volume = false;
 };
 
-// --- Forward declarations for implementation ---
-class GridTriangulator;
-
-// --- Helper: Enhanced grid accessor ---
+// --- Helper: Enhanced grid accessor (kept for potential future use) ---
 template<typename T>
 class Grid {
 public:
@@ -115,7 +108,7 @@ public:
     }
 };
 
-// --- Utility: barycentric triangle routines ---
+// --- Utility: barycentric triangle routines (kept for potential future use) ---
 inline bool point_in_triangle(float px, float py,
                               const Vertex& v0, const Vertex& v1, const Vertex& v2)
 {
@@ -124,6 +117,7 @@ inline bool point_in_triangle(float px, float py,
     float dX21 = v2.x - v1.x;
     float dY12 = v1.y - v2.y;
     float D = (v0.x - v2.x) * dY12 + (v0.y - v2.y) * dX21;
+    if (std::abs(D) < 1e-20f) return false;
     float s = ((v0.x - v2.x) * dY + (v0.y - v2.y) * dX) / D;
     float t = (dY12 * dX + dX21 * dY) / D;
     return (s >= 0) && (t >= 0) && (s + t <= 1);
@@ -153,373 +147,6 @@ struct Edge {
 
     bool operator==(const Edge& other) const {
         return v0 == other.v0 && v1 == other.v1;
-    }
-};
-
-// --- Implementation section ---
-// Header-only implementation follows
-
-/**
- * Grid-aware triangulation manager that replaces external triangulation libraries
- * for gridded terrain data. Uses advancing front algorithm that naturally handles
- * collinear points and takes advantage of the structured nature of grid data.
- */
-class GridTriangulator {
-public:
-    /**
-     * Vertex structure for grid-aware triangulation
-     */
-    struct GridVertex {
-        float x, y, z;
-        int grid_x, grid_y;  // Original grid coordinates
-        uint32_t index;      // Vertex index in final mesh
-
-        GridVertex(float x, float y, float z, int gx = -1, int gy = -1, uint32_t idx = 0)
-            : x(x), y(y), z(z), grid_x(gx), grid_y(gy), index(idx) {}
-    };
-
-    /**
-     * Edge structure for advancing front algorithm
-     */
-    struct AdvancingEdge {
-        uint32_t v0, v1;           // Vertex indices
-        bool is_boundary;          // Whether this is a boundary edge
-        float quality_metric;      // Used for prioritizing edge advancement
-
-        AdvancingEdge(uint32_t v0, uint32_t v1, bool boundary = false)
-            : v0(v0), v1(v1), is_boundary(boundary), quality_metric(0.0f) {}
-
-        bool operator<(const AdvancingEdge& other) const {
-            return quality_metric < other.quality_metric; // Min-heap (advance best edges first)
-        }
-    };
-
-    /**
-     * Triangle structure
-     */
-    struct GridTriangle {
-        uint32_t v0, v1, v2;
-        float quality;  // Aspect ratio or other quality metric
-
-        GridTriangle(uint32_t v0, uint32_t v1, uint32_t v2) : v0(v0), v1(v1), v2(v2), quality(0.0f) {}
-    };
-
-    GridTriangulator()
-        : grid_width_(0), grid_height_(0)
-        , min_x_(0.0f), min_y_(0.0f), max_x_(0.0f), max_y_(0.0f) {
-    }
-
-    ~GridTriangulator() = default;
-
-    /**
-     * Initialize triangulator with grid dimensions and boundary
-     */
-    void initializeGrid(int width, int height, float min_x, float min_y, float max_x, float max_y) {
-        clear();
-
-        grid_width_ = width;
-        grid_height_ = height;
-        min_x_ = min_x;
-        min_y_ = min_y;
-        max_x_ = max_x;
-        max_y_ = max_y;
-
-        // Initialize grid mapping
-        grid_to_vertex_.assign(width * height, UINT32_MAX);
-    }
-
-    void clear() {
-        vertices_.clear();
-        triangles_.clear();
-        grid_to_vertex_.clear();
-
-        // Clear advancing front
-        while (!advancing_front_.empty()) {
-            advancing_front_.pop();
-        }
-        processed_edges_.clear();
-    }
-
-    /**
-     * Add a grid point at specific grid coordinates
-     */
-    uint32_t addGridPoint(int grid_x, int grid_y, float z) {
-        if (!isValidGridCoordinate(grid_x, grid_y)) {
-            return UINT32_MAX;
-        }
-
-        float x = gridToWorldX(grid_x);
-        float y = gridToWorldY(grid_y);
-
-        uint32_t vertex_index = static_cast<uint32_t>(vertices_.size());
-        vertices_.emplace_back(x, y, z, grid_x, grid_y, vertex_index);
-
-        // Map grid coordinate to vertex
-        grid_to_vertex_[grid_y * grid_width_ + grid_x] = vertex_index;
-
-        return vertex_index;
-    }
-
-    /**
-     * Add arbitrary point (for sparse sampling)
-     */
-    uint32_t addPoint(float x, float y, float z) {
-        uint32_t vertex_index = static_cast<uint32_t>(vertices_.size());
-        vertices_.emplace_back(x, y, z, -1, -1, vertex_index);
-        return vertex_index;
-    }
-
-    /**
-     * Execute advancing front triangulation
-     */
-    bool triangulate() {
-        if (vertices_.size() < 3) return false;
-
-        // Initialize boundary triangulation
-        initializeBoundaryTriangulation();
-
-        // Advance the front until complete
-        while (!advancing_front_.empty()) {
-            if (!advanceFrontStep()) {
-                break; // Failed to advance
-            }
-        }
-
-        return !triangles_.empty();
-    }
-
-    /**
-     * Convert to standard MeshResult format
-     */
-    MeshResult toMeshResult() const {
-        MeshResult result;
-
-        // Convert vertices
-        result.vertices.reserve(vertices_.size());
-        for (const auto& gv : vertices_) {
-            result.vertices.push_back({gv.x, gv.y, gv.z});
-        }
-
-        // Convert triangles
-        result.triangles.reserve(triangles_.size());
-        for (const auto& gt : triangles_) {
-            result.triangles.push_back({static_cast<int>(gt.v0), static_cast<int>(gt.v1), static_cast<int>(gt.v2)});
-        }
-
-        return result;
-    }
-
-    /**
-     * Get statistics
-     */
-    size_t getVertexCount() const { return vertices_.size(); }
-    size_t getTriangleCount() const { return triangles_.size(); }
-
-private:
-    // Grid parameters
-    int grid_width_, grid_height_;
-    float min_x_, min_y_, max_x_, max_y_;
-
-    // Mesh data
-    std::vector<GridVertex> vertices_;
-    std::vector<GridTriangle> triangles_;
-
-    // Grid mapping for efficient lookups
-    std::vector<uint32_t> grid_to_vertex_;  // grid_y * width + grid_x -> vertex index
-
-    // Advancing front data structures
-    std::priority_queue<AdvancingEdge> advancing_front_;
-    std::unordered_set<uint64_t> processed_edges_;  // Track processed edges to avoid duplicates
-
-    // Helper methods
-    void initializeBoundaryTriangulation() {
-        // Create initial boundary triangulation using convex hull or regular grid boundary
-        if (vertices_.size() < 3) return;
-
-        // For grid data, we can create a simple boundary triangulation
-        // Find corner vertices (assuming they exist)
-        std::vector<uint32_t> corners;
-
-        // Look for corners in the grid
-        for (const auto& v : vertices_) {
-            if (v.grid_x != -1 && v.grid_y != -1) {
-                if ((v.grid_x == 0 || v.grid_x == grid_width_ - 1) &&
-                    (v.grid_y == 0 || v.grid_y == grid_height_ - 1)) {
-                    corners.push_back(v.index);
-                }
-            }
-        }
-
-        if (corners.size() >= 3) {
-            // Create initial triangles from corners
-            if (corners.size() == 4) {
-                // Rectangle: create two triangles
-                addTriangle(corners[0], corners[1], corners[2]);
-                addTriangle(corners[0], corners[2], corners[3]);
-                
-                // Add interior edges to advancing front (edges between triangles that can be expanded)
-                // The diagonal edge corners[0] to corners[2] is an interior edge
-                if (!isEdgeProcessed(corners[0], corners[2])) {
-                    AdvancingEdge edge(corners[0], corners[2]);
-                    edge.quality_metric = calculateEdgeQuality(edge);
-                    advancing_front_.push(edge);
-                }
-            } else {
-                // General case: fan triangulation from first corner
-                for (size_t i = 1; i < corners.size() - 1; ++i) {
-                    addTriangle(corners[0], corners[i], corners[i + 1]);
-                }
-                
-                // Add edges from center to other vertices as potential expanding edges
-                for (size_t i = 1; i < corners.size(); ++i) {
-                    if (!isEdgeProcessed(corners[0], corners[i])) {
-                        AdvancingEdge edge(corners[0], corners[i]);
-                        edge.quality_metric = calculateEdgeQuality(edge);
-                        advancing_front_.push(edge);
-                    }
-                }
-            }
-        }
-    }
-
-    bool advanceFrontStep() {
-        if (advancing_front_.empty()) return false;
-
-        AdvancingEdge edge = advancing_front_.top();
-        advancing_front_.pop();
-
-        // Skip if already processed
-        if (isEdgeProcessed(edge.v0, edge.v1)) {
-            return true;
-        }
-
-        // Find best point to form triangle with this edge
-        uint32_t best_point = findBestInteriorPoint(edge);
-        if (best_point == UINT32_MAX) {
-            return false; // No suitable point found
-        }
-
-        // Create triangle
-        addTriangle(edge.v0, edge.v1, best_point);
-
-        // Update advancing front
-        updateAdvancingFront(edge.v0, edge.v1, best_point);
-
-        return true;
-    }
-
-    uint32_t findBestInteriorPoint(const AdvancingEdge& edge) {
-        uint32_t best_point = UINT32_MAX;
-        float best_quality = -1.0f;
-
-        const GridVertex& v0 = vertices_[edge.v0];
-        const GridVertex& v1 = vertices_[edge.v1];
-
-        for (uint32_t i = 0; i < vertices_.size(); ++i) {
-            if (i == edge.v0 || i == edge.v1) continue;
-
-            const GridVertex& candidate = vertices_[i];
-
-            // Check if this would form a valid triangle
-            if (isLeftTurn(v0, v1, candidate)) {
-                float quality = calculateTriangleQuality(edge.v0, edge.v1, i);
-                if (quality > best_quality) {
-                    best_quality = quality;
-                    best_point = i;
-                }
-            }
-        }
-
-        return best_point;
-    }
-
-    float calculateTriangleQuality(uint32_t v0, uint32_t v1, uint32_t v2) const {
-        const GridVertex& a = vertices_[v0];
-        const GridVertex& b = vertices_[v1];
-        const GridVertex& c = vertices_[v2];
-
-        // Calculate triangle area and perimeter for aspect ratio
-        float area = triangleArea(a, b, c);
-        if (area <= 0.0f) return 0.0f;
-
-        float ab = std::sqrt(distanceSquared(a, b));
-        float bc = std::sqrt(distanceSquared(b, c));
-        float ca = std::sqrt(distanceSquared(c, a));
-        float perimeter = ab + bc + ca;
-
-        if (perimeter <= 0.0f) return 0.0f;
-
-        // Return normalized aspect ratio (higher is better)
-        return (4.0f * 3.14159f * area) / (perimeter * perimeter);
-    }
-
-    void addTriangle(uint32_t v0, uint32_t v1, uint32_t v2) {
-        triangles_.emplace_back(v0, v1, v2);
-
-        // Mark edges as processed
-        markEdgeProcessed(v0, v1);
-        markEdgeProcessed(v1, v2);
-        markEdgeProcessed(v2, v0);
-    }
-
-    void updateAdvancingFront(uint32_t v0, uint32_t v1, uint32_t v2) {
-        // Add new edges to advancing front if they're not already processed
-        if (!isEdgeProcessed(v1, v2)) {
-            AdvancingEdge new_edge(v1, v2);
-            new_edge.quality_metric = calculateEdgeQuality(new_edge);
-            advancing_front_.push(new_edge);
-        }
-
-        if (!isEdgeProcessed(v2, v0)) {
-            AdvancingEdge new_edge(v2, v0);
-            new_edge.quality_metric = calculateEdgeQuality(new_edge);
-            advancing_front_.push(new_edge);
-        }
-    }
-
-    float calculateEdgeQuality(const AdvancingEdge& edge) const {
-        const GridVertex& v0 = vertices_[edge.v0];
-        const GridVertex& v1 = vertices_[edge.v1];
-        return -distanceSquared(v0, v1); // Negative because we want shorter edges first
-    }
-
-    uint64_t encodeEdge(uint32_t v0, uint32_t v1) const {
-        if (v0 > v1) std::swap(v0, v1);
-        return (static_cast<uint64_t>(v0) << 32) | v1;
-    }
-
-    bool isEdgeProcessed(uint32_t v0, uint32_t v1) const {
-        return processed_edges_.count(encodeEdge(v0, v1)) > 0;
-    }
-
-    void markEdgeProcessed(uint32_t v0, uint32_t v1) {
-        processed_edges_.insert(encodeEdge(v0, v1));
-    }
-
-    bool isValidGridCoordinate(int x, int y) const {
-        return x >= 0 && x < grid_width_ && y >= 0 && y < grid_height_;
-    }
-
-    float gridToWorldX(int grid_x) const {
-        return min_x_ + (max_x_ - min_x_) * grid_x / (grid_width_ - 1);
-    }
-
-    float gridToWorldY(int grid_y) const {
-        return min_y_ + (max_y_ - min_y_) * grid_y / (grid_height_ - 1);
-    }
-
-    float distanceSquared(const GridVertex& a, const GridVertex& b) const {
-        float dx = a.x - b.x;
-        float dy = a.y - b.y;
-        return dx * dx + dy * dy;
-    }
-
-    float triangleArea(const GridVertex& a, const GridVertex& b, const GridVertex& c) const {
-        return 0.5f * std::abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
-    }
-
-    bool isLeftTurn(const GridVertex& a, const GridVertex& b, const GridVertex& c) const {
-        return ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) > 0.0f;
     }
 };
 
@@ -629,12 +256,21 @@ PreprocessingResult<T> preprocess_input_data(
     return result;
 }
 
-// --- Main grid-to-mesh implementation ---
+// --- Greedy Cuts grid-to-mesh implementation ---
 
+/**
+ * grid_to_mesh_impl
+ * - Wires in the header-only greedy_cuts.hpp advancing front triangulation
+ * - Uses adaptive error thresholding and mesh-quality constraints internally
+ *
+ * Note: point_limit is not used by Greedy Cuts (which operates on the full grid vertex set).
+ *       To reduce output size, adjust error_threshold (higher -> fewer triangles) or extend
+ *       greedy_cuts options to enforce budgets.
+ */
 template<typename T>
 inline MeshResult grid_to_mesh_impl(
     int width, int height, const T* elevations,
-    float error_threshold, int point_limit) {
+    float error_threshold, int /*point_limit*/) {
 
     // Preprocess input for robustness
     auto preprocessing = preprocess_input_data(width, height, elevations, error_threshold);
@@ -645,145 +281,74 @@ inline MeshResult grid_to_mesh_impl(
         }
     }
 
-    try {
-        // Create grid triangulator
-        GridTriangulator triangulator;
-        triangulator.initializeGrid(width, height, 0.0f, 0.0f,
-                                   static_cast<float>(width - 1), static_cast<float>(height - 1));
+    // Configure Greedy Cuts options
+    ::terrascape::GreedyCutsOptions gc_opt;
+    gc_opt.base_error_threshold = preprocessing.adjusted_error_threshold;
+    // Defaults for slope/curvature weights and mesh quality are set in greedy_cuts.hpp;
+    // override here if desired:
+    // gc_opt.slope_weight = 3.0;
+    // gc_opt.curvature_weight = 10.0;
+    // gc_opt.min_angle_deg = 20.0;
+    // gc_opt.max_aspect_ratio = 6.0;
+    // gc_opt.min_area = 0.5;
+    // gc_opt.max_refinement_passes = 5;
 
-        // Add vertices at grid points with proper point limit respect
-        int step = 1;
-        if (width * height > point_limit) {
-            // Calculate step to stay under point limit with some margin
-            float target_vertices = static_cast<float>(point_limit) * 0.8f; // 80% of limit for safety
-            step = static_cast<int>(std::ceil(std::sqrt(static_cast<float>(width * height) / target_vertices)));
-            step = std::max(step, 1);
-        }
+    // Run Greedy Cuts triangulation
+    ::terrascape::Mesh gc_mesh;
+    ::terrascape::triangulateGreedyCuts(
+        preprocessing.processed_elevations.data(),
+        width, height,
+        nullptr, // NoData mask not yet propagated from preprocessing
+        gc_opt,
+        gc_mesh
+    );
 
-        // Always add corner vertices first to ensure proper boundary triangulation
-        std::set<std::pair<int, int>> added_points;
-        
-        // Add corner points
-        auto add_corner = [&](int x, int y) {
-            if (x >= 0 && x < width && y >= 0 && y < height && added_points.find({x, y}) == added_points.end()) {
-                int idx = y * width + x;
-                triangulator.addGridPoint(x, y, preprocessing.processed_elevations[idx]);
-                added_points.insert({x, y});
-            }
-        };
-        
-        add_corner(0, 0);
-        add_corner(width - 1, 0);
-        add_corner(width - 1, height - 1);
-        add_corner(0, height - 1);
+    MeshResult result;
 
-        // Add regular grid points, skipping corners that were already added
-        for (int y = 0; y < height; y += step) {
-            for (int x = 0; x < width; x += step) {
-                if (added_points.find({x, y}) == added_points.end()) {
-                    int idx = y * width + x;
-                    triangulator.addGridPoint(x, y, preprocessing.processed_elevations[idx]);
-                    added_points.insert({x, y});
-                }
-            }
-        }
+    // If triangulation failed to produce any triangles, fall back to a simple grid mesh
+    if (gc_mesh.triangles.empty()) {
+        std::cerr << "Greedy Cuts produced no triangles - falling back to simple grid mesh" << std::endl;
 
-        // Triangulate
-        if (!triangulator.triangulate()) {
-            throw std::runtime_error("Grid triangulation failed");
-        }
-
-        auto result = triangulator.toMeshResult();
-        
-        // Check if triangulation produced reasonable results
-        if (result.triangles.size() < static_cast<size_t>(std::max(1, static_cast<int>(result.vertices.size()) / 100))) {
-            throw std::runtime_error("Grid triangulation produced insufficient triangles");
-        }
-
-        return result;
-
-    } catch (const std::exception& e) {
-        std::cerr << "Grid triangulation error: " << e.what() << std::endl;
-        std::cerr << "Falling back to simple grid mesh" << std::endl;
-
-        // Fallback to simple grid-based triangulation
-        MeshResult fallback_result;
-        
-        // Create a simple grid triangulation by sampling points and creating quads
-        int grid_step = 1;
-        if (width * height > point_limit) {
-            // Calculate step to stay under point limit with some margin
-            float target_vertices = static_cast<float>(point_limit) * 0.8f; // 80% of limit for safety
-            grid_step = static_cast<int>(std::ceil(std::sqrt(static_cast<float>(width * height) / target_vertices)));
-            grid_step = std::max(grid_step, 1);
-        }
-        
+        // Fallback to simple grid-based triangulation (sample every cell)
         // Create vertex grid
         std::vector<std::vector<int>> vertex_indices(height, std::vector<int>(width, -1));
-        
-        // Track added points for consistent indexing
-        std::set<std::pair<int, int>> added_points;
-        
-        // Always add corner vertices first
-        auto add_corner = [&](int x, int y) {
-            if (x >= 0 && x < width && y >= 0 && y < height && added_points.find({x, y}) == added_points.end()) {
-                int idx = y * width + x;
-                int vertex_idx = static_cast<int>(fallback_result.vertices.size());
-                fallback_result.vertices.push_back({
-                    static_cast<float>(x), 
-                    static_cast<float>(y), 
-                    static_cast<float>(preprocessing.processed_elevations[idx])
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                int v_idx = static_cast<int>(result.vertices.size());
+                result.vertices.push_back({
+                    static_cast<float>(x),
+                    static_cast<float>(y),
+                    preprocessing.processed_elevations[y * width + x]
                 });
-                vertex_indices[y][x] = vertex_idx;
-                added_points.insert({x, y});
-            }
-        };
-        
-        add_corner(0, 0);
-        add_corner(width - 1, 0);
-        add_corner(width - 1, height - 1);
-        add_corner(0, height - 1);
-
-        // Add regular grid vertices
-        for (int y = 0; y < height; y += grid_step) {
-            for (int x = 0; x < width; x += grid_step) {
-                if (added_points.find({x, y}) == added_points.end()) {
-                    int idx = y * width + x;
-                    int vertex_idx = static_cast<int>(fallback_result.vertices.size());
-                    fallback_result.vertices.push_back({
-                        static_cast<float>(x), 
-                        static_cast<float>(y), 
-                        static_cast<float>(preprocessing.processed_elevations[idx])
-                    });
-                    vertex_indices[y][x] = vertex_idx;
-                    added_points.insert({x, y});
-                }
+                vertex_indices[y][x] = v_idx;
             }
         }
-        
-        // Create triangles from grid quads
-        for (int y = 0; y < height - grid_step; y += grid_step) {
-            for (int x = 0; x < width - grid_step; x += grid_step) {
-                int next_y = std::min(y + grid_step, height - 1);
-                int next_x = std::min(x + grid_step, width - 1);
-                
-                if (vertex_indices[y][x] != -1 && vertex_indices[y][next_x] != -1 &&
-                    vertex_indices[next_y][x] != -1 && vertex_indices[next_y][next_x] != -1) {
-                    
-                    int v00 = vertex_indices[y][x];
-                    int v01 = vertex_indices[y][next_x];
-                    int v10 = vertex_indices[next_y][x];
-                    int v11 = vertex_indices[next_y][next_x];
-                    
-                    // Create two triangles for each quad
-                    fallback_result.triangles.push_back({v00, v01, v11});
-                    fallback_result.triangles.push_back({v00, v11, v10});
-                }
+        for (int y = 0; y < height - 1; ++y) {
+            for (int x = 0; x < width - 1; ++x) {
+                int v00 = vertex_indices[y][x];
+                int v01 = vertex_indices[y][x+1];
+                int v10 = vertex_indices[y+1][x];
+                int v11 = vertex_indices[y+1][x+1];
+                result.triangles.push_back({v00, v01, v11});
+                result.triangles.push_back({v00, v11, v10});
             }
         }
-        
-        return fallback_result;
+        return result;
     }
+
+    // Convert Greedy Cuts mesh to TerraScape MeshResult
+    result.vertices.reserve(gc_mesh.vertices.size());
+    for (const auto& v : gc_mesh.vertices) {
+        result.vertices.push_back({static_cast<float>(v[0]),
+                                   static_cast<float>(v[1]),
+                                   static_cast<float>(v[2])});
+    }
+    result.triangles.reserve(gc_mesh.triangles.size());
+    for (const auto& t : gc_mesh.triangles) {
+        result.triangles.push_back({t[0], t[1], t[2]});
+    }
+
+    return result;
 }
 
 // --- Volumetric mesh implementations ---
@@ -935,15 +500,14 @@ inline VolumetricMeshResult grid_to_mesh_volumetric_separated(
 }
 
 // --- Main API Functions ---
-// These are the primary user-facing functions that delegate to implementations above
 
-// Core mesh generation with grid-aware triangulation
+// Core mesh generation with Greedy Cuts grid-aware triangulation
 template<typename T>
 inline MeshResult grid_to_mesh(
     int width, int height, const T* elevations,
     float error_threshold = 1.0f, int point_limit = 10000)
 {
-    // Delegate to grid-aware implementation for optimal collinear point handling
+    // Delegate to Greedy Cuts implementation
     return grid_to_mesh_impl(width, height, elevations, error_threshold, point_limit);
 }
 
