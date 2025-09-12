@@ -19,6 +19,7 @@
 #include <memory>
 #include <iostream>
 #include <unordered_set>
+#include <set>
 #include <map>
 #include <string>
 #include <stdexcept>
@@ -353,10 +354,27 @@ private:
                 // Rectangle: create two triangles
                 addTriangle(corners[0], corners[1], corners[2]);
                 addTriangle(corners[0], corners[2], corners[3]);
+                
+                // Add interior edges to advancing front (edges between triangles that can be expanded)
+                // The diagonal edge corners[0] to corners[2] is an interior edge
+                if (!isEdgeProcessed(corners[0], corners[2])) {
+                    AdvancingEdge edge(corners[0], corners[2]);
+                    edge.quality_metric = calculateEdgeQuality(edge);
+                    advancing_front_.push(edge);
+                }
             } else {
                 // General case: fan triangulation from first corner
                 for (size_t i = 1; i < corners.size() - 1; ++i) {
                     addTriangle(corners[0], corners[i], corners[i + 1]);
+                }
+                
+                // Add edges from center to other vertices as potential expanding edges
+                for (size_t i = 1; i < corners.size(); ++i) {
+                    if (!isEdgeProcessed(corners[0], corners[i])) {
+                        AdvancingEdge edge(corners[0], corners[i]);
+                        edge.quality_metric = calculateEdgeQuality(edge);
+                        advancing_front_.push(edge);
+                    }
                 }
             }
         }
@@ -631,17 +649,40 @@ inline MeshResult grid_to_mesh_impl(
         triangulator.initializeGrid(width, height, 0.0f, 0.0f,
                                    static_cast<float>(width - 1), static_cast<float>(height - 1));
 
-        // Add vertices at grid points (simplified approach - add all points for now)
+        // Add vertices at grid points with proper point limit respect
         int step = 1;
         if (width * height > point_limit) {
-            step = static_cast<int>(std::sqrt(static_cast<float>(width * height) / point_limit));
+            // Calculate step to stay under point limit with some margin
+            float target_vertices = static_cast<float>(point_limit) * 0.8f; // 80% of limit for safety
+            step = static_cast<int>(std::ceil(std::sqrt(static_cast<float>(width * height) / target_vertices)));
             step = std::max(step, 1);
         }
 
-        for (int y = 0; y < height; y += step) {
-            for (int x = 0; x < width; x += step) {
+        // Always add corner vertices first to ensure proper boundary triangulation
+        std::set<std::pair<int, int>> added_points;
+        
+        // Add corner points
+        auto add_corner = [&](int x, int y) {
+            if (x >= 0 && x < width && y >= 0 && y < height && added_points.find({x, y}) == added_points.end()) {
                 int idx = y * width + x;
                 triangulator.addGridPoint(x, y, preprocessing.processed_elevations[idx]);
+                added_points.insert({x, y});
+            }
+        };
+        
+        add_corner(0, 0);
+        add_corner(width - 1, 0);
+        add_corner(width - 1, height - 1);
+        add_corner(0, height - 1);
+
+        // Add regular grid points, skipping corners that were already added
+        for (int y = 0; y < height; y += step) {
+            for (int x = 0; x < width; x += step) {
+                if (added_points.find({x, y}) == added_points.end()) {
+                    int idx = y * width + x;
+                    triangulator.addGridPoint(x, y, preprocessing.processed_elevations[idx]);
+                    added_points.insert({x, y});
+                }
             }
         }
 
@@ -650,22 +691,95 @@ inline MeshResult grid_to_mesh_impl(
             throw std::runtime_error("Grid triangulation failed");
         }
 
-        return triangulator.toMeshResult();
+        auto result = triangulator.toMeshResult();
+        
+        // Check if triangulation produced reasonable results
+        if (result.triangles.size() < static_cast<size_t>(std::max(1, static_cast<int>(result.vertices.size()) / 100))) {
+            throw std::runtime_error("Grid triangulation produced insufficient triangles");
+        }
+
+        return result;
 
     } catch (const std::exception& e) {
         std::cerr << "Grid triangulation error: " << e.what() << std::endl;
-        std::cerr << "Falling back to simple quad mesh" << std::endl;
+        std::cerr << "Falling back to simple grid mesh" << std::endl;
 
-        // Fallback to simple mesh
+        // Fallback to simple grid-based triangulation
         MeshResult fallback_result;
-        fallback_result.vertices = {
-            Vertex{0.0f, 0.0f, static_cast<float>(preprocessing.processed_elevations[0])},
-            Vertex{static_cast<float>(width - 1), 0.0f, static_cast<float>(preprocessing.processed_elevations[width - 1])},
-            Vertex{static_cast<float>(width - 1), static_cast<float>(height - 1),
-                   static_cast<float>(preprocessing.processed_elevations[(height - 1) * width + width - 1])},
-            Vertex{0.0f, static_cast<float>(height - 1), static_cast<float>(preprocessing.processed_elevations[(height - 1) * width])}
+        
+        // Create a simple grid triangulation by sampling points and creating quads
+        int grid_step = 1;
+        if (width * height > point_limit) {
+            // Calculate step to stay under point limit with some margin
+            float target_vertices = static_cast<float>(point_limit) * 0.8f; // 80% of limit for safety
+            grid_step = static_cast<int>(std::ceil(std::sqrt(static_cast<float>(width * height) / target_vertices)));
+            grid_step = std::max(grid_step, 1);
+        }
+        
+        // Create vertex grid
+        std::vector<std::vector<int>> vertex_indices(height, std::vector<int>(width, -1));
+        
+        // Track added points for consistent indexing
+        std::set<std::pair<int, int>> added_points;
+        
+        // Always add corner vertices first
+        auto add_corner = [&](int x, int y) {
+            if (x >= 0 && x < width && y >= 0 && y < height && added_points.find({x, y}) == added_points.end()) {
+                int idx = y * width + x;
+                int vertex_idx = static_cast<int>(fallback_result.vertices.size());
+                fallback_result.vertices.push_back({
+                    static_cast<float>(x), 
+                    static_cast<float>(y), 
+                    static_cast<float>(preprocessing.processed_elevations[idx])
+                });
+                vertex_indices[y][x] = vertex_idx;
+                added_points.insert({x, y});
+            }
         };
-        fallback_result.triangles = {Triangle{0, 1, 2}, Triangle{0, 2, 3}};
+        
+        add_corner(0, 0);
+        add_corner(width - 1, 0);
+        add_corner(width - 1, height - 1);
+        add_corner(0, height - 1);
+
+        // Add regular grid vertices
+        for (int y = 0; y < height; y += grid_step) {
+            for (int x = 0; x < width; x += grid_step) {
+                if (added_points.find({x, y}) == added_points.end()) {
+                    int idx = y * width + x;
+                    int vertex_idx = static_cast<int>(fallback_result.vertices.size());
+                    fallback_result.vertices.push_back({
+                        static_cast<float>(x), 
+                        static_cast<float>(y), 
+                        static_cast<float>(preprocessing.processed_elevations[idx])
+                    });
+                    vertex_indices[y][x] = vertex_idx;
+                    added_points.insert({x, y});
+                }
+            }
+        }
+        
+        // Create triangles from grid quads
+        for (int y = 0; y < height - grid_step; y += grid_step) {
+            for (int x = 0; x < width - grid_step; x += grid_step) {
+                int next_y = std::min(y + grid_step, height - 1);
+                int next_x = std::min(x + grid_step, width - 1);
+                
+                if (vertex_indices[y][x] != -1 && vertex_indices[y][next_x] != -1 &&
+                    vertex_indices[next_y][x] != -1 && vertex_indices[next_y][next_x] != -1) {
+                    
+                    int v00 = vertex_indices[y][x];
+                    int v01 = vertex_indices[y][next_x];
+                    int v10 = vertex_indices[next_y][x];
+                    int v11 = vertex_indices[next_y][next_x];
+                    
+                    // Create two triangles for each quad
+                    fallback_result.triangles.push_back({v00, v01, v11});
+                    fallback_result.triangles.push_back({v00, v11, v10});
+                }
+            }
+        }
+        
         return fallback_result;
     }
 }

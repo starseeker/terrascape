@@ -145,20 +145,8 @@ int main(int argc, char **argv)
 {
     cout << "Terrascape Demo v" << terra_version_string << " (using bg_grid_mesh API)" << endl;
     
-    // Auto-detect available input files
-    const char* default_input = nullptr;
-    if (filesystem::exists("terra.bin")) {
-        default_input = "terra.bin";
-        cout << "Found terra.bin file - will use for processing" << endl;
-    } else if (filesystem::exists("crater.pgm")) {
-        default_input = "crater.pgm";
-        cout << "Found crater.pgm file - will use for processing" << endl;
-    } else {
-        default_input = "crater.pgm"; // Fallback default
-        cout << "No input files found, will try crater.pgm" << endl;
-    }
-    
-    const char* input_file = default_input;
+    // Initialize with default values
+    const char* input_file = nullptr;
     const char* output_file = "terrain_mesh.obj";
     float error_threshold = 1.0f;     // Lower default for more detail
     int point_limit = 10000;          // Higher default for better quality
@@ -208,6 +196,20 @@ int main(int argc, char **argv)
             pos_arg++;
         }
         arg_idx++;
+    }
+    
+    // If no input file was specified, auto-detect available input files
+    if (input_file == nullptr) {
+        if (filesystem::exists("terra.bin")) {
+            input_file = "terra.bin";
+            cout << "Found terra.bin file - will use for processing" << endl;
+        } else if (filesystem::exists("crater.pgm")) {
+            input_file = "crater.pgm";
+            cout << "Found crater.pgm file - will use for processing" << endl;
+        } else {
+            input_file = "crater.pgm"; // Fallback default
+            cout << "No input files found, will try crater.pgm" << endl;
+        }
     }
     
     cout << "Input: " << input_file << endl;
