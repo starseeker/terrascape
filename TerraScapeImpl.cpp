@@ -1,3 +1,11 @@
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic push /* start new diagnostic pragma */
+#  pragma GCC diagnostic ignored "-Wfloat-equal"
+#elif defined(__clang__)
+#  pragma clang diagnostic push /* start new diagnostic pragma */
+#  pragma clang diagnostic ignored "-Wfloat-equal"
+#endif
+
 #include "TerraScapeImpl.h"
 #include "TerraScape.hpp"
 #include <cmath>
@@ -607,7 +615,7 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
         // Add all points in the batch
         for (const auto& candidate : batch_candidates) {
             float actual_z = static_cast<float>(elevations[candidate.y * width + candidate.x]);
-            uint32_t new_index = triangulation_manager_->addPoint(candidate.world_x, candidate.world_y, actual_z);
+            triangulation_manager_->addPoint(candidate.world_x, candidate.world_y, actual_z);
             
             // Mark this point as inserted to prevent duplicates
             int key = candidate.y * width + candidate.x;
@@ -766,7 +774,7 @@ std::vector<std::pair<int, int>> GreedyMeshRefiner::findAffectedGridPoints(float
 }
 
 template<typename T>
-float GreedyMeshRefiner::calculateError(int gx, int gy, const T* elevations, int width, int height,
+float GreedyMeshRefiner::calculateError(int gx, int gy, const T* elevations, int width, int,
                                        const std::vector<uint32_t>& triangle) const {
     if (triangle.size() != 3) return 0.0f;
     
@@ -1584,3 +1592,10 @@ template VolumetricMeshResult grid_to_mesh_volumetric_separated<double>(int widt
 template VolumetricMeshResult grid_to_mesh_volumetric_separated<int>(int width, int height, const int* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 
 } // namespace TerraScape
+
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic pop /* end ignoring warnings */
+#elif defined(__clang__)
+#  pragma clang diagnostic pop /* end ignoring warnings */
+#endif
+
