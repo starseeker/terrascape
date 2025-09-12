@@ -49,6 +49,12 @@ add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp te
 # Create assertion failure prevention test  
 add_executable(assertion_failure_tests assertion_failure_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
 
+# Create terra.bin processing test for BRL-CAD DSP compatibility
+add_executable(terra_bin_test terra_bin_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp dsp_reader.cpp)
+
+# Create advanced terra.bin processing test for stress testing
+add_executable(advanced_terra_test advanced_terra_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp dsp_reader.cpp)
+
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -60,6 +66,10 @@ target_include_directories(volumetric_separated_example PRIVATE ${CMAKE_CURRENT_
 target_include_directories(preprocessing_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_include_directories(assertion_failure_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_include_directories(terra_bin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_include_directories(advanced_terra_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -107,9 +117,15 @@ set_target_properties(preprocessing_tests PROPERTIES
 set_target_properties(assertion_failure_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+set_target_properties(terra_bin_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+set_target_properties(advanced_terra_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests assertion_failure_tests DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests assertion_failure_tests terra_bin_test advanced_terra_test DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
@@ -118,6 +134,8 @@ add_test(NAME VolumetricMeshTest COMMAND volumetric_test)
 add_test(NAME VolumetricSeparatedMeshTest COMMAND volumetric_separated_test)
 add_test(NAME PreprocessingRobustnessTest COMMAND preprocessing_tests)
 add_test(NAME AssertionFailurePreventionTest COMMAND assertion_failure_tests)
+add_test(NAME TerraBinProcessingTest COMMAND terra_bin_test)
+add_test(NAME AdvancedTerraBinTest COMMAND advanced_terra_test)
 
 # Add GDAL-enabled terrain data tests if GDAL is available
 if(GDAL_FOUND)
