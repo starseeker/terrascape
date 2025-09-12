@@ -10,16 +10,9 @@
 #include <map>
 #include "TerraScape.hpp"
 #include "TerraScapeImpl.h"
-#include "bg_detria.hpp"
 #include "terrain_data_utils.hpp"
 
-// SoS Configuration for testing
-namespace detria {
-    template<typename Point, typename Idx>
-    struct SoSTriangulationConfig : public DefaultTriangulationConfig<Point, Idx> {
-        constexpr static bool UseSimulationOfSimplicity = true;
-    };
-}
+using namespace TerraScape;
 
 // =============================================================================
 // Test Framework
@@ -241,17 +234,11 @@ bool test_pgm_loading() {
 
 bool test_all_strategies() {
     auto data = create_single_peak(6, 6);
-    std::vector<TerraScape::MeshRefineStrategy> strategies = {
-        TerraScape::MeshRefineStrategy::AUTO,
-        TerraScape::MeshRefineStrategy::SPARSE,
-        TerraScape::MeshRefineStrategy::HEAP,
-        TerraScape::MeshRefineStrategy::HYBRID
-    };
     
-    for (auto strategy : strategies) {
-        auto result = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20, strategy);
-        if (result.vertices.size() < 4) return false; // Should at least have corners
-    }
+    // Test the unified grid-aware triangulation approach
+    auto result = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
+    if (result.vertices.size() < 4) return false; // Should at least have corners
+    
     return true;
 }
 
@@ -260,24 +247,15 @@ bool test_all_strategies() {
 // =============================================================================
 
 bool test_triangulation_versioning() {
-    TerraScape::DetriaTriangulationManager manager;
+    // Test that we get consistent results from multiple calls
+    auto data = create_single_peak(6, 6);
     
-    // Initialize with boundary
-    manager.initializeBoundary(0.0f, 0.0f, 5.0f, 5.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-    uint32_t initial_version = manager.getVersion();
+    auto result1 = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
+    auto result2 = TerraScape::grid_to_mesh(6, 6, data.data(), 0.1f, 20);
     
-    // Add a point and retriangulate
-    manager.addPoint(2.5f, 2.5f, 1.0f);
-    manager.retriangulate();
-    uint32_t after_first = manager.getVersion();
-    
-    // Add another point and retriangulate
-    manager.addPoint(1.5f, 1.5f, 0.5f);
-    manager.retriangulate();
-    uint32_t after_second = manager.getVersion();
-    
-    // Version should increment after each successful retriangulation
-    return (after_first > initial_version) && (after_second > after_first);
+    // Should produce identical results (deterministic)
+    return (result1.vertices.size() == result2.vertices.size()) && 
+           (result1.triangles.size() == result2.triangles.size());
 }
 
 bool test_duplicate_guard() {
@@ -346,8 +324,7 @@ bool test_batch_performance() {
     auto data = create_complex_surface(8, 8);
     
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto result = TerraScape::grid_to_mesh(8, 8, data.data(), 0.1f, 25, 
-                                         TerraScape::MeshRefineStrategy::HEAP);
+    auto result = TerraScape::grid_to_mesh(8, 8, data.data(), 0.1f, 25);
     auto end_time = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -380,58 +357,52 @@ bool test_triangle_winding_consistency() {
 // =============================================================================
 
 bool test_sos_lexicographic_ordering() {
-    // Test basic ordering
-    bool test1 = detria::math::sos::lexicographic_less_2d(0.0, 0.0, 0, 1.0, 0.0, 1);  // (0,0,0) < (1,0,1)
-    bool test2 = !detria::math::sos::lexicographic_less_2d(1.0, 0.0, 1, 0.0, 0.0, 0); // (1,0,1) > (0,0,0)
+    // Test that grid-aware triangulation handles coordinate-based ordering deterministically
+    // Create two identical grids and verify they produce identical results
+    const int width = 3, height = 3;
+    std::vector<float> elevations1 = {1.0f, 2.0f, 3.0f, 2.0f, 3.0f, 4.0f, 3.0f, 4.0f, 5.0f};
+    std::vector<float> elevations2 = {1.0f, 2.0f, 3.0f, 2.0f, 3.0f, 4.0f, 3.0f, 4.0f, 5.0f};
     
-    // Test tie-breaking by index when positions are same
-    bool test3 = detria::math::sos::lexicographic_less_2d(1.0, 1.0, 0, 1.0, 1.0, 1);  // same pos, index 0 < 1
-    bool test4 = !detria::math::sos::lexicographic_less_2d(1.0, 1.0, 1, 1.0, 1.0, 0); // same pos, index 1 > 0
+    auto result1 = grid_to_mesh(width, height, elevations1.data(), 0.1f, 100);
+    auto result2 = grid_to_mesh(width, height, elevations2.data(), 0.1f, 100);
     
-    return test1 && test2 && test3 && test4;
+    // Results should be deterministic (same vertex and triangle counts)
+    return (result1.vertices.size() == result2.vertices.size()) && 
+           (result1.triangles.size() == result2.triangles.size());
 }
 
 bool test_sos_orient2d_tiebreak() {
-    // Test collinear points (0,0), (1,0), (2,0) with indices 0, 1, 2
-    detria::PointD a{0.0, 0.0};
-    detria::PointD b{1.0, 0.0}; 
-    detria::PointD c{2.0, 0.0}; // Exactly collinear
+    // Test that grid-aware triangulation handles exactly collinear points properly
+    const int width = 4, height = 1;  // Single row - all collinear
+    std::vector<float> elevations = {1.0f, 2.0f, 3.0f, 4.0f};
     
-    auto result = detria::math::sos::sos_orient2d_tiebreak(a, 0, b, 1, c, 2);
+    auto result = grid_to_mesh(width, height, elevations.data(), 0.1f, 100);
     
-    // The result should be deterministic and not Collinear
-    return result != detria::math::Orientation::Collinear;
+    // Should successfully triangulate without crashes and produce valid triangles
+    return (result.vertices.size() > 0) && (result.triangles.size() > 0);
 }
 
 bool test_sos_consistency() {
-    // Test that SoS gives consistent results for same inputs
-    detria::Vec2<double> p1{0.0, 0.0};
-    detria::Vec2<double> p2{1.0, 0.0}; 
-    detria::Vec2<double> p3{2.0, 0.0};
+    // Test that grid-aware triangulation gives consistent results for repeated calls
+    const int width = 3, height = 3;
+    std::vector<float> elevations(9, 5.0f);  // All same elevation - challenging case
     
-    auto result1 = detria::math::sos::sos_orient2d_tiebreak(p1, 0, p2, 1, p3, 2);
-    auto result2 = detria::math::sos::sos_orient2d_tiebreak(p1, 0, p2, 1, p3, 2);
+    auto result1 = grid_to_mesh(width, height, elevations.data(), 0.1f, 100);
+    auto result2 = grid_to_mesh(width, height, elevations.data(), 0.1f, 100);
     
-    return result1 == result2;
+    // Results should be consistent across calls
+    return (result1.vertices.size() == result2.vertices.size()) && 
+           (result1.triangles.size() == result2.triangles.size());
 }
 
 bool test_sos_triangulation() {
+    // Test that grid-aware triangulation succeeds with challenging collinear cases
+    const int width = 1, height = 4;  // Single column - all collinear
+    std::vector<float> elevations = {1.0f, 2.0f, 3.0f, 4.0f};
+    
     try {
-        std::vector<detria::PointD> points = {
-            {0.0, 0.0}, {1.0, 0.0}, {2.0, 0.0}, {1.0, 1.0}  // First 3 are collinear
-        };
-        
-        // Create SoS-enabled triangulation config
-        using SoSTriangulation = detria::Triangulation<detria::PointD, uint32_t, detria::SoSTriangulationConfig<detria::PointD, uint32_t>>;
-        
-        SoSTriangulation tri;
-        tri.setPoints(points);
-        
-        std::vector<uint32_t> outline = {0, 3, 2, 1};  // Avoid collinear edge in outline
-        tri.addOutline(outline);
-        
-        bool success = tri.triangulate(true);
-        return success;
+        auto result = grid_to_mesh(width, height, elevations.data(), 0.1f, 100);
+        return (result.vertices.size() > 0) && (result.triangles.size() > 0);
     } catch (...) {
         return false;
     }
@@ -444,30 +415,23 @@ bool test_sos_triangulation() {
 bool test_strategy_integration() {
     auto data = create_single_peak(5, 5);
     
-    std::vector<TerraScape::MeshRefineStrategy> strategies = {
-        TerraScape::MeshRefineStrategy::AUTO,
-        TerraScape::MeshRefineStrategy::SPARSE,
-        TerraScape::MeshRefineStrategy::HEAP,
-        TerraScape::MeshRefineStrategy::HYBRID
-    };
+    // Test the unified grid-aware triangulation approach
+    auto result = TerraScape::grid_to_mesh(5, 5, data.data(), 1.0f, 15);
     
-    for (auto strategy : strategies) {
-        auto result = TerraScape::grid_to_mesh(5, 5, data.data(), 1.0f, 15, strategy);
-        
-        // Basic validation: should have corners and some triangles
-        if (result.vertices.size() < 4 || result.triangles.size() < 2) {
+    // Basic validation: should have corners and some triangles
+    if (result.vertices.size() < 4 || result.triangles.size() < 2) {
+        return false;
+    }
+    
+    // Validate all triangle indices are valid
+    for (const auto& triangle : result.triangles) {
+        if (triangle.v0 >= static_cast<int>(result.vertices.size()) ||
+            triangle.v1 >= static_cast<int>(result.vertices.size()) ||
+            triangle.v2 >= static_cast<int>(result.vertices.size())) {
             return false;
         }
-        
-        // Validate all triangle indices are valid
-        for (const auto& triangle : result.triangles) {
-            if (triangle.v0 >= static_cast<int>(result.vertices.size()) ||
-                triangle.v1 >= static_cast<int>(result.vertices.size()) ||
-                triangle.v2 >= static_cast<int>(result.vertices.size())) {
-                return false;
-            }
-        }
     }
+    
     return true;
 }
 
@@ -646,9 +610,9 @@ bool test_synthetic_bigisland_terrain() {
     
     std::cout << "    Elevation range: " << *minmax.first << "m to " << *minmax.second << "m" << std::endl;
     
-    // Test with AUTO strategy
+    // Test with grid-aware triangulation
     auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                        elev_range * 0.01f, 1000, TerraScape::MeshRefineStrategy::AUTO);
+                                        elev_range * 0.01f, 1000);
     
     bool success = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
     
@@ -682,13 +646,12 @@ bool test_volumetric_mesh_basic() {
     
     // Generate surface mesh
     auto surface_mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                               0.1f, 1000, TerraScape::MeshRefineStrategy::HEAP);
+                                               0.1f, 1000);
     
     // Generate volumetric mesh
     float z_base = 0.0f;
     auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(),
-                                                              z_base, 0.1f, 1000, 
-                                                              TerraScape::MeshRefineStrategy::HEAP);
+                                                              z_base, 0.1f, 1000);
     
     // Verify volumetric properties
     bool has_correct_vertices = volumetric_mesh.vertices.size() == 2 * surface_mesh.vertices.size();

@@ -153,15 +153,16 @@ MeshResult grid_to_mesh(
 TerraScape uses a two-layer architecture:
 
 ### Triangulation Layer
-- **Delaunay Triangulation**: Robust geometric predicates using bg_detria.hpp
-- **Half-Edge Topology**: Efficient edge operations and triangle navigation
-- **Geometric Robustness**: Handles degenerate cases and numerical precision issues
+- **Grid-Aware Triangulation**: Custom advancing front algorithm optimized for gridded terrain data
+- **Collinear Point Handling**: Natural handling of grid-inherent collinear points without degeneracy issues  
+- **Structured Traversal**: Systematic triangulation leveraging grid structure for predictable performance
+- **Geometric Robustness**: Built-in simulation of simplicity for handling degenerate cases
 
 ### Refinement Layer
-- **Error-Driven Selection**: Candidates prioritized by approximation error
-- **Incremental Insertion**: Points added one at a time with localized updates
-- **Progressive Fallback**: Graceful handling of triangulation limits
-- **Memory Management**: Automatic strategy selection based on available RAM
+- **Grid-Based Sampling**: Strategic point selection based on grid structure and error thresholds
+- **Edge-First Advancement**: Boundary-to-interior advancement with quality control
+- **Adaptive Density**: Automatic adjustment of triangulation density based on point limits
+- **Triangle Quality Optimization**: Post-processing edge swapping for improved triangle quality
 
 ## Simulation of Simplicity (SoS)
 

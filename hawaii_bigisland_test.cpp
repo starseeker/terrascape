@@ -263,7 +263,7 @@ public:
                 try {
                     auto mesh = TerraScape::grid_to_mesh(
                         terrain_data.width, terrain_data.height, terrain_data.elevations.data(),
-                        error_threshold, point_limit, TerraScape::MeshRefineStrategy::AUTO
+                        error_threshold, point_limit
                     );
                     
                     auto end_time = std::chrono::high_resolution_clock::now();
@@ -332,63 +332,52 @@ public:
             std::cout << "Terrain generation: " << gen_time.count() << "ms\n";
             std::cout << "Elevation range: " << terrain_data.min_elevation << "m to " << terrain_data.max_elevation << "m\n";
             
-            // Test different strategies (exclude HYBRID due to known assertion issues with large datasets)
-            std::vector<std::pair<TerraScape::MeshRefineStrategy, std::string>> strategies = {
-                {TerraScape::MeshRefineStrategy::AUTO, "AUTO"},
-                {TerraScape::MeshRefineStrategy::SPARSE, "SPARSE"}
-            };
+            // Test grid-aware triangulation
+            // Use terrain-appropriate parameters
+            float elev_range = terrain_data.max_elevation - terrain_data.min_elevation;
+            float error_threshold = elev_range * 0.005f; // 0.5% of elevation range
+            int point_limit = std::min(10000, (terrain_data.width * terrain_data.height) / 50); // Max 2% of original points
             
-            for (const auto& strategy_pair : strategies) {
-                auto strategy = strategy_pair.first;
-                auto strategy_name = strategy_pair.second;
+            auto start_time = std::chrono::high_resolution_clock::now();
+            
+            TerraScape::MeshResult mesh;
+            bool success = false;
+            
+            try {
+                mesh = TerraScape::grid_to_mesh(
+                    terrain_data.width, terrain_data.height, terrain_data.elevations.data(),
+                    error_threshold, point_limit
+                );
+                success = true;
+            } catch (const std::exception& e) {
+                std::cout << "  GRID-AWARE: FAILED - " << e.what() << "\n";
+            }
+            
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            if (success && !mesh.vertices.empty()) {
+                // Calculate reduction ratio  
+                float reduction = 100.0f * (1.0f - static_cast<float>(mesh.vertices.size()) / (terrain_data.width * terrain_data.height));
                 
-                // Use terrain-appropriate parameters
-                float elev_range = terrain_data.max_elevation - terrain_data.min_elevation;
-                float error_threshold = elev_range * 0.005f; // 0.5% of elevation range
-                int point_limit = std::min(10000, (terrain_data.width * terrain_data.height) / 50); // Max 2% of original points
+                std::cout << "  GRID-AWARE: " << duration.count() << "ms, "
+                          << mesh.vertices.size() << " vertices (" << std::fixed << std::setprecision(1) 
+                          << reduction << "% reduction), " 
+                          << mesh.triangles.size() << " triangles";
                 
-                auto start_time = std::chrono::high_resolution_clock::now();
-                
-                TerraScape::MeshResult mesh;
-                bool success = false;
-                
-                try {
-                    mesh = TerraScape::grid_to_mesh(
-                        terrain_data.width, terrain_data.height, terrain_data.elevations.data(),
-                        error_threshold, point_limit, strategy
-                    );
-                    success = true;
-                } catch (const std::exception& e) {
-                    std::cout << "  " << strategy_name << ": FAILED - " << e.what() << "\n";
-                    continue;
-                }
-                
-                auto end_time = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-                
-                if (success && !mesh.vertices.empty()) {
-                    // Calculate reduction ratio  
-                    float reduction = 100.0f * (1.0f - static_cast<float>(mesh.vertices.size()) / (terrain_data.width * terrain_data.height));
-                    
-                    std::cout << "  " << strategy_name << ": " << duration.count() << "ms, "
-                              << mesh.vertices.size() << " vertices (" << std::fixed << std::setprecision(1) 
-                              << reduction << "% reduction), " 
-                              << mesh.triangles.size() << " triangles";
-                    
-                    // Performance classification
-                    if (duration.count() < 100) {
-                        std::cout << " ✓ EXCELLENT";
-                    } else if (duration.count() < 1000) {
-                        std::cout << " ✓ GOOD";
-                    } else if (duration.count() < 10000) {
-                        std::cout << " ⚠ ACCEPTABLE";
-                    } else {
-                        std::cout << " ✗ SLOW";
-                    }
-                    std::cout << "\n";
+                // Performance classification
+                if (duration.count() < 100) {
+                    std::cout << " ✓ EXCELLENT";
+                } else if (duration.count() < 1000) {
+                    std::cout << " ✓ GOOD";
+                } else if (duration.count() < 10000) {
+                    std::cout << " ⚠ ACCEPTABLE";
                 } else {
-                    std::cout << "  " << strategy_name << ": FAILED - No mesh generated\n";
+                    std::cout << " ✗ SLOW";
                 }
+                std::cout << "\n";
+            } else {
+                std::cout << "  GRID-AWARE: FAILED - No mesh generated\n";
             }
         }
     }
@@ -515,8 +504,7 @@ public:
                 auto mesh = TerraScape::grid_to_mesh(
                     terrain_data.width, terrain_data.height, terrain_data.elevations.data(),
                     100.0f, // Larger error threshold for speed
-                    5000,   // Reasonable point limit
-                    TerraScape::MeshRefineStrategy::SPARSE
+                    5000    // Reasonable point limit
                 );
                 
                 auto end_time = std::chrono::high_resolution_clock::now();

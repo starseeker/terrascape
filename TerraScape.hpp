@@ -30,13 +30,9 @@
 
 namespace TerraScape {
 
-// --- Strategy selection for mesh refinement ---
-enum class MeshRefineStrategy {
-    AUTO,      // Automatically select method based on grid size and RAM
-    HEAP,      // Use heap + affected update (optimal, high memory) - uses detria
-    HYBRID,    // Hybrid: sparse sampling, then local refinement - uses detria  
-    SPARSE     // Sparse sampling only (fastest, lowest quality) - uses detria
-};
+// Grid-aware advancing front triangulation is now the single, optimal approach
+// for gridded terrain data. No strategy selection needed - the algorithm 
+// naturally handles collinear points and leverages grid structure.
 
 // --- Helper: RAM detection (platform-specific) ---
 inline size_t get_available_ram_bytes() {
@@ -84,8 +80,7 @@ struct VolumetricMeshResult {
 };
 
 // --- Forward declarations for implementation ---
-class DetriaTriangulationManager;
-class GreedyMeshRefiner;
+class GridTriangulator;
 
 // --- Helper: Enhanced grid accessor ---
 template<typename T>
@@ -140,10 +135,9 @@ inline float barycentric_interp(float px, float py,
 
 // --- Forward declaration of implementation function ---
 template<typename T>
-MeshResult grid_to_mesh_detria(
+MeshResult grid_to_mesh_impl(
     int width, int height, const T* elevations,
-    float error_threshold, int point_limit,
-    MeshRefineStrategy strategy);
+    float error_threshold, int point_limit);
 
 // --- Helper functions for volumetric mesh generation ---
 struct Edge {
@@ -174,67 +168,25 @@ template<typename T>
 MeshResult grid_to_mesh_volumetric(
     int width, int height, const T* elevations,
     float z_base = 0.0f,
-    float error_threshold = 1.0f, int point_limit = 10000,
-    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO);
+    float error_threshold = 1.0f, int point_limit = 10000);
 
 // --- Forward declaration of separated volumetric mesh function ---
 template<typename T>
 VolumetricMeshResult grid_to_mesh_volumetric_separated(
     int width, int height, const T* elevations,
     float z_base = 0.0f,
-    float error_threshold = 1.0f, int point_limit = 10000,
-    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO);
+    float error_threshold = 1.0f, int point_limit = 10000);
 
-// --- Main API: Core mesh generation with detria integration ---
+// --- Main API: Core mesh generation with grid-aware triangulation ---
 // This function provides the primary interface for converting elevation grids
-// to triangle meshes using advanced Delaunay triangulation and greedy refinement.
+// to triangle meshes using purpose-built grid-aware advancing front triangulation.
 template<typename T>
 MeshResult grid_to_mesh(
     int width, int height, const T* elevations,
-    float error_threshold = 1.0f, int point_limit = 10000,
-    MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
+    float error_threshold = 1.0f, int point_limit = 10000)
 {
-    // --- Strategy selection ---
-    if (strategy == MeshRefineStrategy::AUTO) {
-        size_t grid_size = size_t(width) * size_t(height);
-        size_t avail_ram = get_available_ram_bytes();
-        // More conservative memory estimation for stability
-        size_t heap_mem_needed = grid_size * 32;
-        
-        // Use extremely conservative thresholds to ensure robustness with Hawaii-scale datasets  
-        // HYBRID/HEAP strategies have assertion failures with larger datasets, so prioritize SPARSE
-        if (grid_size <= 500 && heap_mem_needed < avail_ram / 8) {  // Only very tiny grids
-            strategy = MeshRefineStrategy::HEAP;
-        } else if (grid_size <= 1000 && heap_mem_needed < avail_ram / 4) {  // Small grids only
-            strategy = MeshRefineStrategy::HYBRID;
-        } else {
-            strategy = MeshRefineStrategy::SPARSE;  // Use SPARSE for virtually all real datasets
-        }
-        
-        std::cout << "AUTO strategy selected: ";
-        switch (strategy) {
-            case MeshRefineStrategy::HEAP: std::cout << "HEAP"; break;
-            case MeshRefineStrategy::HYBRID: std::cout << "HYBRID"; break;
-            case MeshRefineStrategy::SPARSE: std::cout << "SPARSE"; break;
-            default: break;
-        }
-        std::cout << " for " << grid_size << " points\n";
-    }
-    
-    // Delegate to detria-based implementation with robust error handling
-    try {
-        return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, strategy);
-    } catch (...) {
-        // If the selected strategy fails (e.g., assertion in triangulation), 
-        // fall back to SPARSE strategy which is more robust for large datasets
-        if (strategy != MeshRefineStrategy::SPARSE) {
-            std::cout << "Strategy failed, falling back to SPARSE for robustness\n";
-            return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, MeshRefineStrategy::SPARSE);
-        } else {
-            // If even SPARSE fails, re-throw the exception
-            throw;
-        }
-    }
+    // Delegate to grid-aware implementation for optimal collinear point handling
+    return grid_to_mesh_impl(width, height, elevations, error_threshold, point_limit);
 }
 
 } // namespace TerraScape

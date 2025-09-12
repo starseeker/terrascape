@@ -139,14 +139,12 @@ int main() {
         
         // Generate surface mesh
         auto surface_mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                                    0.1f, 1000, 
-                                                    TerraScape::MeshRefineStrategy::HEAP);
+                                                    0.1f, 1000);
         
         // Generate volumetric mesh
         float z_base = 0.0f;
         auto volumetric_mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(),
-                                                                  z_base, 0.1f, 1000, 
-                                                                  TerraScape::MeshRefineStrategy::HEAP);
+                                                                  z_base, 0.1f, 1000);
         
         std::cout << "  Surface mesh: " << surface_mesh.vertices.size() << " vertices, " 
                   << surface_mesh.triangles.size() << " triangles\n";
