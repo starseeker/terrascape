@@ -13,7 +13,13 @@
 
 namespace TerraScape {
 
-// Helper function for point-in-triangle test (barycentric coordinates)
+// Forward declarations for Simulation of Simplicity functions
+static float simulation_of_simplicity_perturbation(int x, int y, int width, int height, float magnitude);
+static int simulation_of_simplicity_orientation(float ax, float ay, int ai, float bx, float by, int bi, float cx, float cy, int ci);
+static bool detect_regular_pattern(const float* elevations, int width, int height);
+static bool detect_collinear_rows(const float* elevations, int width, int height);
+
+// Helper function for point-in-triangle test with Simulation of Simplicity support
 static bool pointInTriangle(float px, float py, 
                            const detria::PointF& v0, const detria::PointF& v1, const detria::PointF& v2) {
     float dX = px - v2.x;
@@ -22,8 +28,39 @@ static bool pointInTriangle(float px, float py,
     float dY12 = v1.y - v2.y;
     float D = (v0.x - v2.x) * dY12 + (v0.y - v2.y) * dX21;
     
-    if (std::abs(D) < 1e-10f) return false; // Degenerate triangle
+    const float DEGENERACY_THRESHOLD = 1e-10f;
     
+    if (std::abs(D) < DEGENERACY_THRESHOLD) {
+        // Degenerate triangle - use Simulation of Simplicity
+        // For degenerate triangles, we use lexicographic ordering based on coordinates
+        // to make a consistent decision
+        
+        // Create pseudo-indices based on coordinates for SoS ordering
+        // This ensures deterministic behavior for degenerate cases
+        auto coord_to_index = [](float x, float y) -> int {
+            // Convert coordinates to a deterministic integer index
+            // This is a simplified approach for SoS tie-breaking
+            return static_cast<int>(x * 1000000.0f) + static_cast<int>(y * 1000000.0f) * 1000000;
+        };
+        
+        int idx_p = coord_to_index(px, py);
+        int idx_0 = coord_to_index(v0.x, v0.y);
+        int idx_1 = coord_to_index(v1.x, v1.y);
+        int idx_2 = coord_to_index(v2.x, v2.y);
+        
+        // Use SoS orientation test for degenerate case
+        int orientation = simulation_of_simplicity_orientation(
+            v0.x, v0.y, idx_0,
+            v1.x, v1.y, idx_1,
+            px, py, idx_p
+        );
+        
+        // For degenerate triangles, we conservatively return false unless
+        // the SoS ordering strongly suggests inclusion
+        return (orientation > 0) && (idx_p > std::min({idx_0, idx_1, idx_2}));
+    }
+    
+    // Non-degenerate case: use standard barycentric coordinate test
     float s = ((v0.x - v2.x) * dY + (v0.y - v2.y) * dX) / D;
     float t = (dY12 * dX + dX21 * dY) / D;
     return (s >= -1e-6f) && (t >= -1e-6f) && (s + t <= 1.0f + 1e-6f);
@@ -33,8 +70,32 @@ static float barycentricInterp(float px, float py,
                               const detria::PointF& v0, const detria::PointF& v1, const detria::PointF& v2,
                               float z0, float z1, float z2) {
     float denom = ((v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y));
-    if (std::abs(denom) < 1e-10f) return z0; // Fallback for degenerate triangles
     
+    const float DEGENERACY_THRESHOLD = 1e-10f;
+    
+    if (std::abs(denom) < DEGENERACY_THRESHOLD) {
+        // Degenerate triangle - use Simulation of Simplicity approach
+        // For degenerate triangles, use lexicographic ordering to choose a vertex
+        
+        // Find the lexicographically smallest vertex
+        const detria::PointF* vertices[3] = {&v0, &v1, &v2};
+        float z_values[3] = {z0, z1, z2};
+        
+        // Sort by lexicographic order (y first, then x)
+        int min_idx = 0;
+        for (int i = 1; i < 3; ++i) {
+            if (vertices[i]->y < vertices[min_idx]->y || 
+                (vertices[i]->y == vertices[min_idx]->y && vertices[i]->x < vertices[min_idx]->x)) {
+                min_idx = i;
+            }
+        }
+        
+        // Return the z-value of the lexicographically smallest vertex
+        // This provides a deterministic fallback for degenerate cases
+        return z_values[min_idx];
+    }
+    
+    // Non-degenerate case: use standard barycentric interpolation
     float w1 = ((v1.y - v2.y) * (px - v2.x) + (v2.x - v1.x) * (py - v2.y)) / denom;
     float w2 = ((v2.y - v0.y) * (px - v2.x) + (v0.x - v2.x) * (py - v2.y)) / denom;
     float w3 = 1.0f - w1 - w2;
@@ -746,6 +807,183 @@ template void GreedyMeshRefiner::updateAffectedCandidates<float>(int width, int 
 template void GreedyMeshRefiner::updateAffectedCandidates<double>(int width, int height, const double* elevations, float inserted_x, float inserted_y);
 template void GreedyMeshRefiner::updateAffectedCandidates<int>(int width, int height, const int* elevations, float inserted_x, float inserted_y);
 
+// --- Simulation of Simplicity Implementation ---
+
+/**
+ * Detect regular patterns in the elevation grid that might cause
+ * triangulation degeneracy (e.g., checkerboard patterns, regular waves)
+ */
+static bool detect_regular_pattern(const float* elevations, int width, int height) {
+    if (width < 3 || height < 3) return false;
+    
+    // Check for simple repeating patterns in small regions
+    const int SAMPLE_SIZE = std::min(8, std::min(width, height));
+    int pattern_matches = 0;
+    int total_checks = 0;
+    
+    for (int y = 1; y < height - 1 && y < SAMPLE_SIZE; ++y) {
+        for (int x = 1; x < width - 1 && x < SAMPLE_SIZE; ++x) {
+            float current = elevations[y * width + x];
+            float left = elevations[y * width + (x - 1)];
+            float right = elevations[y * width + (x + 1)];
+            float up = elevations[(y - 1) * width + x];
+            float down = elevations[(y + 1) * width + x];
+            
+            // Check if this point follows a regular pattern with its neighbors
+            bool horizontal_pattern = (std::abs(current - left) < 1e-10f && std::abs(current - right) < 1e-10f);
+            bool vertical_pattern = (std::abs(current - up) < 1e-10f && std::abs(current - down) < 1e-10f);
+            
+            if (horizontal_pattern || vertical_pattern) {
+                pattern_matches++;
+            }
+            total_checks++;
+        }
+    }
+    
+    // If more than 80% of sampled points follow a regular pattern, it's likely degenerate
+    return total_checks > 0 && (static_cast<float>(pattern_matches) / total_checks > 0.8f);
+}
+
+/**
+ * Detect collinear configurations along rows or columns that might
+ * cause issues during triangulation
+ */
+static bool detect_collinear_rows(const float* elevations, int width, int height) {
+    if (width < 3 || height < 3) return false;
+    
+    const float COLLINEAR_THRESHOLD = 1e-10f;
+    int collinear_rows = 0;
+    int collinear_cols = 0;
+    
+    // Check rows for collinearity
+    for (int y = 0; y < height; ++y) {
+        bool row_collinear = true;
+        for (int x = 2; x < width; ++x) {
+            float z0 = elevations[y * width + (x - 2)];
+            float z1 = elevations[y * width + (x - 1)];
+            float z2 = elevations[y * width + x];
+            
+            // Check if three consecutive points are collinear (constant slope)
+            float slope1 = z1 - z0;
+            float slope2 = z2 - z1;
+            
+            if (std::abs(slope1 - slope2) > COLLINEAR_THRESHOLD) {
+                row_collinear = false;
+                break;
+            }
+        }
+        if (row_collinear) collinear_rows++;
+    }
+    
+    // Check columns for collinearity  
+    for (int x = 0; x < width; ++x) {
+        bool col_collinear = true;
+        for (int y = 2; y < height; ++y) {
+            float z0 = elevations[(y - 2) * width + x];
+            float z1 = elevations[(y - 1) * width + x];
+            float z2 = elevations[y * width + x];
+            
+            // Check if three consecutive points are collinear (constant slope)
+            float slope1 = z1 - z0;
+            float slope2 = z2 - z1;
+            
+            if (std::abs(slope1 - slope2) > COLLINEAR_THRESHOLD) {
+                col_collinear = false;
+                break;
+            }
+        }
+        if (col_collinear) collinear_cols++;
+    }
+    
+    // If more than 50% of rows or columns are collinear, it's problematic
+    return (collinear_rows > height / 2) || (collinear_cols > width / 2);
+}
+
+/**
+ * Create deterministic perturbation using Simulation of Simplicity principles.
+ * 
+ * This function implements a simplified version of Edelsbrunner & Mücke's 
+ * Simulation of Simplicity approach for handling degenerate cases in 
+ * computational geometry.
+ * 
+ * Key properties:
+ * - Deterministic: Same input always produces same output
+ * - Lexicographic ordering: Uses point position for tie-breaking
+ * - Minimal perturbation: Only breaks exact degeneracies
+ * - Preserves relative ordering where possible
+ * 
+ * @param x,y Grid coordinates of the point
+ * @param width,height Grid dimensions for normalization
+ * @param magnitude Base perturbation magnitude
+ * @return Deterministic perturbation value
+ */
+static float simulation_of_simplicity_perturbation(int x, int y, int width, int height, float magnitude) {
+    // Use lexicographic ordering: first by y-coordinate, then by x-coordinate
+    // This creates a deterministic hierarchy for tie-breaking
+    
+    // Normalize coordinates to [0,1] range for consistent scaling
+    float normalized_x = static_cast<float>(x) / static_cast<float>(width - 1);
+    float normalized_y = static_cast<float>(y) / static_cast<float>(height - 1);
+    
+    // Create lexicographic ordering using powers of epsilon
+    // Point (x,y) gets perturbation: magnitude * (y + x*epsilon)
+    // This ensures that for any two points, one will have strictly larger perturbation
+    const float EPSILON = 1e-6f;  // Small value for lexicographic separation
+    
+    // Primary ordering by y-coordinate, secondary by x-coordinate
+    float lexicographic_value = normalized_y + normalized_x * EPSILON;
+    
+    // Scale by magnitude and add small coordinate-dependent term
+    // This ensures that even points with identical primary coordinates get unique perturbations
+    float perturbation = magnitude * lexicographic_value;
+    
+    // Add a tiny coordinate-dependent term to ensure uniqueness
+    // Use a simple hash-like function that's deterministic
+    int coord_hash = (x * 73856093) ^ (y * 19349663);  // Large primes for good distribution
+    float hash_contribution = magnitude * 1e-3f * static_cast<float>(coord_hash % 1000) / 1000.0f;
+    
+    return perturbation + hash_contribution;
+}
+
+/**
+ * Enhanced geometric predicate that handles exact degeneracies using
+ * Simulation of Simplicity principles.
+ * 
+ * When a standard geometric test returns exactly zero (indicating degeneracy),
+ * this function uses lexicographic tie-breaking to provide a consistent,
+ * deterministic result.
+ */
+static int simulation_of_simplicity_orientation(
+    float ax, float ay, int ai,  // Point A with index ai
+    float bx, float by, int bi,  // Point B with index bi  
+    float cx, float cy, int ci   // Point C with index ci
+) {
+    // Standard orientation test using determinant
+    float det = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    
+    const float EPSILON = 1e-12f;  // Tolerance for exact zero
+    
+    if (std::abs(det) > EPSILON) {
+        // Non-degenerate case: return standard result
+        return (det > 0) ? 1 : -1;  // 1 = counterclockwise, -1 = clockwise
+    }
+    
+    // Degenerate case: apply Simulation of Simplicity tie-breaking
+    // Use lexicographic ordering of point indices for deterministic result
+    
+    // Create a deterministic ordering based on indices
+    std::vector<int> indices = {ai, bi, ci};
+    std::sort(indices.begin(), indices.end());
+    
+    // Use the smallest index to break ties deterministically
+    // This ensures the same result for the same set of points regardless of order
+    int tie_breaker = indices[0];
+    
+    if (tie_breaker == ai) return 1;   // A wins -> counterclockwise
+    if (tie_breaker == bi) return -1;  // B wins -> clockwise  
+    return 1;  // C wins -> counterclockwise (default)
+}
+
 // --- Input Preprocessing Implementation ---
 
 template<typename T>
@@ -822,30 +1060,73 @@ PreprocessingResult preprocess_input_data(
         max_z = *std::max_element(result.processed_elevations.begin(), result.processed_elevations.end());
     }
     
-    // Step 3: Check for completely flat grid (ONLY add jitter if perfectly flat)
+    // Step 3: Detect various forms of degeneracy and apply Simulation of Simplicity
     float elevation_range = max_z - min_z;
-    const float PERFECTLY_FLAT_THRESHOLD = 0.0f; // Only for perfectly flat data
+    const float PERFECTLY_FLAT_THRESHOLD = 0.0f; // Perfectly flat data
+    const float NEARLY_FLAT_THRESHOLD = 1e-12f;  // Nearly flat data that might cause numerical issues
     
-    if (elevation_range <= PERFECTLY_FLAT_THRESHOLD) {
+    // Check for perfect flatness
+    bool is_perfectly_flat = (elevation_range <= PERFECTLY_FLAT_THRESHOLD);
+    
+    // Check for near-flatness that could cause numerical instability
+    bool is_nearly_flat = (elevation_range > 0.0f && elevation_range <= NEARLY_FLAT_THRESHOLD);
+    
+    // Check for regular grid patterns that might cause degeneracy in triangulation
+    bool has_regular_pattern = detect_regular_pattern(result.processed_elevations.data(), width, height);
+    
+    // Check for collinear configurations along rows/columns
+    bool has_collinear_rows = detect_collinear_rows(result.processed_elevations.data(), width, height);
+    
+    if (is_perfectly_flat || is_nearly_flat || has_regular_pattern || has_collinear_rows) {
         result.is_degenerate = true;
-        result.warnings.push_back("Grid is completely flat (elevation range: " + 
-                                 std::to_string(elevation_range) + ")");
+        
+        if (is_perfectly_flat) {
+            result.warnings.push_back("Grid is perfectly flat (elevation range: " + 
+                                     std::to_string(elevation_range) + ")");
+        } else if (is_nearly_flat) {
+            result.warnings.push_back("Grid is nearly flat with potential numerical issues (elevation range: " + 
+                                     std::to_string(elevation_range) + ")");
+        }
+        
+        if (has_regular_pattern) {
+            result.warnings.push_back("Detected regular pattern that may cause triangulation degeneracy");
+        }
+        
+        if (has_collinear_rows) {
+            result.warnings.push_back("Detected collinear rows/columns that may cause triangulation issues");
+        }
+        
         result.has_warnings = true;
         
         if (enable_jitter) {
-            // Add minimal jitter only to break exact coplanarity for triangulation
+            // Apply Simulation of Simplicity (SoS) inspired deterministic perturbation
+            // This ensures reproducible results while breaking exact coplanarity
             result.needs_jitter = true;
-            std::random_device rd;
-            std::mt19937 gen(rd());
-            std::uniform_real_distribution<float> dis(-1e-9f, 1e-9f); // Much smaller jitter
             
-            for (int i = 0; i < width * height; ++i) {
-                result.processed_elevations[i] += dis(gen);
+            // Use different perturbation magnitudes based on severity
+            float perturbation_magnitude;
+            if (is_perfectly_flat) {
+                perturbation_magnitude = 1e-10f;  // Minimal for perfectly flat
+            } else if (is_nearly_flat) {
+                perturbation_magnitude = elevation_range * 1e-6f;  // Proportional to existing variation
+            } else {
+                perturbation_magnitude = std::max(1e-12f, elevation_range * 1e-9f);  // Very small for other cases
             }
             
-            result.warnings.push_back("Added minimal jitter to break exact coplanarity for triangulation");
+            for (int i = 0; i < width * height; ++i) {
+                int y = i / width;
+                int x = i % width;
+                
+                // Create deterministic perturbation using lexicographic ordering
+                // Each point gets a unique infinitesimal perturbation based on its position
+                // This breaks ties consistently and deterministically
+                float perturbation = simulation_of_simplicity_perturbation(x, y, width, height, perturbation_magnitude);
+                result.processed_elevations[i] += perturbation;
+            }
             
-            // Recalculate min/max after jitter
+            result.warnings.push_back("Applied Simulation of Simplicity perturbation for deterministic degeneracy handling");
+            
+            // Recalculate min/max after perturbation
             min_z = *std::min_element(result.processed_elevations.begin(), result.processed_elevations.end());
             max_z = *std::max_element(result.processed_elevations.begin(), result.processed_elevations.end());
         }
