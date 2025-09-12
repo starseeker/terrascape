@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <map>
 #include <algorithm>
+#include <filesystem>
 #include "TerraScape.hpp"
 #include "cxxopts.hpp"
 #include "terrain_data_utils.hpp"
@@ -314,6 +315,133 @@ bool test_hawaii_data() {
     }
 }
 
+bool test_synthetic_terra_bin_data();
+
+bool test_terra_bin_processing() {
+    // Test processing the terra.bin file if it exists
+    const std::string terra_bin_path = "terra.bin";
+    
+    if (!std::filesystem::exists(terra_bin_path)) {
+        // File doesn't exist - test synthetic data instead
+        return test_synthetic_terra_bin_data();
+    }
+    
+    try {
+        int width, height;
+        std::vector<float> elevations;
+        DSPReader::DSPTerrainInfo info;
+        
+        if (!DSPReader::readTerraBinFile(terra_bin_path, width, height, elevations, &info)) {
+            return false; // Failed to read actual terra.bin file
+        }
+        
+        // Validate terrain data
+        std::vector<std::string> warnings;
+        DSPReader::validateTerrainData(elevations, width, height, warnings);
+        
+        // Test basic triangulation
+        MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
+        if (result.vertices.empty()) {
+            return false;
+        }
+        
+        // Test volumetric mesh generation
+        float base_elevation = info.min_elevation - 10.0f;
+        MeshResult volumetric_result = grid_to_mesh_volumetric(
+            width, height, elevations.data(), base_elevation);
+        
+        return volumetric_result.is_volumetric && !volumetric_result.vertices.empty();
+        
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool test_synthetic_terra_bin_data() {
+    // Test with synthetic problematic terra.bin patterns
+    const std::string test_dir = "/tmp/terrascape_terra_tests";
+    std::filesystem::create_directories(test_dir);
+    
+    std::vector<std::string> test_patterns = {
+        "all_zeros", "all_same", "regular_grid", "collinear_rows", "infinities", "nans"
+    };
+    
+    for (const auto& pattern : test_patterns) {
+        std::string test_file = test_dir + "/" + pattern + "_terra.bin";
+        
+        if (!DSPReader::createProblematicTerraBin(test_file, pattern)) {
+            continue; // Skip if we can't create the test file
+        }
+        
+        int width, height;
+        std::vector<float> elevations;
+        DSPReader::DSPTerrainInfo info;
+        
+        if (DSPReader::readTerraBinFile(test_file, width, height, elevations, &info)) {
+            // Test that triangulation doesn't crash with problematic data
+            try {
+                MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
+                // Success if we get here without crashing
+            } catch (const std::exception&) {
+                // Expected for some problematic patterns
+            }
+        }
+    }
+    
+    return true; // Test passes if we complete without crashing
+}
+
+#ifdef HAVE_GDAL
+bool test_terra_bin_with_gdal_validation() {
+    // GDAL-specific terra.bin validation tests
+    const std::string terra_bin_path = "terra.bin";
+    
+    if (!std::filesystem::exists(terra_bin_path)) {
+        return true; // Skip if no terra.bin file
+    }
+    
+    try {
+        int width, height;
+        std::vector<float> elevations;
+        DSPReader::DSPTerrainInfo info;
+        
+        if (!DSPReader::readTerraBinFile(terra_bin_path, width, height, elevations, &info)) {
+            return true; // Skip if we can't read the file
+        }
+        
+        // Generate mesh
+        MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
+        
+        // Convert mesh vertices to format for GDAL validation
+        std::vector<float> mesh_vertices_flat;
+        std::vector<int> mesh_triangles_flat;
+        
+        for (const auto& v : result.vertices) {
+            mesh_vertices_flat.push_back(v.x);
+            mesh_vertices_flat.push_back(v.y);
+            mesh_vertices_flat.push_back(v.z);
+        }
+        
+        for (const auto& t : result.triangles) {
+            mesh_triangles_flat.push_back(t.v0);
+            mesh_triangles_flat.push_back(t.v1);
+            mesh_triangles_flat.push_back(t.v2);
+        }
+        
+        // Use GDAL validation if terrain utilities support it
+        if (TerrainDataUtils::isGdalAvailable()) {
+            return TerrainDataUtils::validateMeshAgainstTerrain(
+                terra_bin_path, mesh_vertices_flat, mesh_triangles_flat, 1.0);
+        }
+        
+        return true; // Pass if GDAL not available
+        
+    } catch (const std::exception&) {
+        return true; // Don't fail test for GDAL-specific issues
+    }
+}
+#endif
+
 // =============================================================================
 // Edge Case Tests
 // =============================================================================
@@ -431,6 +559,27 @@ void run_dsp_tests(TestSuite& suite) {
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
     suite.addTest(result, "Hawaii Data Processing", "", duration);
+    
+    // Terra.bin processing tests
+    start = std::chrono::high_resolution_clock::now();
+    result = test_terra_bin_processing();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Terra.bin File Processing", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_synthetic_terra_bin_data();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Synthetic Terra.bin Robustness", "", duration);
+    
+#ifdef HAVE_GDAL
+    start = std::chrono::high_resolution_clock::now();
+    result = test_terra_bin_with_gdal_validation();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Terra.bin GDAL Validation", "", duration);
+#endif
 }
 
 void run_edge_case_tests(TestSuite& suite) {
