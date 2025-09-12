@@ -194,21 +194,48 @@ MeshResult grid_to_mesh(
     float error_threshold = 1.0f, int point_limit = 10000,
     MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
 {
-    // --- Strategy selection ---
+    // --- Strategy selection with complexity analysis ---
     if (strategy == MeshRefineStrategy::AUTO) {
         size_t grid_size = size_t(width) * size_t(height);
         size_t avail_ram = get_available_ram_bytes();
         // More conservative memory estimation for stability
         size_t heap_mem_needed = grid_size * 32;
         
-        // Use extremely conservative thresholds to ensure robustness with Hawaii-scale datasets  
-        // HYBRID/HEAP strategies have assertion failures with larger datasets, so prioritize SPARSE
-        if (grid_size <= 500 && heap_mem_needed < avail_ram / 8) {  // Only very tiny grids
+        // Analyze terrain complexity to avoid problematic patterns with HEAP strategy
+        bool is_complex_terrain = false;
+        if (grid_size > 100) { // Only analyze for reasonable sized grids
+            // Check for patterns that might cause triangulation issues
+            auto minmax = std::minmax_element(elevations, elevations + grid_size);
+            float range = static_cast<float>(*minmax.second - *minmax.first);
+            
+            // Count significant elevation variations
+            int variation_count = 0;
+            float variation_threshold = range * 0.1f;
+            for (size_t i = 1; i < grid_size; ++i) {
+                float diff = std::abs(static_cast<float>(elevations[i] - elevations[i-1]));
+                if (diff > variation_threshold) {
+                    variation_count++;
+                }
+            }
+            
+            // Complex terrain indicators that often cause issues with HEAP strategy
+            float variation_ratio = static_cast<float>(variation_count) / grid_size;
+            
+            if (variation_ratio > 0.3f || // High variation density
+                range > 1000.0f ||        // Large elevation range
+                grid_size > 5000) {       // Large grid size
+                is_complex_terrain = true;
+            }
+        }
+        
+        // Use extremely conservative thresholds to ensure robustness
+        // Avoid HEAP strategy for complex terrain to prevent crashes
+        if (!is_complex_terrain && grid_size <= 500 && heap_mem_needed < avail_ram / 8) {
             strategy = MeshRefineStrategy::HEAP;
-        } else if (grid_size <= 1000 && heap_mem_needed < avail_ram / 4) {  // Small grids only
+        } else if (!is_complex_terrain && grid_size <= 1000 && heap_mem_needed < avail_ram / 4) {
             strategy = MeshRefineStrategy::HYBRID;
         } else {
-            strategy = MeshRefineStrategy::SPARSE;  // Use SPARSE for virtually all real datasets
+            strategy = MeshRefineStrategy::SPARSE;  // Safe fallback for complex/large terrain
         }
         
         std::cout << "AUTO strategy selected: ";
@@ -218,7 +245,11 @@ MeshResult grid_to_mesh(
             case MeshRefineStrategy::SPARSE: std::cout << "SPARSE"; break;
             default: break;
         }
-        std::cout << " for " << grid_size << " points\n";
+        std::cout << " for " << grid_size << " points";
+        if (is_complex_terrain) {
+            std::cout << " (complex terrain detected)";
+        }
+        std::cout << "\n";
     }
     
     // Delegate to detria-based implementation with robust error handling

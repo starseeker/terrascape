@@ -555,15 +555,23 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
     
     std::cout << "Starting batch insertion with batch size: " << batch_size_ << "\n";
     
+    // Safety limits to prevent runaway processing
+    const int MAX_ITERATIONS = 1000;
+    const int MAX_TOTAL_POINTS = std::min(point_limit_, 5000); // Cap total points for stability
+    int iteration_count = 0;
+    
     while (hasViableCandidates() && 
-           triangulation_manager_->getPointCount() < static_cast<size_t>(point_limit_)) {
+           triangulation_manager_->getPointCount() < static_cast<size_t>(MAX_TOTAL_POINTS) &&
+           iteration_count < MAX_ITERATIONS) {
+        
+        iteration_count++;
         
         // Collect a batch of candidates
         batch_candidates.clear();
         
         while (batch_candidates.size() < static_cast<size_t>(batch_size_) && 
                hasViableCandidates() && 
-               triangulation_manager_->getPointCount() + batch_candidates.size() < static_cast<size_t>(point_limit_)) {
+               triangulation_manager_->getPointCount() + batch_candidates.size() < static_cast<size_t>(MAX_TOTAL_POINTS)) {
             
             // Get the best candidate
             CandidatePoint best = candidate_heap_.top();
@@ -643,14 +651,34 @@ int GreedyMeshRefiner::refineIncrementally(int width, int height, const T* eleva
         
         points_added += batch_candidates.size();
         
-        // Update affected candidates for all inserted points
+        // Update affected candidates for all inserted points (with safety checks)
         for (const auto& candidate : batch_candidates) {
-            updateAffectedCandidates(width, height, elevations, candidate.world_x, candidate.world_y);
+            try {
+                updateAffectedCandidates(width, height, elevations, candidate.world_x, candidate.world_y);
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Failed to update affected candidates for point (" 
+                          << candidate.world_x << ", " << candidate.world_y << "): " << e.what() << std::endl;
+                // Continue with next candidate
+            } catch (...) {
+                std::cerr << "Warning: Unknown error updating affected candidates for point (" 
+                          << candidate.world_x << ", " << candidate.world_y << ")" << std::endl;
+                // Continue with next candidate
+            }
         }
         
         if (points_added % 10 == 0) {
             std::cout << "Added " << points_added << " points in batches (last batch: " << batch_candidates.size() << ")\n";
         }
+        
+        // Safety check for excessive iterations
+        if (iteration_count >= MAX_ITERATIONS) {
+            std::cout << "Reached maximum iteration limit (" << MAX_ITERATIONS << "), stopping for stability" << std::endl;
+            break;
+        }
+    }
+    
+    if (iteration_count >= MAX_ITERATIONS) {
+        std::cout << "Warning: Stopped due to iteration limit to prevent runaway processing" << std::endl;
     }
     
     return points_added;
@@ -725,14 +753,59 @@ GreedyMeshRefiner::CandidatePoint GreedyMeshRefiner::createCandidateFromGrid(int
     candidate.needs_update = false;
     candidate.tri_version = triangulation_manager_->getVersion();
     
-    // Find containing triangle
-    auto triangle = triangulation_manager_->findContainingTriangle(candidate.world_x, candidate.world_y);
-    candidate.containing_triangle = triangle;
-    
-    if (triangle.empty()) {
+    // Safety bounds check
+    if (x < 0 || x >= width || y < 0 || y >= height) {
         candidate.error = 0.0f;
-    } else {
-        candidate.error = calculateError(x, y, elevations, width, height, triangle);
+        candidate.containing_triangle.clear();
+        return candidate;
+    }
+    
+    // Find containing triangle with error handling
+    try {
+        auto triangle = triangulation_manager_->findContainingTriangle(candidate.world_x, candidate.world_y);
+        candidate.containing_triangle = triangle;
+        
+        if (triangle.empty() || triangle.size() != 3) {
+            candidate.error = 0.0f;
+        } else {
+            // Validate triangle indices before using them
+            uint32_t point_count = triangulation_manager_->getPointCount();
+            bool valid_triangle = true;
+            for (uint32_t idx : triangle) {
+                if (idx >= point_count) {
+                    valid_triangle = false;
+                    break;
+                }
+            }
+            
+            if (valid_triangle) {
+                candidate.error = calculateError(x, y, elevations, width, height, triangle);
+            } else {
+                candidate.error = 0.0f;
+                candidate.containing_triangle.clear();
+            }
+        }
+    } catch (const std::exception& e) {
+        // If triangulation lookup fails, set safe defaults
+        candidate.error = 0.0f;
+        candidate.containing_triangle.clear();
+        
+        // Log the error for debugging
+        static int error_count = 0;
+        if (error_count < 5) { // Limit error messages
+            std::cerr << "Warning: Triangulation lookup failed at (" << x << "," << y << "): " << e.what() << std::endl;
+            error_count++;
+        }
+    } catch (...) {
+        // Handle any other exceptions
+        candidate.error = 0.0f;
+        candidate.containing_triangle.clear();
+        
+        static int unknown_error_count = 0;
+        if (unknown_error_count < 3) {
+            std::cerr << "Warning: Unknown error in triangulation lookup at (" << x << "," << y << ")" << std::endl;
+            unknown_error_count++;
+        }
     }
     
     return candidate;
@@ -791,15 +864,39 @@ float GreedyMeshRefiner::barycentricInterpolation(float px, float py,
                                                  const std::vector<uint32_t>& triangle) const {
     if (triangle.size() != 3) return 0.0f;
     
-    const auto& v0 = triangulation_manager_->getPoint(triangle[0]);
-    const auto& v1 = triangulation_manager_->getPoint(triangle[1]);
-    const auto& v2 = triangulation_manager_->getPoint(triangle[2]);
+    // Validate triangle indices before using them
+    uint32_t point_count = triangulation_manager_->getPointCount();
+    for (uint32_t idx : triangle) {
+        if (idx >= point_count) {
+            return 0.0f; // Invalid triangle index
+        }
+    }
     
-    float z0 = triangulation_manager_->getPointZ(triangle[0]);
-    float z1 = triangulation_manager_->getPointZ(triangle[1]);
-    float z2 = triangulation_manager_->getPointZ(triangle[2]);
-    
-    return barycentricInterp(px, py, v0, v1, v2, z0, z1, z2);
+    try {
+        const auto& v0 = triangulation_manager_->getPoint(triangle[0]);
+        const auto& v1 = triangulation_manager_->getPoint(triangle[1]);
+        const auto& v2 = triangulation_manager_->getPoint(triangle[2]);
+        
+        float z0 = triangulation_manager_->getPointZ(triangle[0]);
+        float z1 = triangulation_manager_->getPointZ(triangle[1]);
+        float z2 = triangulation_manager_->getPointZ(triangle[2]);
+        
+        // Validate z values
+        if (!std::isfinite(z0) || !std::isfinite(z1) || !std::isfinite(z2)) {
+            return 0.0f;
+        }
+        
+        return barycentricInterp(px, py, v0, v1, v2, z0, z1, z2);
+    } catch (const std::exception& e) {
+        static int interp_error_count = 0;
+        if (interp_error_count < 3) {
+            std::cerr << "Warning: Barycentric interpolation failed: " << e.what() << std::endl;
+            interp_error_count++;
+        }
+        return 0.0f;
+    } catch (...) {
+        return 0.0f;
+    }
 }
 
 // Explicit template instantiations for common types

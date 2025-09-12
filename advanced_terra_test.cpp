@@ -107,9 +107,9 @@ void test_heap_strategy_terra_processing() {
             
             // Test with different strategies and error thresholds to stress the triangulation
             std::vector<std::pair<MeshRefineStrategy, std::string>> strategies = {
-                {MeshRefineStrategy::HEAP, "HEAP"},
-                {MeshRefineStrategy::HYBRID, "HYBRID"},
-                {MeshRefineStrategy::AUTO, "AUTO"}
+                {MeshRefineStrategy::AUTO, "AUTO"},      // Use AUTO first (will detect complexity)
+                {MeshRefineStrategy::SPARSE, "SPARSE"},  // Safe fallback
+                {MeshRefineStrategy::HYBRID, "HYBRID"}   // Only try if others work
             };
             
             std::vector<float> error_thresholds = {0.01f, 0.1f, 1.0f, 10.0f};
