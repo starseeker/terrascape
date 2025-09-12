@@ -25,51 +25,15 @@ endif()
 # Add compile definitions
 add_definitions(-DSAFETY)
 
-# Create the terrascape_demo executable (using TerraScape.hpp with detria)
-add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
+# Create the terrascape_demo executable (now header-only)
+add_executable(terrascape_demo main.cpp terrain_data_utils.cpp)
 
-# Create consolidated comprehensive test suite
-add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create Hawaii BigIsland performance test
-add_executable(hawaii_bigisland_test hawaii_bigisland_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create volumetric mesh test
-add_executable(volumetric_test volumetric_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create separated volumetric mesh test
-add_executable(volumetric_separated_test volumetric_separated_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create separated volumetric mesh example
-add_executable(volumetric_separated_example volumetric_separated_example.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create preprocessing robustness test
-add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
-# Create terra.bin processing test for BRL-CAD DSP compatibility
-add_executable(terra_bin_test terra_bin_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
-
-# Create advanced terra.bin processing test for stress testing
-add_executable(advanced_terra_test advanced_terra_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
-
-# Create terra.bin DSP demonstration
-add_executable(terra_dsp_demo terra_dsp_demo.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
+# Create unified test suite with cxxopts
+add_executable(unified_tests unified_tests.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(terrascape_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(hawaii_bigisland_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(volumetric_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(volumetric_separated_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_include_directories(volumetric_separated_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_include_directories(preprocessing_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_include_directories(terra_bin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_include_directories(advanced_terra_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_include_directories(terra_dsp_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(unified_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Link with GDAL if available
 if(GDAL_FOUND)
@@ -77,65 +41,34 @@ if(GDAL_FOUND)
     target_link_libraries(terrascape_demo ${GDAL_LIBRARIES})
     target_compile_options(terrascape_demo PRIVATE ${GDAL_CFLAGS_OTHER})
     
-    target_include_directories(terrascape_tests PRIVATE ${GDAL_INCLUDE_DIRS})
-    target_link_libraries(terrascape_tests ${GDAL_LIBRARIES})
-    target_compile_options(terrascape_tests PRIVATE ${GDAL_CFLAGS_OTHER})
-    
-    target_include_directories(hawaii_bigisland_test PRIVATE ${GDAL_INCLUDE_DIRS})
-    target_link_libraries(hawaii_bigisland_test ${GDAL_LIBRARIES})
-    target_compile_options(hawaii_bigisland_test PRIVATE ${GDAL_CFLAGS_OTHER})
+    target_include_directories(unified_tests PRIVATE ${GDAL_INCLUDE_DIRS})
+    target_link_libraries(unified_tests ${GDAL_LIBRARIES})
+    target_compile_options(unified_tests PRIVATE ${GDAL_CFLAGS_OTHER})
     
     # Also need curl for downloading
     find_package(CURL REQUIRED)
     target_link_libraries(terrascape_demo ${CURL_LIBRARIES})
-    target_link_libraries(terrascape_tests ${CURL_LIBRARIES})
-    target_link_libraries(hawaii_bigisland_test ${CURL_LIBRARIES})
+    target_link_libraries(unified_tests ${CURL_LIBRARIES})
 endif()
 
 # Set output directory
 set_target_properties(terrascape_demo PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
-set_target_properties(terrascape_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(hawaii_bigisland_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(volumetric_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(volumetric_separated_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(volumetric_separated_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(preprocessing_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(terra_bin_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(advanced_terra_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-set_target_properties(terra_dsp_demo PROPERTIES
+set_target_properties(unified_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests terra_bin_test advanced_terra_test terra_dsp_demo DESTINATION bin)
+install(TARGETS terrascape_demo unified_tests DESTINATION bin)
 
-# Add CTest tests
-add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
-add_test(NAME HawaiiBigIslandPerformanceTest COMMAND hawaii_bigisland_test)
-add_test(NAME VolumetricMeshTest COMMAND volumetric_test)
-add_test(NAME VolumetricSeparatedMeshTest COMMAND volumetric_separated_test)
-add_test(NAME PreprocessingRobustnessTest COMMAND preprocessing_tests)
-add_test(NAME TerraBinProcessingTest COMMAND terra_bin_test)
-add_test(NAME AdvancedTerraBinTest COMMAND advanced_terra_test)
-add_test(NAME TerraDSPDemo COMMAND terra_dsp_demo)
+# Add CTest tests using the unified test executable
+add_test(NAME BasicFunctionalityTests COMMAND unified_tests --basic --verbose)
+add_test(NAME VolumetricMeshTests COMMAND unified_tests --volumetric --verbose)
+add_test(NAME PerformanceTests COMMAND unified_tests --performance --verbose)
+add_test(NAME DSPHawaiiTests COMMAND unified_tests --dsp --verbose)
+add_test(NAME EdgeCaseTests COMMAND unified_tests --edge --verbose)
+add_test(NAME AllTests COMMAND unified_tests --all --verbose)
 
 # Add GDAL-enabled terrain data tests if GDAL is available
 if(GDAL_FOUND)
@@ -145,7 +78,6 @@ if(GDAL_FOUND)
     # Add terrain data executable for downloading and processing real terrain data
     add_executable(terrain_data_processor 
         terrain_data_processor.cpp 
-        TerraScapeImpl.cpp 
         terrain_data_utils.cpp
     )
     target_include_directories(terrain_data_processor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -177,14 +109,19 @@ if(GDAL_FOUND)
         COMMENT "Downloading Hawaii terrain data for testing"
     )
     
-    # Make hawaii_bigisland_test depend on terrain data when GDAL is available
-    add_dependencies(hawaii_bigisland_test terrain_data_processor)
-    
     message(STATUS "GDAL terrain processing features enabled")
     message(STATUS "  - Use 'make download_hawaii_bigisland' to download and extract BigIsland terrain data")
     message(STATUS "  - Use 'make download_terrain_data' to download all Hawaii terrain files")
     message(STATUS "  - Run 'ctest -R RealTerrainDataTest' to test with real terrain data")
-    message(STATUS "  - Run 'ctest -R HawaiiBigIslandPerformanceTest' to test BigIsland performance with real data")
+else()
+    message(STATUS "Header-only TerraScape library ready for use")
+    message(STATUS "  - All functionality consolidated into TerraScape.hpp")
+    message(STATUS "  - Use unified_tests executable for all testing")
 endif()
 
-# Additional tests can be added here if needed
+# Information about running tests
+message(STATUS "Test execution:")
+message(STATUS "  - Run 'ctest' to run all tests")
+message(STATUS "  - Run 'ctest -R BasicFunctionalityTests' for core functionality")
+message(STATUS "  - Run 'ctest -R PerformanceTests' for performance validation")
+message(STATUS "  - Run 'bin/unified_tests --help' for detailed test options")
