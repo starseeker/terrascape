@@ -26,7 +26,7 @@ endif()
 add_definitions(-DSAFETY)
 
 # Create the terrascape_demo executable (now header-only)
-add_executable(terrascape_demo main.cpp terrain_data_utils.cpp)
+add_executable(terrascape_demo main.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
 # Create unified test suite with cxxopts
 add_executable(unified_tests unified_tests.cpp terrain_data_utils.cpp dsp_reader.cpp)
