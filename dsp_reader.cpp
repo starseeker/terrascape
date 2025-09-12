@@ -34,6 +34,9 @@ bool readDSPFile(const std::string& filename,
     
     bool has_header = (header.magic == DSP_MAGIC_1 || header.magic == DSP_MAGIC_2);
     
+    // Enum for detected data type (declared here for broader scope)
+    enum DataType { UNKNOWN, FLOAT, UINT16, UINT8 } detected_type = UNKNOWN;
+    
     if (has_header) {
         width = header.width;
         height = header.height;
@@ -67,23 +70,27 @@ bool readDSPFile(const std::string& filename,
         std::vector<int> common_sizes = {256, 512, 1024, 128, 64, 32, 100, 200, 300, 400, 500};
         
         bool found_dimensions = false;
+        
         for (int size : common_sizes) {
             // Try square dimensions
             if (size * size * sizeof(float) == file_size) {
                 width = height = size;
                 found_dimensions = true;
+                detected_type = FLOAT;
                 std::cout << "Guessed square dimensions: " << width << "x" << height << " (float)" << std::endl;
                 break;
             }
             if (size * size * sizeof(uint16_t) == file_size) {
                 width = height = size;
                 found_dimensions = true;
+                detected_type = UINT16;
                 std::cout << "Guessed square dimensions: " << width << "x" << height << " (uint16)" << std::endl;
                 break;
             }
             if (size * size * sizeof(uint8_t) == file_size) {
                 width = height = size;
                 found_dimensions = true;
+                detected_type = UINT8;
                 std::cout << "Guessed square dimensions: " << width << "x" << height << " (uint8)" << std::endl;
                 break;
             }
@@ -97,6 +104,7 @@ bool readDSPFile(const std::string& filename,
                         width = w;
                         height = h;
                         found_dimensions = true;
+                        detected_type = FLOAT;
                         std::cout << "Guessed rectangular dimensions: " << width << "x" << height << " (float)" << std::endl;
                         break;
                     }
@@ -129,8 +137,34 @@ bool readDSPFile(const std::string& filename,
             case 2: { // uint16
                 std::vector<uint16_t> raw_data(data_points);
                 file.read(reinterpret_cast<char*>(raw_data.data()), data_points * sizeof(uint16_t));
+                
+                // Try both byte orders and use the one that gives reasonable values
+                std::vector<float> le_values(data_points), be_values(data_points);
+                
+                // Little-endian interpretation (no swap)
                 for (size_t i = 0; i < data_points; ++i) {
-                    elevations[i] = static_cast<float>(raw_data[i]);
+                    le_values[i] = static_cast<float>(raw_data[i]);
+                }
+                
+                // Big-endian interpretation (byte swap)
+                for (size_t i = 0; i < data_points; ++i) {
+                    uint16_t value = raw_data[i];
+                    value = ((value & 0xFF) << 8) | ((value & 0xFF00) >> 8);
+                    be_values[i] = static_cast<float>(value);
+                }
+                
+                // Choose the interpretation that gives fewer extreme values
+                auto le_minmax = std::minmax_element(le_values.begin(), le_values.end());
+                auto be_minmax = std::minmax_element(be_values.begin(), be_values.end());
+                
+                // Check for reasonable terrain elevation values
+                if ((*be_minmax.first >= 0.0f && *be_minmax.second <= 65535.0f) &&
+                    (*le_minmax.first < 0.0f || *le_minmax.second > 100000.0f || 
+                     std::isnan(*le_minmax.first) || std::isnan(*le_minmax.second) ||
+                     std::isinf(*le_minmax.first) || std::isinf(*le_minmax.second))) {
+                    elevations = be_values;
+                } else {
+                    elevations = le_values;
                 }
                 break;
             }
@@ -143,8 +177,60 @@ bool readDSPFile(const std::string& filename,
                 return false;
         }
     } else {
-        // Try float first, then fallback to other types
-        file.read(reinterpret_cast<char*>(elevations.data()), data_points * sizeof(float));
+        // Use the detected format from dimension guessing
+        switch (detected_type) {
+            case FLOAT:
+                file.read(reinterpret_cast<char*>(elevations.data()), data_points * sizeof(float));
+                break;
+            case UINT16: {
+                std::vector<uint16_t> raw_data(data_points);
+                file.read(reinterpret_cast<char*>(raw_data.data()), data_points * sizeof(uint16_t));
+                
+                // Try both byte orders and use the one that gives reasonable values
+                std::vector<float> le_values(data_points), be_values(data_points);
+                
+                // Little-endian interpretation (no swap)
+                for (size_t i = 0; i < data_points; ++i) {
+                    le_values[i] = static_cast<float>(raw_data[i]);
+                }
+                
+                // Big-endian interpretation (byte swap)
+                for (size_t i = 0; i < data_points; ++i) {
+                    uint16_t value = raw_data[i];
+                    value = ((value & 0xFF) << 8) | ((value & 0xFF00) >> 8);
+                    be_values[i] = static_cast<float>(value);
+                }
+                
+                // Choose the interpretation that gives fewer extreme values
+                auto le_minmax = std::minmax_element(le_values.begin(), le_values.end());
+                auto be_minmax = std::minmax_element(be_values.begin(), be_values.end());
+                
+                // Check for reasonable terrain elevation values
+                if ((*be_minmax.first >= 0.0f && *be_minmax.second <= 65535.0f) &&
+                    (*le_minmax.first < 0.0f || *le_minmax.second > 100000.0f || 
+                     std::isnan(*le_minmax.first) || std::isnan(*le_minmax.second) ||
+                     std::isinf(*le_minmax.first) || std::isinf(*le_minmax.second))) {
+                    elevations = be_values;
+                    std::cout << "Using big-endian uint16 interpretation" << std::endl;
+                } else {
+                    elevations = le_values;
+                    std::cout << "Using little-endian uint16 interpretation" << std::endl;
+                }
+                break;
+            }
+            case UINT8: {
+                std::vector<uint8_t> raw_data(data_points);
+                file.read(reinterpret_cast<char*>(raw_data.data()), data_points);
+                for (size_t i = 0; i < data_points; ++i) {
+                    elevations[i] = static_cast<float>(raw_data[i]);
+                }
+                break;
+            }
+            default:
+                // Fallback to float if type detection failed
+                file.read(reinterpret_cast<char*>(elevations.data()), data_points * sizeof(float));
+                break;
+        }
     }
     
     if (!file.good() && !file.eof()) {
@@ -348,11 +434,43 @@ bool readTerraBinFile(const std::string& filename,
             
             if (file.good()) {
                 elevations.resize(w * h);
+                
+                // Try both byte orders and check which gives reasonable values
+                std::vector<float> le_values(w * h), be_values(w * h);
+                
+                // Little-endian interpretation (no swap)
                 for (size_t i = 0; i < raw_data.size(); ++i) {
-                    elevations[i] = static_cast<float>(raw_data[i]);
+                    le_values[i] = static_cast<float>(raw_data[i]);
                 }
                 
-                std::cout << "Successfully read as " << w << "x" << h << " uint16 array" << std::endl;
+                // Big-endian interpretation (byte swap)
+                for (size_t i = 0; i < raw_data.size(); ++i) {
+                    uint16_t value = raw_data[i];
+                    value = ((value & 0xFF) << 8) | ((value & 0xFF00) >> 8);
+                    be_values[i] = static_cast<float>(value);
+                }
+                
+                // Choose the interpretation that gives fewer extreme values
+                auto le_minmax = std::minmax_element(le_values.begin(), le_values.end());
+                auto be_minmax = std::minmax_element(be_values.begin(), be_values.end());
+                
+                bool use_big_endian = false;
+                std::string byte_order_str;
+                
+                // Check for reasonable terrain elevation values
+                if ((*be_minmax.first >= 0.0f && *be_minmax.second <= 65535.0f) &&
+                    (*le_minmax.first < 0.0f || *le_minmax.second > 100000.0f || 
+                     std::isnan(*le_minmax.first) || std::isnan(*le_minmax.second) ||
+                     std::isinf(*le_minmax.first) || std::isinf(*le_minmax.second))) {
+                    use_big_endian = true;
+                    byte_order_str = " (big-endian)";
+                    elevations = be_values;
+                } else {
+                    byte_order_str = " (little-endian)";
+                    elevations = le_values;
+                }
+                
+                std::cout << "Successfully read as " << w << "x" << h << " uint16 array" << byte_order_str << std::endl;
                 
                 auto minmax = std::minmax_element(elevations.begin(), elevations.end());
                 if (info) {
