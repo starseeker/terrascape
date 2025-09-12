@@ -25,6 +25,8 @@
 #include <stdexcept>
 #include <cstdint>
 
+#include "greedy_cuts.hpp"
+
 #if defined(_WIN32)
 #include <windows.h>
 #elif defined(__linux__)
