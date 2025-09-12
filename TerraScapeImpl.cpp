@@ -126,6 +126,28 @@ void DetriaTriangulationManager::initializeBoundary(float minX, float minY, floa
     boundary_indices_.clear();
     is_triangulated_ = false;
     
+    // Check for degenerate boundary dimensions
+    const float MIN_BOUNDARY_SIZE = 1e-6f;
+    float width = maxX - minX;
+    float height = maxY - minY;
+    
+    if (width < MIN_BOUNDARY_SIZE || height < MIN_BOUNDARY_SIZE) {
+        std::cerr << "Warning: Degenerate boundary dimensions (width=" << width 
+                  << ", height=" << height << "), creating minimal valid boundary\n";
+        
+        // Create a minimal valid boundary by expanding the degenerate dimension
+        if (width < MIN_BOUNDARY_SIZE) {
+            float centerX = (minX + maxX) * 0.5f;
+            minX = centerX - MIN_BOUNDARY_SIZE * 0.5f;
+            maxX = centerX + MIN_BOUNDARY_SIZE * 0.5f;
+        }
+        if (height < MIN_BOUNDARY_SIZE) {
+            float centerY = (minY + maxY) * 0.5f;
+            minY = centerY - MIN_BOUNDARY_SIZE * 0.5f;
+            maxY = centerY + MIN_BOUNDARY_SIZE * 0.5f;
+        }
+    }
+    
     // Add corner points
     points_.emplace_back(detria::PointF{minX, minY});    // 0: bottom-left
     points_.emplace_back(detria::PointF{maxX, minY});    // 1: bottom-right  
@@ -136,6 +158,25 @@ void DetriaTriangulationManager::initializeBoundary(float minX, float minY, floa
     point_z_coords_.push_back(z10);
     point_z_coords_.push_back(z11);
     point_z_coords_.push_back(z01);
+    
+    // Verify points are not coincident before setting up triangulation
+    bool valid_boundary = true;
+    for (size_t i = 0; i < points_.size() && valid_boundary; ++i) {
+        for (size_t j = i + 1; j < points_.size(); ++j) {
+            float dx = points_[i].x - points_[j].x;
+            float dy = points_[i].y - points_[j].y;
+            if (dx * dx + dy * dy < MIN_BOUNDARY_SIZE * MIN_BOUNDARY_SIZE) {
+                valid_boundary = false;
+                break;
+            }
+        }
+    }
+    
+    if (!valid_boundary) {
+        std::cerr << "Warning: Boundary points are coincident, cannot triangulate\n";
+        is_triangulated_ = false;
+        return;
+    }
     
     // Set boundary outline (counter-clockwise)
     boundary_indices_ = {0, 1, 2, 3};
@@ -364,6 +405,12 @@ std::vector<std::vector<uint32_t>> DetriaTriangulationManager::getAllTriangles()
 MeshResult DetriaTriangulationManager::toMeshResult() const {
     MeshResult result;
     
+    // Check if we have sufficient points for any triangulation
+    if (points_.size() < 3) {
+        std::cerr << "Warning: Insufficient points for triangulation (" << points_.size() << " points)\n";
+        return result; // Return empty mesh
+    }
+    
     // Convert points to vertices
     for (size_t i = 0; i < points_.size(); ++i) {
         const auto& pt = points_[i];
@@ -373,6 +420,32 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
     
     // Convert triangles with consistent CCW winding
     auto triangles = getAllTriangles();
+    
+    // If no triangles were generated but we have vertices, create a minimal fallback
+    if (triangles.empty() && result.vertices.size() >= 3) {
+        std::cerr << "Warning: No triangles generated, creating minimal fallback triangle\n";
+        
+        // For a very simple fallback, just connect the first 3 vertices
+        // This ensures we don't return a completely empty mesh
+        if (result.vertices.size() >= 3) {
+            // Check if first 3 vertices are non-collinear
+            const auto& v0 = result.vertices[0];
+            const auto& v1 = result.vertices[1];
+            const auto& v2 = result.vertices[2];
+            
+            float signed_area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+            if (std::abs(signed_area) > 1e-8f) {
+                // Non-collinear, safe to create triangle
+                if (signed_area < 0.0f) {
+                    result.triangles.push_back({0, 2, 1}); // CCW order
+                } else {
+                    result.triangles.push_back({0, 1, 2}); // Already CCW
+                }
+            }
+        }
+        return result;
+    }
+    
     for (const auto& tri : triangles) {
         if (tri.size() == 3) {
             uint32_t v0_idx = tri[0];
@@ -391,6 +464,11 @@ MeshResult DetriaTriangulationManager::toMeshResult() const {
             // Compute signed area to determine winding order
             // Signed area = (x1-x0)(y2-y0) - (y1-y0)(x2-x0)
             float signed_area = (v1.x - v0.x) * (v2.y - v0.y) - (v1.y - v0.y) * (v2.x - v0.x);
+            
+            // Skip degenerate triangles (area too small)
+            if (std::abs(signed_area) < 1e-8f) {
+                continue;
+            }
             
             // If negative, triangle is clockwise - swap v1 and v2 to make it CCW
             if (signed_area < 0.0f) {
@@ -1097,7 +1175,23 @@ PreprocessingResult preprocess_input_data(
     float& error_threshold, bool enable_jitter)
 {
     PreprocessingResult result;
-    result.processed_elevations.reserve(size_t(width) * size_t(height));
+    
+    // Validate dimensions before reserving memory
+    size_t total_elements = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (total_elements == 0 || total_elements > 1000000000UL) { // 1 billion limit
+        std::cerr << "Error: Invalid grid size for preprocessing (" << width << "x" << height << " = " 
+                  << total_elements << " elements)\n";
+        result.is_degenerate = true;
+        return result;
+    }
+    
+    try {
+        result.processed_elevations.reserve(total_elements);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: Failed to reserve memory for grid processing: " << e.what() << "\n";
+        result.is_degenerate = true;
+        return result;
+    }
     
     // Step 1: Convert to float and find min/max
     float min_z = std::numeric_limits<float>::max();
@@ -1296,6 +1390,64 @@ MeshResult grid_to_mesh_detria(
     float error_threshold, int point_limit,
     MeshRefineStrategy strategy)
 {
+    // === INPUT VALIDATION ===
+    // Handle degenerate input dimensions that would cause triangulation failures
+    if (width <= 0 || height <= 0 || elevations == nullptr) {
+        std::cerr << "Error: Invalid input parameters (width=" << width << ", height=" << height << ")\n";
+        return MeshResult{}; // Return empty mesh
+    }
+    
+    // Handle 1D degenerate cases (width=1 or height=1)
+    if (width == 1 || height == 1) {
+        std::cerr << "Warning: Degenerate 1D grid dimensions (width=" << width << ", height=" << height 
+                  << "), creating minimal valid mesh\n";
+        
+        MeshResult minimal_result;
+        
+        if (width == 1 && height == 1) {
+            // Single point - create a minimal triangle by duplicating the point with small offsets
+            float z = static_cast<float>(elevations[0]);
+            minimal_result.vertices = {
+                {0.0f, 0.0f, z},
+                {0.001f, 0.0f, z},
+                {0.0f, 0.001f, z}
+            };
+            minimal_result.triangles = {{0, 1, 2}};
+        } else if (height == 1) {
+            // Single row - create a strip of triangles along the row
+            float y_offset = 0.001f;
+            for (int x = 0; x < width; ++x) {
+                float z = static_cast<float>(elevations[x]);
+                minimal_result.vertices.push_back({static_cast<float>(x), 0.0f, z});
+                minimal_result.vertices.push_back({static_cast<float>(x), y_offset, z});
+            }
+            
+            // Create triangles connecting the strip
+            for (int x = 0; x < width - 1; ++x) {
+                int base = x * 2;
+                minimal_result.triangles.push_back({base, base + 1, base + 2});
+                minimal_result.triangles.push_back({base + 1, base + 3, base + 2});
+            }
+        } else if (width == 1) {
+            // Single column - create a strip of triangles along the column
+            float x_offset = 0.001f;
+            for (int y = 0; y < height; ++y) {
+                float z = static_cast<float>(elevations[y]);
+                minimal_result.vertices.push_back({0.0f, static_cast<float>(y), z});
+                minimal_result.vertices.push_back({x_offset, static_cast<float>(y), z});
+            }
+            
+            // Create triangles connecting the strip
+            for (int y = 0; y < height - 1; ++y) {
+                int base = y * 2;
+                minimal_result.triangles.push_back({base, base + 2, base + 1});
+                minimal_result.triangles.push_back({base + 1, base + 2, base + 3});
+            }
+        }
+        
+        return minimal_result;
+    }
+    
     // === PREPROCESSING FOR ROBUSTNESS ===
     // Preprocess input data to handle degenerate cases and prevent assertion failures
     float adjusted_error_threshold = error_threshold;
@@ -1329,140 +1481,164 @@ MeshResult grid_to_mesh_detria(
     // Create triangulation manager and initialize with boundary
     auto triangulation_manager = std::make_unique<DetriaTriangulationManager>();
     
-    // Initialize boundary corners
-    float minX = 0.0f, minY = 0.0f;
-    float maxX = static_cast<float>(width - 1);
-    float maxY = static_cast<float>(height - 1);
-    
-    triangulation_manager->initializeBoundary(
-        minX, minY, maxX, maxY,
-        processed_elevations[0],                                    // z00: bottom-left
-        processed_elevations[width - 1],                           // z10: bottom-right
-        processed_elevations[(height - 1) * width + width - 1],    // z11: top-right
-        processed_elevations[(height - 1) * width]                 // z01: top-left
-    );
-    
-    // === ROBUST SPARSE STRATEGY IMPLEMENTATION ===
-    // Use improved sparse sampling with adaptive density and progressive fallback
-    
-    // Calculate adaptive step size based on grid size and point limit
-    int base_step = std::max(1, std::max(width, height) / 20);  // Start with denser sampling
-    float step_multiplier = 1.0f;
-    
-    // Adjust step based on point limit to respect memory constraints
-    size_t expected_points = (width / base_step) * (height / base_step);
-    if (expected_points > static_cast<size_t>(point_limit)) {
-        step_multiplier = std::sqrt(static_cast<float>(expected_points) / point_limit);
-    }
-    
-    int step = std::max(1, static_cast<int>(base_step * step_multiplier));
-    std::cout << "Using SPARSE strategy with step=" << step << " (adaptive density)\n";
-    
-    // Build list of sparse points with improved distribution
-    std::vector<std::tuple<float, float, float>> sparse_points;
-    
-    // Add center points first (usually most important for terrain)
-    int center_x = width / 2;
-    int center_y = height / 2;
-    if (center_x > 0 && center_x < width - 1 && center_y > 0 && center_y < height - 1) {
-        sparse_points.emplace_back(static_cast<float>(center_x), static_cast<float>(center_y), 
-                                  processed_elevations[center_y * width + center_x]);
-    }
-    
-    // Add points in a regular grid pattern, avoiding boundaries
-    for (int y = step; y < height; y += step) {
-        for (int x = step; x < width; x += step) {
-            // Avoid points on boundary edges - they must be strictly interior
-            bool on_boundary = (x == 0 || x == width - 1 || y == 0 || y == height - 1);
-            if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
-                float px = static_cast<float>(x);
-                float py = static_cast<float>(y);
-                float pz = processed_elevations[y * width + x];
-                sparse_points.emplace_back(px, py, pz);
+    try {
+        // Initialize boundary corners
+        float minX = 0.0f, minY = 0.0f;
+        float maxX = static_cast<float>(width - 1);
+        float maxY = static_cast<float>(height - 1);
+        
+        triangulation_manager->initializeBoundary(
+            minX, minY, maxX, maxY,
+            processed_elevations[0],                                    // z00: bottom-left
+            processed_elevations[width - 1],                           // z10: bottom-right
+            processed_elevations[(height - 1) * width + width - 1],    // z11: top-right
+            processed_elevations[(height - 1) * width]                 // z01: top-left
+        );
+        
+        // === ROBUST SPARSE STRATEGY IMPLEMENTATION ===
+        // Use improved sparse sampling with adaptive density and progressive fallback
+        
+        // Calculate adaptive step size based on grid size and point limit
+        int base_step = std::max(1, std::max(width, height) / 20);  // Start with denser sampling
+        float step_multiplier = 1.0f;
+        
+        // Adjust step based on point limit to respect memory constraints
+        size_t expected_points = (width / base_step) * (height / base_step);
+        if (expected_points > static_cast<size_t>(point_limit)) {
+            step_multiplier = std::sqrt(static_cast<float>(expected_points) / point_limit);
+        }
+        
+        int step = std::max(1, static_cast<int>(base_step * step_multiplier));
+        std::cout << "Using SPARSE strategy with step=" << step << " (adaptive density)\n";
+        
+        // Build list of sparse points with improved distribution
+        std::vector<std::tuple<float, float, float>> sparse_points;
+        
+        // Add center points first (usually most important for terrain)
+        int center_x = width / 2;
+        int center_y = height / 2;
+        if (center_x > 0 && center_x < width - 1 && center_y > 0 && center_y < height - 1) {
+            sparse_points.emplace_back(static_cast<float>(center_x), static_cast<float>(center_y), 
+                                      processed_elevations[center_y * width + center_x]);
+        }
+        
+        // Add points in a regular grid pattern, avoiding boundaries
+        for (int y = step; y < height; y += step) {
+            for (int x = step; x < width; x += step) {
+                // Avoid points on boundary edges - they must be strictly interior
+                bool on_boundary = (x == 0 || x == width - 1 || y == 0 || y == height - 1);
+                if (!on_boundary && sparse_points.size() < static_cast<size_t>(point_limit - 4)) {
+                    float px = static_cast<float>(x);
+                    float py = static_cast<float>(y);
+                    float pz = processed_elevations[y * width + x];
+                    sparse_points.emplace_back(px, py, pz);
+                }
             }
         }
-    }
-    
-    // Add edge midpoints for better boundary representation
-    if (sparse_points.size() < static_cast<size_t>(point_limit - 8)) {
-        // Bottom edge midpoint
-        int mid_x = width / 2;
-        if (mid_x > 0 && mid_x < width - 1) {
-            sparse_points.emplace_back(static_cast<float>(mid_x), 1.0f, 
-                                      processed_elevations[1 * width + mid_x]);
+        
+        // Add edge midpoints for better boundary representation
+        if (sparse_points.size() < static_cast<size_t>(point_limit - 8)) {
+            // Bottom edge midpoint
+            int mid_x = width / 2;
+            if (mid_x > 0 && mid_x < width - 1) {
+                sparse_points.emplace_back(static_cast<float>(mid_x), 1.0f, 
+                                          processed_elevations[1 * width + mid_x]);
+            }
+            
+            // Top edge midpoint
+            if (mid_x > 0 && mid_x < width - 1) {
+                sparse_points.emplace_back(static_cast<float>(mid_x), static_cast<float>(height - 2), 
+                                          processed_elevations[(height - 2) * width + mid_x]);
+            }
+            
+            // Left edge midpoint
+            int mid_y = height / 2;
+            if (mid_y > 0 && mid_y < height - 1) {
+                sparse_points.emplace_back(1.0f, static_cast<float>(mid_y), 
+                                          processed_elevations[mid_y * width + 1]);
+            }
+            
+            // Right edge midpoint
+            if (mid_y > 0 && mid_y < height - 1) {
+                sparse_points.emplace_back(static_cast<float>(width - 2), static_cast<float>(mid_y), 
+                                          processed_elevations[mid_y * width + (width - 2)]);
+            }
         }
         
-        // Top edge midpoint
-        if (mid_x > 0 && mid_x < width - 1) {
-            sparse_points.emplace_back(static_cast<float>(mid_x), static_cast<float>(height - 2), 
-                                      processed_elevations[(height - 2) * width + mid_x]);
+        std::cout << "Generated " << sparse_points.size() << " sparse sampling points\n";
+        
+        // Add points with progressive fallback if triangulation fails
+        size_t points_to_try = sparse_points.size();
+        bool success = false;
+        int attempt = 0;
+        const int MAX_ATTEMPTS = 5;
+        
+        while (!success && points_to_try > 0 && attempt < MAX_ATTEMPTS) {
+            attempt++;
+            std::cout << "Triangulation attempt " << attempt << " with " << points_to_try << " points\n";
+            
+            try {
+                // Reset triangulation manager for new attempt
+                triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+                triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+                    processed_elevations[0],
+                    processed_elevations[width - 1],
+                    processed_elevations[(height - 1) * width + width - 1],
+                    processed_elevations[(height - 1) * width]);
+                
+                // Add subset of sparse points
+                for (size_t i = 0; i < points_to_try; ++i) {
+                    const auto& pt = sparse_points[i];
+                    triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
+                }
+                
+                success = triangulation_manager->retriangulate();
+                
+            } catch (const std::exception& e) {
+                std::cerr << "Triangulation failed with exception: " << e.what() << "\n";
+                success = false;
+            }
+            
+            if (!success) {
+                points_to_try = points_to_try * 2 / 3; // Reduce by 33%
+                std::cout << "Triangulation failed, reducing to " << points_to_try << " points\n";
+            }
         }
-        
-        // Left edge midpoint
-        int mid_y = height / 2;
-        if (mid_y > 0 && mid_y < height - 1) {
-            sparse_points.emplace_back(1.0f, static_cast<float>(mid_y), 
-                                      processed_elevations[mid_y * width + 1]);
-        }
-        
-        // Right edge midpoint
-        if (mid_y > 0 && mid_y < height - 1) {
-            sparse_points.emplace_back(static_cast<float>(width - 2), static_cast<float>(mid_y), 
-                                      processed_elevations[mid_y * width + (width - 2)]);
-        }
-    }
-    
-    std::cout << "Generated " << sparse_points.size() << " sparse sampling points\n";
-    
-    // Add points with progressive fallback if triangulation fails
-    size_t points_to_try = sparse_points.size();
-    bool success = false;
-    int attempt = 0;
-    const int MAX_ATTEMPTS = 5;
-    
-    while (!success && points_to_try > 0 && attempt < MAX_ATTEMPTS) {
-        attempt++;
-        std::cout << "Triangulation attempt " << attempt << " with " << points_to_try << " points\n";
-        
-        // Reset triangulation manager for new attempt
-        triangulation_manager = std::make_unique<DetriaTriangulationManager>();
-        triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
-            processed_elevations[0],
-            processed_elevations[width - 1],
-            processed_elevations[(height - 1) * width + width - 1],
-            processed_elevations[(height - 1) * width]);
-        
-        // Add subset of sparse points
-        for (size_t i = 0; i < points_to_try; ++i) {
-            const auto& pt = sparse_points[i];
-            triangulation_manager->addPoint(std::get<0>(pt), std::get<1>(pt), std::get<2>(pt));
-        }
-        
-        success = triangulation_manager->retriangulate();
         
         if (!success) {
-            points_to_try = points_to_try * 2 / 3; // Reduce by 33%
-            std::cout << "Triangulation failed, reducing to " << points_to_try << " points\n";
+            std::cout << "Warning: Sparse triangulation failed, using minimal boundary mesh\n";
+            // Return minimal boundary mesh as last resort
+            triangulation_manager = std::make_unique<DetriaTriangulationManager>();
+            triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
+                processed_elevations[0],
+                processed_elevations[width - 1],
+                processed_elevations[(height - 1) * width + width - 1],
+                processed_elevations[(height - 1) * width]);
+            triangulation_manager->retriangulate(); // Should succeed with just boundary
         }
+        
+        std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
+                  << " total points\n";
+        
+        // Convert to final mesh result
+        return triangulation_manager->toMeshResult();
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Critical triangulation error: " << e.what() << "\n";
+        std::cerr << "Falling back to simple quad mesh\n";
+        
+        // Create a fallback simple quad mesh
+        MeshResult fallback_result;
+        fallback_result.vertices = {
+            {0.0f, 0.0f, processed_elevations[0]},
+            {static_cast<float>(width - 1), 0.0f, processed_elevations[width - 1]},
+            {static_cast<float>(width - 1), static_cast<float>(height - 1), 
+             processed_elevations[(height - 1) * width + width - 1]},
+            {0.0f, static_cast<float>(height - 1), processed_elevations[(height - 1) * width]}
+        };
+        fallback_result.triangles = {{0, 1, 2}, {0, 2, 3}};
+        return fallback_result;
     }
-    
-    if (!success) {
-        std::cout << "Warning: Sparse triangulation failed, using minimal boundary mesh\n";
-        // Return minimal boundary mesh as last resort
-        triangulation_manager = std::make_unique<DetriaTriangulationManager>();
-        triangulation_manager->initializeBoundary(minX, minY, maxX, maxY,
-            processed_elevations[0],
-            processed_elevations[width - 1],
-            processed_elevations[(height - 1) * width + width - 1],
-            processed_elevations[(height - 1) * width]);
-        triangulation_manager->retriangulate(); // Should succeed with just boundary
-    }
-    
-    std::cout << "SPARSE strategy completed with " << triangulation_manager->getPointCount() 
-              << " total points\n";
-    
-    // Convert to final mesh result
-    return triangulation_manager->toMeshResult();
 }
 
 // Explicit instantiations for common types
