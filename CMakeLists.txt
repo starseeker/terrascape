@@ -26,37 +26,37 @@ endif()
 add_definitions(-DSAFETY)
 
 # Create the terrascape_demo executable (using TerraScape.hpp with detria)
-add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(terrascape_demo main.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create consolidated comprehensive test suite
-add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(terrascape_tests terrascape_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create Hawaii BigIsland performance test
-add_executable(hawaii_bigisland_test hawaii_bigisland_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(hawaii_bigisland_test hawaii_bigisland_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create volumetric mesh test
-add_executable(volumetric_test volumetric_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(volumetric_test volumetric_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create separated volumetric mesh test
-add_executable(volumetric_separated_test volumetric_separated_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(volumetric_separated_test volumetric_separated_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create separated volumetric mesh example
-add_executable(volumetric_separated_example volumetric_separated_example.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(volumetric_separated_example volumetric_separated_example.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create preprocessing robustness test
-add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create assertion failure prevention test  
-add_executable(assertion_failure_tests assertion_failure_tests.cpp TerraScapeImpl.cpp terrain_data_utils.cpp)
+add_executable(assertion_failure_tests assertion_failure_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
 # Create terra.bin processing test for BRL-CAD DSP compatibility
-add_executable(terra_bin_test terra_bin_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp dsp_reader.cpp)
+add_executable(terra_bin_test terra_bin_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
 # Create advanced terra.bin processing test for stress testing
-add_executable(advanced_terra_test advanced_terra_test.cpp TerraScapeImpl.cpp terrain_data_utils.cpp dsp_reader.cpp)
+add_executable(advanced_terra_test advanced_terra_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
 # Create terra.bin DSP demonstration
-add_executable(terra_dsp_demo terra_dsp_demo.cpp TerraScapeImpl.cpp terrain_data_utils.cpp dsp_reader.cpp)
+add_executable(terra_dsp_demo terra_dsp_demo.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
 # Include current directory for headers
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

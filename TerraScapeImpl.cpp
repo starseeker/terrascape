@@ -8,6 +8,7 @@
 
 #include "TerraScapeImpl.h"
 #include "TerraScape.hpp"
+#include "GridTriangulator.h"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -1383,6 +1384,164 @@ PreprocessingResult preprocess_input_data(
     return result;
 }
 
+// --- Grid-aware triangulation implementation ---
+template<typename T>
+MeshResult grid_to_mesh_grid_aware(
+    int width, int height, const T* elevations,
+    float error_threshold, int point_limit)
+{
+    std::cout << "Using GRID_AWARE strategy for " << width << "x" << height << " grid\n";
+    
+    // === INPUT VALIDATION ===
+    if (width <= 0 || height <= 0 || elevations == nullptr) {
+        std::cerr << "Error: Invalid input parameters for grid-aware triangulation\n";
+        return MeshResult{};
+    }
+    
+    // Handle degenerate cases
+    if (width == 1 || height == 1) {
+        std::cerr << "Warning: Grid-aware triangulation requires at least 2x2 grid, falling back to simple mesh\n";
+        MeshResult simple_result;
+        
+        if (width == 1 && height == 1) {
+            // Single point - create minimal triangle
+            simple_result.vertices.emplace_back(Vertex{0.0f, 0.0f, static_cast<float>(elevations[0])});
+            simple_result.vertices.emplace_back(Vertex{1.0f, 0.0f, static_cast<float>(elevations[0])});
+            simple_result.vertices.emplace_back(Vertex{0.5f, 1.0f, static_cast<float>(elevations[0])});
+            simple_result.triangles = {Triangle{0, 1, 2}};
+        } else if (width == 1) {
+            // Single column
+            for (int y = 0; y < height; ++y) {
+                simple_result.vertices.emplace_back(Vertex{0.0f, static_cast<float>(y), static_cast<float>(elevations[y])});
+            }
+            // Create triangles along the line (degenerate, but valid)
+            for (int y = 0; y < height - 1; ++y) {
+                simple_result.vertices.emplace_back(Vertex{1.0f, static_cast<float>(y), static_cast<float>(elevations[y])});
+                simple_result.vertices.emplace_back(Vertex{1.0f, static_cast<float>(y + 1), static_cast<float>(elevations[y + 1])});
+                
+                uint32_t base = static_cast<uint32_t>(height + y * 2);
+                simple_result.triangles.push_back(Triangle{static_cast<int>(y), static_cast<int>(base), static_cast<int>(y + 1)});
+                simple_result.triangles.push_back(Triangle{static_cast<int>(y + 1), static_cast<int>(base), static_cast<int>(base + 1)});
+            }
+        } else {
+            // Single row
+            for (int x = 0; x < width; ++x) {
+                simple_result.vertices.emplace_back(Vertex{static_cast<float>(x), 0.0f, static_cast<float>(elevations[x])});
+            }
+            // Create triangles along the line (degenerate, but valid)
+            for (int x = 0; x < width - 1; ++x) {
+                simple_result.vertices.emplace_back(Vertex{static_cast<float>(x), 1.0f, static_cast<float>(elevations[x])});
+                simple_result.vertices.emplace_back(Vertex{static_cast<float>(x + 1), 1.0f, static_cast<float>(elevations[x + 1])});
+                
+                uint32_t base = static_cast<uint32_t>(width + x * 2);
+                simple_result.triangles.push_back(Triangle{static_cast<int>(x), static_cast<int>(x + 1), static_cast<int>(base)});
+                simple_result.triangles.push_back(Triangle{static_cast<int>(x + 1), static_cast<int>(base + 1), static_cast<int>(base)});
+            }
+        }
+        return simple_result;
+    }
+    
+    try {
+        // Create grid triangulator
+        auto grid_triangulator = std::make_unique<GridTriangulator>();
+        
+        // Initialize with grid bounds
+        float minX = 0.0f, minY = 0.0f;
+        float maxX = static_cast<float>(width - 1);
+        float maxY = static_cast<float>(height - 1);
+        
+        grid_triangulator->initializeGrid(width, height, minX, minY, maxX, maxY);
+        
+        // Add grid points strategically
+        // For grid-aware triangulation, we can be much more systematic
+        
+        // Always add corners first
+        grid_triangulator->addGridPoint(0, 0, static_cast<float>(elevations[0]));
+        grid_triangulator->addGridPoint(width - 1, 0, static_cast<float>(elevations[width - 1]));
+        grid_triangulator->addGridPoint(width - 1, height - 1, static_cast<float>(elevations[(height - 1) * width + width - 1]));
+        grid_triangulator->addGridPoint(0, height - 1, static_cast<float>(elevations[(height - 1) * width]));
+        
+        // Add edge points for better boundary representation
+        int edge_step = std::max(1, std::max(width, height) / 10);
+        
+        // Bottom and top edges
+        for (int x = edge_step; x < width - 1; x += edge_step) {
+            grid_triangulator->addGridPoint(x, 0, static_cast<float>(elevations[x]));
+            grid_triangulator->addGridPoint(x, height - 1, static_cast<float>(elevations[(height - 1) * width + x]));
+        }
+        
+        // Left and right edges
+        for (int y = edge_step; y < height - 1; y += edge_step) {
+            grid_triangulator->addGridPoint(0, y, static_cast<float>(elevations[y * width]));
+            grid_triangulator->addGridPoint(width - 1, y, static_cast<float>(elevations[y * width + width - 1]));
+        }
+        
+        // Add interior points based on error threshold and point limit
+        int interior_step = std::max(1, std::min(width, height) / 8);
+        
+        // Adaptive step size based on point limit
+        int estimated_points = 4 + (width + height) / edge_step * 2 + (width / interior_step) * (height / interior_step);
+        if (estimated_points > point_limit) {
+            interior_step = std::max(1, static_cast<int>(interior_step * std::sqrt(static_cast<float>(estimated_points) / point_limit)));
+        }
+        
+        std::cout << "Grid-aware: Adding interior points with step=" << interior_step << "\n";
+        
+        // Add interior points systematically
+        for (int y = interior_step; y < height; y += interior_step) {
+            for (int x = interior_step; x < width; x += interior_step) {
+                // Skip if too close to boundary
+                if (x == 0 || x == width - 1 || y == 0 || y == height - 1) continue;
+                
+                grid_triangulator->addGridPoint(x, y, static_cast<float>(elevations[y * width + x]));
+            }
+        }
+        
+        std::cout << "Grid-aware: Added " << grid_triangulator->getVertexCount() << " vertices\n";
+        
+        // Execute triangulation
+        bool success = grid_triangulator->triangulate();
+        
+        if (!success) {
+            std::cerr << "Grid-aware triangulation failed, creating fallback mesh\n";
+            // Create simple quad mesh as fallback
+            MeshResult fallback_result;
+            fallback_result.vertices = {
+                Vertex{0.0f, 0.0f, static_cast<float>(elevations[0])},
+                Vertex{maxX, 0.0f, static_cast<float>(elevations[width - 1])},
+                Vertex{maxX, maxY, static_cast<float>(elevations[(height - 1) * width + width - 1])},
+                Vertex{0.0f, maxY, static_cast<float>(elevations[(height - 1) * width])}
+            };
+            fallback_result.triangles = {Triangle{0, 1, 2}, Triangle{0, 2, 3}};
+            return fallback_result;
+        }
+        
+        // Optimize triangle quality
+        grid_triangulator->optimizeTriangleQuality();
+        
+        std::cout << "Grid-aware: Generated " << grid_triangulator->getTriangleCount() << " triangles\n";
+        
+        // Convert to standard mesh result
+        return grid_triangulator->toMeshResult();
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Grid-aware triangulation error: " << e.what() << "\n";
+        std::cerr << "Falling back to simple quad mesh\n";
+        
+        // Fallback to simple mesh
+        MeshResult fallback_result;
+        fallback_result.vertices = {
+            Vertex{0.0f, 0.0f, static_cast<float>(elevations[0])},
+            Vertex{static_cast<float>(width - 1), 0.0f, static_cast<float>(elevations[width - 1])},
+            Vertex{static_cast<float>(width - 1), static_cast<float>(height - 1), 
+                   static_cast<float>(elevations[(height - 1) * width + width - 1])},
+            Vertex{0.0f, static_cast<float>(height - 1), static_cast<float>(elevations[(height - 1) * width])}
+        };
+        fallback_result.triangles = {Triangle{0, 1, 2}, Triangle{0, 2, 3}};
+        return fallback_result;
+    }
+}
+
 // --- Main grid_to_mesh_detria implementation ---
 template<typename T>
 MeshResult grid_to_mesh_detria(
@@ -1476,6 +1635,12 @@ MeshResult grid_to_mesh_detria(
         };
         
         return simple_result;
+    }
+    
+    // === STRATEGY SELECTION ===
+    // Check if we should use the new grid-aware triangulation algorithm
+    if (strategy == MeshRefineStrategy::GRID_AWARE) {
+        return grid_to_mesh_grid_aware(width, height, processed_elevations, error_threshold, point_limit);
     }
     
     // Create triangulation manager and initialize with boundary
@@ -1646,6 +1811,12 @@ template MeshResult grid_to_mesh_detria<float>(int width, int height, const floa
 template MeshResult grid_to_mesh_detria<double>(int width, int height, const double* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<int>(int width, int height, const int* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<unsigned short>(int width, int height, const unsigned short* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+
+// Explicit instantiations for grid-aware triangulation
+template MeshResult grid_to_mesh_grid_aware<float>(int width, int height, const float* elevations, float error_threshold, int point_limit);
+template MeshResult grid_to_mesh_grid_aware<double>(int width, int height, const double* elevations, float error_threshold, int point_limit);
+template MeshResult grid_to_mesh_grid_aware<int>(int width, int height, const int* elevations, float error_threshold, int point_limit);
+template MeshResult grid_to_mesh_grid_aware<unsigned short>(int width, int height, const unsigned short* elevations, float error_threshold, int point_limit);
 
 // Explicit instantiations for preprocessing function
 template PreprocessingResult preprocess_input_data<float>(int width, int height, const float* elevations, float& error_threshold, bool enable_jitter);

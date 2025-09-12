@@ -32,8 +32,9 @@ namespace TerraScape {
 
 // --- Strategy selection for mesh refinement ---
 enum class MeshRefineStrategy {
-    AUTO,      // Automatically select method based on grid size (consolidated to SPARSE for robustness)
-    SPARSE,    // Sparse sampling (robust, consistent quality) - uses detria
+    AUTO,        // Automatically select method based on grid size (consolidated to SPARSE for robustness)
+    SPARSE,      // Sparse sampling (robust, consistent quality) - uses detria
+    GRID_AWARE,  // Grid-aware advancing front triangulation (new, optimal for gridded data)
     // HEAP and HYBRID strategies removed due to robustness issues with incremental insertion
     // These strategies would fail to add points in many cases, leading to poor triangulations
 };
@@ -195,18 +196,25 @@ MeshResult grid_to_mesh(
     MeshRefineStrategy strategy = MeshRefineStrategy::AUTO)
 {
     // --- Strategy selection with complexity analysis ---
-    // Consolidated to SPARSE strategy for maximum robustness
-    // HEAP and HYBRID strategies had fundamental issues with incremental insertion
-    // causing failures to add points in many terrain configurations
+    // Default to new GRID_AWARE strategy for better collinear point handling
     if (strategy == MeshRefineStrategy::AUTO) {
-        strategy = MeshRefineStrategy::SPARSE;  // Always use robust SPARSE strategy
+        strategy = MeshRefineStrategy::GRID_AWARE;  // Prefer grid-aware for gridded data
         
         size_t grid_size = size_t(width) * size_t(height);
-        std::cout << "AUTO strategy selected: SPARSE for " << grid_size << " points (consolidated for robustness)\n";
+        std::cout << "AUTO strategy selected: GRID_AWARE for " << grid_size << " points (optimal for gridded data)\n";
+    }
+    // Consolidated to SPARSE strategy for maximum robustness by default
+    // HEAP and HYBRID strategies had fundamental issues with incremental insertion
+    // causing failures to add points in many terrain configurations
+    
+    // Support new GRID_AWARE strategy for improved collinear point handling
+    if (strategy == MeshRefineStrategy::GRID_AWARE) {
+        std::cout << "Using GRID_AWARE strategy for optimal gridded data triangulation\n";
+        return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, strategy);
     }
     
     // Delegate to detria-based implementation with robust error handling
-    // Only SPARSE strategy is supported for maximum robustness
+    // SPARSE strategy uses detria with robust preprocessing but may have collinear point issues
     return grid_to_mesh_detria(width, height, elevations, error_threshold, point_limit, MeshRefineStrategy::SPARSE);
 }
 

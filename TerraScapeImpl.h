@@ -253,4 +253,14 @@ PreprocessingResult preprocess_input_data(
     int width, int height, const T* elevations, 
     float& error_threshold, bool enable_jitter = true);
 
+/**
+ * Grid-aware triangulation implementation that takes advantage of the structured
+ * nature of gridded terrain data. Uses advancing front algorithm for better
+ * handling of collinear points and more predictable triangle quality.
+ */
+template<typename T>
+MeshResult grid_to_mesh_grid_aware(
+    int width, int height, const T* elevations,
+    float error_threshold, int point_limit);
+
 } // namespace TerraScape
