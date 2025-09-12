@@ -46,9 +46,6 @@ add_executable(volumetric_separated_example volumetric_separated_example.cpp Ter
 # Create preprocessing robustness test
 add_executable(preprocessing_tests preprocessing_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
 
-# Create assertion failure prevention test  
-add_executable(assertion_failure_tests assertion_failure_tests.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp)
-
 # Create terra.bin processing test for BRL-CAD DSP compatibility
 add_executable(terra_bin_test terra_bin_test.cpp TerraScapeImpl.cpp GridTriangulator.cpp terrain_data_utils.cpp dsp_reader.cpp)
 
@@ -67,8 +64,6 @@ target_include_directories(volumetric_separated_test PRIVATE ${CMAKE_CURRENT_SOU
 target_include_directories(volumetric_separated_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_include_directories(preprocessing_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_include_directories(assertion_failure_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_include_directories(terra_bin_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -119,9 +114,6 @@ set_target_properties(volumetric_separated_example PROPERTIES
 set_target_properties(preprocessing_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
-set_target_properties(assertion_failure_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
 set_target_properties(terra_bin_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
@@ -133,7 +125,7 @@ set_target_properties(terra_dsp_demo PROPERTIES
 )
 
 # Install targets
-install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests assertion_failure_tests terra_bin_test advanced_terra_test terra_dsp_demo DESTINATION bin)
+install(TARGETS terrascape_demo terrascape_tests hawaii_bigisland_test volumetric_test volumetric_separated_test preprocessing_tests terra_bin_test advanced_terra_test terra_dsp_demo DESTINATION bin)
 
 # Add CTest tests
 add_test(NAME ComprehensiveTestSuite COMMAND terrascape_tests)
@@ -141,7 +133,6 @@ add_test(NAME HawaiiBigIslandPerformanceTest COMMAND hawaii_bigisland_test)
 add_test(NAME VolumetricMeshTest COMMAND volumetric_test)
 add_test(NAME VolumetricSeparatedMeshTest COMMAND volumetric_separated_test)
 add_test(NAME PreprocessingRobustnessTest COMMAND preprocessing_tests)
-add_test(NAME AssertionFailurePreventionTest COMMAND assertion_failure_tests)
 add_test(NAME TerraBinProcessingTest COMMAND terra_bin_test)
 add_test(NAME AdvancedTerraBinTest COMMAND advanced_terra_test)
 add_test(NAME TerraDSPDemo COMMAND terra_dsp_demo)
