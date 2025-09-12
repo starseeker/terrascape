@@ -1332,11 +1332,13 @@ MeshResult grid_to_mesh_detria(
 template MeshResult grid_to_mesh_detria<float>(int width, int height, const float* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<double>(int width, int height, const double* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 template MeshResult grid_to_mesh_detria<int>(int width, int height, const int* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
+template MeshResult grid_to_mesh_detria<unsigned short>(int width, int height, const unsigned short* elevations, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 
 // Explicit instantiations for preprocessing function
 template PreprocessingResult preprocess_input_data<float>(int width, int height, const float* elevations, float& error_threshold, bool enable_jitter);
 template PreprocessingResult preprocess_input_data<double>(int width, int height, const double* elevations, float& error_threshold, bool enable_jitter);
 template PreprocessingResult preprocess_input_data<int>(int width, int height, const int* elevations, float& error_threshold, bool enable_jitter);
+template MeshResult grid_to_mesh_volumetric<unsigned short>(int width, int height, const unsigned short* elevations, float z_base, float error_threshold, int point_limit, MeshRefineStrategy strategy);
 
 // === Volumetric Mesh Generation Implementation ===
 
