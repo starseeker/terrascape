@@ -337,15 +337,32 @@ inline MeshResult grid_to_mesh_impl(
     }
 
     // Convert Greedy Cuts mesh to TerraScape MeshResult
-    result.vertices.reserve(gc_mesh.vertices.size());
-    for (const auto& v : gc_mesh.vertices) {
+    // Only include vertices that are actually used by triangles
+    std::unordered_set<int> used_vertices;
+    for (const auto& t : gc_mesh.triangles) {
+        used_vertices.insert(t[0]);
+        used_vertices.insert(t[1]);
+        used_vertices.insert(t[2]);
+    }
+    
+    // Create mapping from old vertex indices to new ones
+    std::vector<int> vertex_mapping(gc_mesh.vertices.size(), -1);
+    result.vertices.reserve(used_vertices.size());
+    
+    for (int old_idx : used_vertices) {
+        vertex_mapping[old_idx] = static_cast<int>(result.vertices.size());
+        const auto& v = gc_mesh.vertices[old_idx];
         result.vertices.push_back({static_cast<float>(v[0]),
                                    static_cast<float>(v[1]),
                                    static_cast<float>(v[2])});
     }
+    
+    // Update triangle indices to use new vertex mapping
     result.triangles.reserve(gc_mesh.triangles.size());
     for (const auto& t : gc_mesh.triangles) {
-        result.triangles.push_back({t[0], t[1], t[2]});
+        result.triangles.push_back({vertex_mapping[t[0]], 
+                                   vertex_mapping[t[1]], 
+                                   vertex_mapping[t[2]]});
     }
 
     return result;
