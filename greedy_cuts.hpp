@@ -658,7 +658,7 @@ inline void triangulateGreedyCuts(const float* elevations,
         continue;
       }
 
-      // Find best strictly interior point (ignore points with any barycentric weight <= bary_eps)
+      // Find best point within triangle (allow edge points but avoid triangle vertices)
       double best_err = -1.0;
       int best_x = -1, best_y = -1;
       double minx = std::max(0.0, std::floor(std::min({A[0], B[0], C[0]})));
@@ -668,9 +668,24 @@ inline void triangulateGreedyCuts(const float* elevations,
       for (int sy = static_cast<int>(miny); sy <= static_cast<int>(maxy); ++sy) {
         for (int sx = static_cast<int>(minx); sx <= static_cast<int>(maxx); ++sx) {
           if (mask && mask[idx_row_major(sx,sy,W)] == 0) continue;
+          
+          // Skip if this point is already a triangle vertex
+          if ((std::abs(sx - A[0]) < opt.bary_eps && std::abs(sy - A[1]) < opt.bary_eps) ||
+              (std::abs(sx - B[0]) < opt.bary_eps && std::abs(sy - B[1]) < opt.bary_eps) ||
+              (std::abs(sx - C[0]) < opt.bary_eps && std::abs(sy - C[1]) < opt.bary_eps)) {
+            continue;
+          }
+          
           double u,v,w;
           if (!barycentric_uvwt(A,B,C, static_cast<double>(sx), static_cast<double>(sy), opt.det_eps, u,v,w)) continue;
-          if (u <= opt.bary_eps || v <= opt.bary_eps || w <= opt.bary_eps) continue; // avoid edges/vertices
+          
+          // Accept points that are inside the triangle (including edge points)
+          // Only reject if point is too close to a triangle vertex (corner)
+          bool too_close_to_vertex = (u >= 1.0 - opt.bary_eps && v <= opt.bary_eps && w <= opt.bary_eps) ||
+                                    (v >= 1.0 - opt.bary_eps && u <= opt.bary_eps && w <= opt.bary_eps) ||
+                                    (w >= 1.0 - opt.bary_eps && u <= opt.bary_eps && v <= opt.bary_eps);
+          if (too_close_to_vertex) continue;
+          
           double tri_z = u*A[2] + v*B[2] + w*C[2];
           double grid_z = static_cast<double>(elevations[idx_row_major(sx,sy,W)]);
           double err = std::abs(tri_z - grid_z);
