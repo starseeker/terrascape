@@ -281,17 +281,76 @@ inline MeshResult grid_to_mesh_impl(
         }
     }
 
-    // Configure Greedy Cuts options
+    // Configure Greedy Cuts options with terrain-appropriate parameters
     ::terrascape::GreedyCutsOptions gc_opt;
-    gc_opt.base_error_threshold = preprocessing.adjusted_error_threshold;
-    // Defaults for slope/curvature weights and mesh quality are set in greedy_cuts.hpp;
-    // override here if desired:
-    // gc_opt.slope_weight = 3.0;
-    // gc_opt.curvature_weight = 10.0;
-    // gc_opt.min_angle_deg = 20.0;
-    // gc_opt.max_aspect_ratio = 6.0;
-    // gc_opt.min_area = 0.5;
-    // gc_opt.max_refinement_passes = 5;
+    
+    // Calculate elevation range for adaptive parameter setting
+    float min_elev = *std::min_element(preprocessing.processed_elevations.begin(), 
+                                      preprocessing.processed_elevations.end());
+    float max_elev = *std::max_element(preprocessing.processed_elevations.begin(), 
+                                      preprocessing.processed_elevations.end());
+    float elev_range = max_elev - min_elev;
+    
+    // Determine appropriate error threshold for terrain data
+    float adaptive_error_threshold = preprocessing.adjusted_error_threshold;
+    if (elev_range > 0.1f) {
+        // If user provided a small threshold relative to elevation range, respect it
+        // but provide guidance on reasonable ranges
+        float relative_user_threshold = adaptive_error_threshold / elev_range;
+        
+        if (relative_user_threshold < 0.0001f) {
+            // Very small threshold - use a minimum of 0.01% of range to avoid excessive detail
+            adaptive_error_threshold = elev_range * 0.0001f;
+            std::cerr << "TerraScape: Error threshold very small relative to elevation range, "
+                      << "using minimum " << adaptive_error_threshold << std::endl;
+        } else if (relative_user_threshold > 0.1f) {
+            // Large threshold - warn but allow it
+            std::cerr << "TerraScape: Large error threshold relative to elevation range, "
+                      << "mesh may be very coarse" << std::endl;
+        }
+        
+        std::cerr << "TerraScape: Using error threshold " << adaptive_error_threshold 
+                  << " (" << (adaptive_error_threshold/elev_range*100.0f) << "% of elevation range: " 
+                  << elev_range << ")" << std::endl;
+    }
+    
+    gc_opt.base_error_threshold = adaptive_error_threshold;
+    
+    // Terrain-optimized parameters that balance quality and performance
+    // These parameters automatically adjust based on elevation range and desired detail level
+    float relative_threshold = adaptive_error_threshold / elev_range;
+    
+    if (relative_threshold < 0.001f) {
+        // High detail mode - more triangles, longer processing
+        gc_opt.slope_weight = 0.8;
+        gc_opt.curvature_weight = 2.0;
+        gc_opt.min_angle_deg = 8.0;
+        gc_opt.max_aspect_ratio = 15.0;
+        gc_opt.min_area = 0.01;
+        gc_opt.max_refinement_passes = 6;
+        gc_opt.max_initial_iterations = 10000000;
+        std::cerr << "TerraScape: Using high-detail terrain parameters" << std::endl;
+    } else if (relative_threshold < 0.01f) {
+        // Medium detail mode - balanced quality and performance
+        gc_opt.slope_weight = 1.0;
+        gc_opt.curvature_weight = 3.0;
+        gc_opt.min_angle_deg = 12.0;
+        gc_opt.max_aspect_ratio = 12.0;
+        gc_opt.min_area = 0.1;
+        gc_opt.max_refinement_passes = 4;
+        gc_opt.max_initial_iterations = 5000000;
+        std::cerr << "TerraScape: Using medium-detail terrain parameters" << std::endl;
+    } else {
+        // Low detail mode - fast processing, coarser mesh
+        gc_opt.slope_weight = 1.5;
+        gc_opt.curvature_weight = 5.0;
+        gc_opt.min_angle_deg = 15.0;
+        gc_opt.max_aspect_ratio = 8.0;
+        gc_opt.min_area = 0.5;
+        gc_opt.max_refinement_passes = 3;
+        gc_opt.max_initial_iterations = 1000000;
+        std::cerr << "TerraScape: Using low-detail terrain parameters" << std::endl;
+    }
 
     // Run Greedy Cuts triangulation
     ::terrascape::Mesh gc_mesh;
