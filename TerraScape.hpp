@@ -256,6 +256,50 @@ PreprocessingResult<T> preprocess_input_data(
     return result;
 }
 
+// --- Volume validation helpers ---
+
+/**
+ * Calculate the expected volume under a height field relative to a base plane
+ * Each cell represents a column with area 1x1 and height = elevation - z_base
+ */
+template<typename T>
+inline double calculate_heightfield_volume(int width, int height, const T* elevations, float z_base = 0.0f) {
+    double total_volume = 0.0;
+    for (int i = 0; i < width * height; ++i) {
+        float height_above_base = static_cast<float>(elevations[i]) - z_base;
+        if (height_above_base > 0.0f) {
+            total_volume += height_above_base; // Each cell has area 1.0
+        }
+    }
+    return total_volume;
+}
+
+/**
+ * Calculate the volume of a triangle mesh using the divergence theorem
+ * Volume = (1/6) * sum over all triangles of: dot(vertex, normal) * area
+ */
+inline double calculate_mesh_volume(const MeshResult& mesh, float z_base = 0.0f) {
+    double volume = 0.0;
+    
+    for (const auto& tri : mesh.triangles) {
+        const auto& v0 = mesh.vertices[tri.v0];
+        const auto& v1 = mesh.vertices[tri.v1]; 
+        const auto& v2 = mesh.vertices[tri.v2];
+        
+        // Translate vertices relative to base plane
+        std::array<double, 3> p0 = {v0.x, v0.y, v0.z - z_base};
+        std::array<double, 3> p1 = {v1.x, v1.y, v1.z - z_base};
+        std::array<double, 3> p2 = {v2.x, v2.y, v2.z - z_base};
+        
+        // Signed volume contribution of tetrahedron from origin
+        volume += (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) +
+                   p1[0] * (p2[1] * p0[2] - p2[2] * p0[1]) +
+                   p2[0] * (p0[1] * p1[2] - p0[2] * p1[1])) / 6.0;
+    }
+    
+    return std::abs(volume);
+}
+
 // --- Greedy Cuts grid-to-mesh implementation ---
 
 /**
@@ -429,6 +473,21 @@ inline MeshResult grid_to_mesh_impl(
         result.triangles.push_back({vertex_mapping[t[0]], 
                                    vertex_mapping[t[1]], 
                                    vertex_mapping[t[2]]});
+    }
+
+    // Volume validation sanity check
+    double heightfield_volume = calculate_heightfield_volume(width, height, preprocessing.processed_elevations.data(), 0.0f);
+    double mesh_volume = calculate_mesh_volume(result, 0.0f);
+    double volume_ratio = (heightfield_volume > 1e-12) ? (mesh_volume / heightfield_volume) : 0.0;
+    
+    std::cerr << "TerraScape Volume Validation:" << std::endl;
+    std::cerr << "  Height field volume: " << heightfield_volume << std::endl;
+    std::cerr << "  Mesh volume: " << mesh_volume << std::endl;
+    std::cerr << "  Volume ratio (mesh/heightfield): " << volume_ratio << std::endl;
+    
+    if (volume_ratio < 0.5 || volume_ratio > 2.0) {
+        std::cerr << "  WARNING: Volume ratio outside reasonable range (0.5-2.0)" << std::endl;
+        std::cerr << "           This suggests the mesh may not properly represent the terrain" << std::endl;
     }
 
     return result;

@@ -679,6 +679,18 @@ inline void triangulateGreedyCuts(const float* elevations,
       }
       if (best_x == -1 || best_y == -1) {
         // No interior valid point found; keep or drop based on quality
+        if (opt.use_localized_error) {
+          // Debug output to understand why no interior points are found
+          static int debug_count = 0;
+          if (debug_count < 5) { // Limit debug output to first 5 cases
+            std::cerr << "DEBUG: No interior point found for triangle with vertices:" << std::endl;
+            std::cerr << "  A=(" << A[0] << "," << A[1] << "," << A[2] << ")" << std::endl;
+            std::cerr << "  B=(" << B[0] << "," << B[1] << "," << B[2] << ")" << std::endl;
+            std::cerr << "  C=(" << C[0] << "," << C[1] << "," << C[2] << ")" << std::endl;
+            std::cerr << "  Search bounds: x[" << minx << "," << maxx << "] y[" << miny << "," << maxy << "]" << std::endl;
+            debug_count++;
+          }
+        }
         if (triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
           tris_out.push_back(t);
         continue;
@@ -689,6 +701,16 @@ inline void triangulateGreedyCuts(const float* elevations,
       std::array<double,3> P = {static_cast<double>(best_x),
                                 static_cast<double>(best_y),
                                 static_cast<double>(elevations[idx_row_major(best_x,best_y,W)])};
+      
+      // Debug output for successful interior point insertion
+      if (opt.use_localized_error) {
+        static int insert_count = 0;
+        if (insert_count < 3) { // Limit debug output to first 3 insertions
+          std::cerr << "DEBUG: Inserting interior point (" << best_x << "," << best_y << "," << P[2] << ") with error " << best_err << std::endl;
+          insert_count++;
+        }
+      }
+      
       // Only keep sub-tris that pass quality
       std::array<std::array<int,3>,3> candidates = {{
         {t[0], t[1], new_vid},
