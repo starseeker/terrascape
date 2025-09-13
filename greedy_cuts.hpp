@@ -55,6 +55,14 @@ struct GreedyCutsOptions {
   // Refinement
   int max_refinement_passes = 5;
   int max_initial_iterations = 5'000'000; // safety cap for very large fronts
+  
+  // Performance optimizations for medium-sized datasets
+  bool enable_fast_mode_for_medium_datasets = true; // Auto-enable optimizations for 50K-500K point datasets
+  int fast_mode_max_iterations_per_10k_points = 2000; // Scale iterations based on dataset size (increased from 1000)
+  
+  // Fast mode parameters for quick processing
+  bool enable_dedicated_fast_mode = false;  // Use ultra-fast parameters for quick results
+  double fast_mode_error_multiplier = 0.5;  // Reduce error threshold in fast mode for more triangles
 
   // Sampling control
   // If true, attempt early-exit in error calculation when err > local_threshold
@@ -440,6 +448,45 @@ inline void triangulateGreedyCuts(const float* elevations,
 {
   assert(width > 1 && height > 1);
   const int W = width, H = height;
+  const int total_points = W * H;
+  
+  // Performance optimization: Create optimized options for medium-sized datasets
+  GreedyCutsOptions optimized_opt = opt;
+  
+  // Check for dedicated fast mode first
+  if (opt.enable_dedicated_fast_mode) {
+    optimized_opt.max_initial_iterations = std::min(5000, total_points / 20);
+    optimized_opt.use_localized_error = false;
+    optimized_opt.max_refinement_passes = 1;
+    optimized_opt.base_error_threshold *= opt.fast_mode_error_multiplier;
+    optimized_opt.min_angle_deg = 2.0;
+    optimized_opt.max_aspect_ratio = 30.0;
+    optimized_opt.min_area = 0.001;
+    
+    std::cerr << "GreedyCuts: Dedicated fast mode enabled for " << total_points 
+              << " points (iterations capped at " << optimized_opt.max_initial_iterations << ")" << std::endl;
+  }
+  else if (opt.enable_fast_mode_for_medium_datasets && total_points >= 50000 && total_points <= 500000) {
+    // Medium dataset detected - apply performance optimizations
+    int points_in_10k = (total_points + 9999) / 10000; // Round up
+    optimized_opt.max_initial_iterations = std::min(opt.max_initial_iterations, 
+                                                    points_in_10k * opt.fast_mode_max_iterations_per_10k_points);
+    
+    // Disable expensive localized error calculation for medium datasets
+    optimized_opt.use_localized_error = false;
+    
+    // Reduce refinement passes for faster processing
+    optimized_opt.max_refinement_passes = std::min(3, opt.max_refinement_passes);
+    
+    // Relax quality constraints slightly for better performance and triangle count
+    optimized_opt.min_angle_deg = std::max(3.0, opt.min_angle_deg - 10.0);  // More aggressive relaxation
+    optimized_opt.max_aspect_ratio = opt.max_aspect_ratio * 2.0;  // Allow more elongated triangles
+    optimized_opt.min_area = opt.min_area * 0.1;  // Allow much smaller triangles
+    
+    std::cerr << "GreedyCuts: Performance optimization enabled for " << total_points 
+              << " points (iterations capped at " << optimized_opt.max_initial_iterations 
+              << ", localized error disabled)" << std::endl;
+  }
 
   // Prepare vertices (grid x,y with z from elevations)
   out_mesh.vertices.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
@@ -471,9 +518,9 @@ inline void triangulateGreedyCuts(const float* elevations,
     const auto& B = out_mesh.vertices[nodes[mid].vid];
     const auto& C = out_mesh.vertices[nodes[n].vid];
     // skip degenerate
-    if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.area_eps) return;
+    if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < optimized_opt.area_eps) return;
     // Compute error (no threshold yet, PQ is by error)
-    auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt, -1.0);
+    auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, optimized_opt, -1.0);
     double e = terr.any_valid ? terr.error : 0.0;
     pq.push(PQItem{mid, nodes[mid].version, e});
   };
@@ -485,7 +532,7 @@ inline void triangulateGreedyCuts(const float* elevations,
     do {
       enqueue_node(curr);
       curr = nodes[curr].next;
-    } while (curr != start && pq.size() < static_cast<size_t>(opt.max_initial_iterations));
+    } while (curr != start && pq.size() < static_cast<size_t>(optimized_opt.max_initial_iterations));
   }
 
   // Advancing front
@@ -500,11 +547,11 @@ inline void triangulateGreedyCuts(const float* elevations,
     int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
     double slope = tri_local_slope(A,B,C);
     double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-    return localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                       W, H, elevations, icx, icy, opt);
+    return localized_adaptive_threshold(optimized_opt.base_error_threshold, slope, optimized_opt.slope_weight, curv, optimized_opt.curvature_weight,
+                                       W, H, elevations, icx, icy, optimized_opt);
   };
 
-  while (!pq.empty() && safety_iters++ < opt.max_initial_iterations) {
+  while (!pq.empty() && safety_iters++ < optimized_opt.max_initial_iterations) {
     PQItem it = pq.top(); pq.pop();
     int mid = it.mid_node;
     if (mid < 0 || mid >= static_cast<int>(nodes.size())) continue;
@@ -519,21 +566,21 @@ inline void triangulateGreedyCuts(const float* elevations,
     const auto& A = out_mesh.vertices[nodes[pv].vid];
     const auto& B = out_mesh.vertices[nodes[mid].vid];
     const auto& C = out_mesh.vertices[nodes[nv].vid];
-    if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.area_eps) {
+    if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < optimized_opt.area_eps) {
       erase_node(nodes, mid);
       continue;
     }
 
     double thresh = local_threshold(A,B,C);
-    auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
-                                          opt.early_exit_error_eval ? thresh : -1.0);
+    auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, optimized_opt,
+                                          optimized_opt.early_exit_error_eval ? thresh : -1.0);
     if (!terr.any_valid) {
       // if triangle covers only invalid samples and that's blocking, skip it (advance by removing mid to avoid stalling)
-      if (opt.treat_all_invalid_as_blocking) { erase_node(nodes, mid); }
+      if (optimized_opt.treat_all_invalid_as_blocking) { erase_node(nodes, mid); }
       continue;
     }
 
-    if (terr.error <= thresh && triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area)) {
+    if (terr.error <= thresh && triangle_is_quality_2d(A,B,C, optimized_opt.min_angle_deg, optimized_opt.max_aspect_ratio, optimized_opt.min_area)) {
       // accept triangle (pv,mid,nv)
       out_mesh.triangles.push_back({nodes[pv].vid, nodes[mid].vid, nodes[nv].vid});
       // remove mid
@@ -578,8 +625,8 @@ inline void triangulateGreedyCuts(const float* elevations,
           const auto& A = out_mesh.vertices[nodes[p].vid];
           const auto& B = out_mesh.vertices[nodes[ear].vid];
           const auto& C = out_mesh.vertices[nodes[n].vid];
-          if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) >= opt.min_area &&
-              triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
+          if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) >= optimized_opt.min_area &&
+              triangle_is_quality_2d(A,B,C, optimized_opt.min_angle_deg, optimized_opt.max_aspect_ratio, optimized_opt.min_area))
           {
             out_mesh.triangles.push_back({nodes[p].vid, nodes[ear].vid, nodes[n].vid});
             int next_after = nodes[ear].next;
@@ -632,7 +679,7 @@ inline void triangulateGreedyCuts(const float* elevations,
       const auto& A = out_mesh.vertices[t[0]];
       const auto& B = out_mesh.vertices[t[1]];
       const auto& C = out_mesh.vertices[t[2]];
-      if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.min_area) {
+      if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < optimized_opt.min_area) {
         continue;
       }
       // Local threshold with localized error metrics
@@ -642,18 +689,18 @@ inline void triangulateGreedyCuts(const float* elevations,
       int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
       double slope = tri_local_slope(A,B,C);
       double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-      double thresh = localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                                  W, H, elevations, icx, icy, opt);
+      double thresh = localized_adaptive_threshold(optimized_opt.base_error_threshold, slope, optimized_opt.slope_weight, curv, optimized_opt.curvature_weight,
+                                                  W, H, elevations, icx, icy, optimized_opt);
 
       // Error with early-exit
-      auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
-                                            opt.early_exit_error_eval ? -1.0 : -1.0);
+      auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, optimized_opt,
+                                            optimized_opt.early_exit_error_eval ? -1.0 : -1.0);
       if (!terr.any_valid) {
         // Skip masked-only triangles
         continue;
       }
       if (terr.error <= thresh) {
-        if (triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
+        if (triangle_is_quality_2d(A,B,C, optimized_opt.min_angle_deg, optimized_opt.max_aspect_ratio, optimized_opt.min_area))
           tris_out.push_back(t);
         continue;
       }
@@ -670,20 +717,20 @@ inline void triangulateGreedyCuts(const float* elevations,
           if (mask && mask[idx_row_major(sx,sy,W)] == 0) continue;
           
           // Skip if this point is already a triangle vertex
-          if ((std::abs(sx - A[0]) < opt.bary_eps && std::abs(sy - A[1]) < opt.bary_eps) ||
-              (std::abs(sx - B[0]) < opt.bary_eps && std::abs(sy - B[1]) < opt.bary_eps) ||
-              (std::abs(sx - C[0]) < opt.bary_eps && std::abs(sy - C[1]) < opt.bary_eps)) {
+          if ((std::abs(sx - A[0]) < optimized_opt.bary_eps && std::abs(sy - A[1]) < optimized_opt.bary_eps) ||
+              (std::abs(sx - B[0]) < optimized_opt.bary_eps && std::abs(sy - B[1]) < optimized_opt.bary_eps) ||
+              (std::abs(sx - C[0]) < optimized_opt.bary_eps && std::abs(sy - C[1]) < optimized_opt.bary_eps)) {
             continue;
           }
           
           double u,v,w;
-          if (!barycentric_uvwt(A,B,C, static_cast<double>(sx), static_cast<double>(sy), opt.det_eps, u,v,w)) continue;
+          if (!barycentric_uvwt(A,B,C, static_cast<double>(sx), static_cast<double>(sy), optimized_opt.det_eps, u,v,w)) continue;
           
           // Accept points that are inside the triangle (including edge points)
           // Only reject if point is too close to a triangle vertex (corner)
-          bool too_close_to_vertex = (u >= 1.0 - opt.bary_eps && v <= opt.bary_eps && w <= opt.bary_eps) ||
-                                    (v >= 1.0 - opt.bary_eps && u <= opt.bary_eps && w <= opt.bary_eps) ||
-                                    (w >= 1.0 - opt.bary_eps && u <= opt.bary_eps && v <= opt.bary_eps);
+          bool too_close_to_vertex = (u >= 1.0 - optimized_opt.bary_eps && v <= optimized_opt.bary_eps && w <= optimized_opt.bary_eps) ||
+                                    (v >= 1.0 - optimized_opt.bary_eps && u <= optimized_opt.bary_eps && w <= optimized_opt.bary_eps) ||
+                                    (w >= 1.0 - optimized_opt.bary_eps && u <= optimized_opt.bary_eps && v <= optimized_opt.bary_eps);
           if (too_close_to_vertex) continue;
           
           double tri_z = u*A[2] + v*B[2] + w*C[2];
@@ -694,7 +741,7 @@ inline void triangulateGreedyCuts(const float* elevations,
       }
       if (best_x == -1 || best_y == -1) {
         // No interior valid point found; keep or drop based on quality
-        if (opt.use_localized_error) {
+        if (optimized_opt.use_localized_error) {
           // Debug output to understand why no interior points are found
           static int debug_count = 0;
           if (debug_count < 5) { // Limit debug output to first 5 cases
@@ -706,7 +753,7 @@ inline void triangulateGreedyCuts(const float* elevations,
             debug_count++;
           }
         }
-        if (triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
+        if (triangle_is_quality_2d(A,B,C, optimized_opt.min_angle_deg, optimized_opt.max_aspect_ratio, optimized_opt.min_area))
           tris_out.push_back(t);
         continue;
       }
@@ -718,7 +765,7 @@ inline void triangulateGreedyCuts(const float* elevations,
                                 static_cast<double>(elevations[idx_row_major(best_x,best_y,W)])};
       
       // Debug output for successful interior point insertion
-      if (opt.use_localized_error) {
+      if (optimized_opt.use_localized_error) {
         static int insert_count = 0;
         if (insert_count < 3) { // Limit debug output to first 3 insertions
           std::cerr << "DEBUG: Inserting interior point (" << best_x << "," << best_y << "," << P[2] << ") with error " << best_err << std::endl;
@@ -736,7 +783,7 @@ inline void triangulateGreedyCuts(const float* elevations,
         const auto& V0 = out_mesh.vertices[ct[0]];
         const auto& V1 = out_mesh.vertices[ct[1]];
         const auto& V2 = out_mesh.vertices[ct[2]];
-        if (triangle_is_quality_2d(V0,V1,V2, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
+        if (triangle_is_quality_2d(V0,V1,V2, optimized_opt.min_angle_deg, optimized_opt.max_aspect_ratio, optimized_opt.min_area))
           tris_out.push_back(ct);
       }
       refined_any = true;
@@ -764,15 +811,15 @@ inline void triangulateGreedyCuts(const float* elevations,
   std::vector<std::array<int,3>> next;
   double prev_volume = calculate_mesh_volume(work);
   
-  for (int pass = 0; pass < opt.max_refinement_passes; ++pass) {
+  for (int pass = 0; pass < optimized_opt.max_refinement_passes; ++pass) {
     bool did_refine = refine_once(work, next);
     if (!did_refine) { break; }
     
     // Check volume convergence if enabled
-    if (opt.use_volume_convergence && pass >= opt.min_volume_passes) {
+    if (optimized_opt.use_volume_convergence && pass >= optimized_opt.min_volume_passes) {
       double curr_volume = calculate_mesh_volume(next);
       double volume_change = std::abs(curr_volume - prev_volume) / std::max(prev_volume, 1e-12);
-      if (volume_change < opt.volume_convergence_threshold) {
+      if (volume_change < optimized_opt.volume_convergence_threshold) {
         std::cerr << "Volume converged after " << (pass + 1) << " passes (change: " 
                   << (volume_change * 100.0) << "%)" << std::endl;
         work.swap(next);
