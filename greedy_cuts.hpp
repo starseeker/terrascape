@@ -59,6 +59,7 @@ struct GreedyCutsOptions {
   double min_angle_deg = 20.0;               // Minimum triangle angle constraint
   double max_aspect_ratio = 6.0;             // Maximum aspect ratio (longest/shortest edge)
   double min_area = 0.5;                     // Minimum triangle area in grid units
+  bool enable_quality_filtering = true;      // Enable triangle quality filtering during generation
   
   // ADVANCED PARAMETERS: Typically not modified by users
   double slope_weight = 3.0;                 // Weight for slope-based error calculation
@@ -516,13 +517,68 @@ static inline void triangulateRegionGrowing(const float* elevations,
       // Create triangles if we have enough vertices
       if (vertex_indices.size() >= 3) {
         if (vertex_indices.size() == 3) {
-          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
-          initial_triangle_count++;
+          // Check triangle quality before adding (if quality filtering is enabled)
+          if (!opt.enable_quality_filtering) {
+            out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+            initial_triangle_count++;
+          } else {
+            const auto& v0 = out_mesh.vertices[vertex_indices[0]];
+            const auto& v1 = out_mesh.vertices[vertex_indices[1]];
+            const auto& v2 = out_mesh.vertices[vertex_indices[2]];
+            if (triangle_is_quality_2d(v0, v1, v2, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area)) {
+              out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+              initial_triangle_count++;
+            }
+          }
         } else if (vertex_indices.size() == 4) {
-          // Create two triangles for a quad
-          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
-          out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[3], vertex_indices[2]});
-          initial_triangle_count += 2;
+          // Create two triangles for a quad, but choose the better diagonal (if quality filtering enabled)
+          if (!opt.enable_quality_filtering) {
+            // Simple diagonal split without quality checks
+            out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+            out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[3], vertex_indices[2]});
+            initial_triangle_count += 2;
+          } else {
+            const auto& v0 = out_mesh.vertices[vertex_indices[0]];
+            const auto& v1 = out_mesh.vertices[vertex_indices[1]];
+            const auto& v2 = out_mesh.vertices[vertex_indices[2]];
+            const auto& v3 = out_mesh.vertices[vertex_indices[3]];
+            
+            // Try diagonal v0-v2 (triangles v0,v1,v2 and v0,v2,v3)
+            bool diagonal1_quality = triangle_is_quality_2d(v0, v1, v2, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area) &&
+                                     triangle_is_quality_2d(v0, v2, v3, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area);
+            
+            // Try diagonal v1-v3 (triangles v0,v1,v3 and v1,v2,v3)  
+            bool diagonal2_quality = triangle_is_quality_2d(v0, v1, v3, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area) &&
+                                     triangle_is_quality_2d(v1, v2, v3, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area);
+            
+            if (diagonal1_quality && !diagonal2_quality) {
+              // Use diagonal v0-v2
+              out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+              out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[2], vertex_indices[3]});
+              initial_triangle_count += 2;
+            } else if (diagonal2_quality && !diagonal1_quality) {
+              // Use diagonal v1-v3
+              out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[3]});
+              out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[2], vertex_indices[3]});
+              initial_triangle_count += 2;
+            } else if (diagonal1_quality && diagonal2_quality) {
+              // Both diagonals produce quality triangles, choose the one with better minimum angles
+              double min_angle1 = std::min(triangle_min_angle_deg_2d(v0, v1, v2), triangle_min_angle_deg_2d(v0, v2, v3));
+              double min_angle2 = std::min(triangle_min_angle_deg_2d(v0, v1, v3), triangle_min_angle_deg_2d(v1, v2, v3));
+              
+              if (min_angle1 >= min_angle2) {
+                // Use diagonal v0-v2
+                out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+                out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[2], vertex_indices[3]});
+              } else {
+                // Use diagonal v1-v3
+                out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[3]});
+                out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[2], vertex_indices[3]});
+              }
+              initial_triangle_count += 2;
+            }
+            // If neither diagonal produces quality triangles, skip this quad
+          }
         }
       }
     }
@@ -564,30 +620,127 @@ static inline void triangulateRegionGrowing(const float* elevations,
           nearby_vertices.resize(8); // Limit for performance
         }
         
-        // Create triangles with nearby vertices
+        // Create triangles with nearby vertices, but only if they meet quality constraints
         for (size_t j = 0; j < nearby_vertices.size(); ++j) {
           for (size_t k = j+1; k < nearby_vertices.size(); ++k) {
             int v0 = static_cast<int>(i);
             int v1 = nearby_vertices[j].second;
             int v2 = nearby_vertices[k].second;
             
-            // Sort vertices to create canonical triangle representation
-            std::array<int, 3> triangle = {v0, v1, v2};
-            std::sort(triangle.begin(), triangle.end());
-            
-            auto tri_tuple = std::make_tuple(triangle[0], triangle[1], triangle[2]);
-            
-            // Add triangle if not already added
-            if (added_triangles.find(tri_tuple) == added_triangles.end()) {
-              out_mesh.triangles.push_back({triangle[0], triangle[1], triangle[2]});
-              added_triangles.insert(tri_tuple);
+            // Check triangle quality before adding
+            if (!opt.enable_quality_filtering) {
+              // Add triangle without quality checks
+              std::array<int, 3> triangle = {v0, v1, v2};
+              std::sort(triangle.begin(), triangle.end());
               
-              // Break early if we have enough triangles
-              if (out_mesh.triangles.size() >= max_triangles) break;
+              auto tri_tuple = std::make_tuple(triangle[0], triangle[1], triangle[2]);
+              
+              // Add triangle if not already added
+              if (added_triangles.find(tri_tuple) == added_triangles.end()) {
+                out_mesh.triangles.push_back({triangle[0], triangle[1], triangle[2]});
+                added_triangles.insert(tri_tuple);
+                
+                // Break early if we have enough triangles
+                if (out_mesh.triangles.size() >= max_triangles) break;
+              }
+            } else {
+              // Check triangle quality before adding
+              const auto& vertex0 = out_mesh.vertices[v0];
+              const auto& vertex1 = out_mesh.vertices[v1];
+              const auto& vertex2 = out_mesh.vertices[v2];
+              
+              if (!triangle_is_quality_2d(vertex0, vertex1, vertex2, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area)) {
+                continue; // Skip poor quality triangles
+              }
+              
+              // Sort vertices to create canonical triangle representation
+              std::array<int, 3> triangle = {v0, v1, v2};
+              std::sort(triangle.begin(), triangle.end());
+              
+              auto tri_tuple = std::make_tuple(triangle[0], triangle[1], triangle[2]);
+              
+              // Add triangle if not already added
+              if (added_triangles.find(tri_tuple) == added_triangles.end()) {
+                out_mesh.triangles.push_back({triangle[0], triangle[1], triangle[2]});
+                added_triangles.insert(tri_tuple);
+                
+                // Break early if we have enough triangles
+                if (out_mesh.triangles.size() >= max_triangles) break;
+              }
             }
           }
           if (out_mesh.triangles.size() >= max_triangles) break;
         }
+      }
+    }
+  }
+  
+  // Optional post-processing: triangle quality improvement pass
+  // This helps resolve cases where quality filtering may have left gaps
+  if (opt.enable_quality_filtering && out_mesh.triangles.size() < out_mesh.vertices.size() / 5) {
+    // If we don't have enough triangles, relax quality constraints and fill gaps
+    std::cout << "Applying relaxed quality constraints to ensure mesh coverage..." << std::endl;
+    
+    GreedyCutsOptions relaxed_opt = opt;
+    relaxed_opt.min_angle_deg = std::max(5.0, opt.min_angle_deg * 0.5);  // Halve angle requirement
+    relaxed_opt.max_aspect_ratio = opt.max_aspect_ratio * 2.0;            // Double aspect ratio allowance
+    relaxed_opt.min_area = opt.min_area * 0.1;                            // Reduce minimum area
+    
+    std::set<std::tuple<int,int,int>> existing_triangles;
+    for (const auto& tri : out_mesh.triangles) {
+      std::array<int, 3> sorted_tri = {tri[0], tri[1], tri[2]};
+      std::sort(sorted_tri.begin(), sorted_tri.end());
+      existing_triangles.insert(std::make_tuple(sorted_tri[0], sorted_tri[1], sorted_tri[2]));
+    }
+    
+    // Try to add more triangles with relaxed constraints
+    for (size_t i = 0; i < out_mesh.vertices.size() && out_mesh.triangles.size() < out_mesh.vertices.size(); ++i) {
+      std::vector<std::pair<double, int>> nearby_vertices;
+      
+      double max_search_dist = (W + H) * 0.3; // Slightly larger search area
+      max_search_dist *= max_search_dist;
+      
+      for (size_t j = i + 1; j < out_mesh.vertices.size(); ++j) {
+        double dx = out_mesh.vertices[i][0] - out_mesh.vertices[j][0];
+        double dy = out_mesh.vertices[i][1] - out_mesh.vertices[j][1];
+        double dist_sq = dx*dx + dy*dy;
+        if (dist_sq < max_search_dist) {
+          nearby_vertices.push_back({dist_sq, static_cast<int>(j)});
+        }
+      }
+      
+      std::sort(nearby_vertices.begin(), nearby_vertices.end());
+      if (nearby_vertices.size() > 6) {
+        nearby_vertices.resize(6);
+      }
+      
+      for (size_t j = 0; j < nearby_vertices.size(); ++j) {
+        for (size_t k = j+1; k < nearby_vertices.size(); ++k) {
+          int v0 = static_cast<int>(i);
+          int v1 = nearby_vertices[j].second;
+          int v2 = nearby_vertices[k].second;
+          
+          std::array<int, 3> triangle = {v0, v1, v2};
+          std::sort(triangle.begin(), triangle.end());
+          auto tri_tuple = std::make_tuple(triangle[0], triangle[1], triangle[2]);
+          
+          if (existing_triangles.find(tri_tuple) != existing_triangles.end()) {
+            continue; // Already exists
+          }
+          
+          const auto& vertex0 = out_mesh.vertices[v0];
+          const auto& vertex1 = out_mesh.vertices[v1];
+          const auto& vertex2 = out_mesh.vertices[v2];
+          
+          if (triangle_is_quality_2d(vertex0, vertex1, vertex2, relaxed_opt.min_angle_deg, 
+                                   relaxed_opt.max_aspect_ratio, relaxed_opt.min_area)) {
+            out_mesh.triangles.push_back({triangle[0], triangle[1], triangle[2]});
+            existing_triangles.insert(tri_tuple);
+            
+            if (out_mesh.triangles.size() >= out_mesh.vertices.size()) break;
+          }
+        }
+        if (out_mesh.triangles.size() >= out_mesh.vertices.size()) break;
       }
     }
   }
