@@ -76,6 +76,10 @@ struct GreedyCutsOptions {
   bool use_volume_convergence = false;       // Enable volume-based stopping criteria
   double volume_convergence_threshold = 0.01; // Stop when volume change < this fraction
   int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
+
+  // Pre-computed terrain complexity
+  bool use_precomputed_complexity = true;    // Enable optimized pre-computed terrain complexity map
+  double complexity_scale_factor = 1.0;      // Scale factor for pre-computed complexity values
 };
 
 struct Mesh {
@@ -211,6 +215,46 @@ static inline double adaptive_threshold(double base,
 {
   double denom = 1.0 + slope_w * slope + curvature_w * curvature;
   return std::clamp(base / denom, 1e-9, 1e9);
+}
+
+// Pre-compute terrain complexity map for all grid cells (optimized for performance)
+static inline std::vector<double> precompute_terrain_complexity(const float* elevations,
+                                                                int width, int height,
+                                                                const uint8_t* mask = nullptr)
+{
+  std::vector<double> complexity_map(static_cast<size_t>(width) * static_cast<size_t>(height), 0.0);
+  
+  // Optimized single-pass computation focusing on essential features
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      if (mask && mask[idx_row_major(x, y, width)] == 0) {
+        complexity_map[idx_row_major(x, y, width)] = 0.0;
+        continue;
+      }
+      
+      // Simple gradient calculation using immediate neighbors only
+      auto E = [&](int ix, int iy) -> double {
+        ix = std::clamp(ix, 0, width-1);
+        iy = std::clamp(iy, 0, height-1);
+        return static_cast<double>(elevations[idx_row_major(ix, iy, width)]);
+      };
+      
+      double center = E(x, y);
+      
+      // Simplified gradient using only immediate cross neighbors (faster than Sobel)
+      double gx = E(x+1, y) - E(x-1, y);
+      double gy = E(x, y+1) - E(x, y-1);
+      double gradient = std::sqrt(gx*gx + gy*gy) * 0.25; // normalized and scaled down
+      
+      // Simple curvature using immediate cross neighbors only
+      double curvature = std::abs(E(x+1, y) + E(x-1, y) + E(x, y+1) + E(x, y-1) - 4.0*center) * 0.1;
+      
+      // Combine into complexity metric (keep it simple and fast)
+      complexity_map[idx_row_major(x, y, width)] = gradient + curvature;
+    }
+  }
+  
+  return complexity_map;
 }
 
 // Error evaluation with optional early-exit and mask
@@ -356,6 +400,12 @@ inline void triangulateGreedyCuts(const float* elevations,
   assert(width > 1 && height > 1);
   const int W = width, H = height;
 
+  // Pre-compute terrain complexity map if enabled
+  std::vector<double> complexity_map;
+  if (opt.use_precomputed_complexity) {
+    complexity_map = precompute_terrain_complexity(elevations, W, H, mask);
+  }
+
   // Prepare vertices (grid x,y with z from elevations)
   out_mesh.vertices.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
   for (int y = 0; y < H; ++y) {
@@ -408,14 +458,28 @@ inline void triangulateGreedyCuts(const float* elevations,
   auto local_threshold = [&](const std::array<double,3>& A,
                              const std::array<double,3>& B,
                              const std::array<double,3>& C){
-    // centroid for curvature sampling
-    double cx = (A[0]+B[0]+C[0])/3.0;
-    double cy = (A[1]+B[1]+C[1])/3.0;
-    int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
-    int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
-    double slope = tri_local_slope(A,B,C);
-    double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-    return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+    if (opt.use_precomputed_complexity && !complexity_map.empty()) {
+      // Use pre-computed complexity from terrain map
+      double cx = (A[0]+B[0]+C[0])/3.0;
+      double cy = (A[1]+B[1]+C[1])/3.0;
+      int icx = std::clamp(static_cast<int>(std::llround(cx)), 0, W-1);
+      int icy = std::clamp(static_cast<int>(std::llround(cy)), 0, H-1);
+      double complexity = complexity_map[idx_row_major(icx, icy, W)] * opt.complexity_scale_factor;
+      
+      // Split complexity back into slope and curvature components for threshold calculation
+      double slope = complexity * 0.9; // most of complexity is slope
+      double curvature = complexity * 0.1; // small portion is curvature
+      return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curvature, opt.curvature_weight);
+    } else {
+      // Fallback to direct calculation
+      double cx = (A[0]+B[0]+C[0])/3.0;
+      double cy = (A[1]+B[1]+C[1])/3.0;
+      int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
+      int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
+      double slope = tri_local_slope(A,B,C);
+      double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
+      return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+    }
   };
 
   while (!pq.empty() && safety_iters++ < opt.max_initial_iterations) {
@@ -552,11 +616,23 @@ inline void triangulateGreedyCuts(const float* elevations,
       // Local threshold calculation
       double cx = (A[0]+B[0]+C[0])/3.0;
       double cy = (A[1]+B[1]+C[1])/3.0;
-      int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
-      int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
-      double slope = tri_local_slope(A,B,C);
-      double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-      double thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+      double thresh;
+      if (opt.use_precomputed_complexity && !complexity_map.empty()) {
+        // Use pre-computed complexity
+        int icx = std::clamp(static_cast<int>(std::llround(cx)), 0, W-1);
+        int icy = std::clamp(static_cast<int>(std::llround(cy)), 0, H-1);
+        double complexity = complexity_map[idx_row_major(icx, icy, W)] * opt.complexity_scale_factor;
+        double slope = complexity * 0.9;
+        double curvature = complexity * 0.1;
+        thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curvature, opt.curvature_weight);
+      } else {
+        // Fallback to direct calculation
+        int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
+        int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
+        double slope = tri_local_slope(A,B,C);
+        double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
+        thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+      }
 
       // Error with early-exit
       auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
