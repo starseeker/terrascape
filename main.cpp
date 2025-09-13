@@ -119,14 +119,14 @@ int main(int argc, char **argv)
     const char* output_file = "terrain_mesh.obj";
     float error_threshold = 1.0f;     // Lower default for more detail
     int point_limit = 10000;          // Higher default for better quality
-    bool volumetric = false;          // Generate volumetric mesh?
+    bool volumetric = true;           // Generate volumetric mesh by default
     float z_base = 0.0f;             // Base level for volumetric mesh
     
     // Simple command line parsing
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         cout << "Usage: " << argv[0] << " [options] [input] [output.obj] [error_threshold] [point_limit]" << endl;
         cout << "Options:" << endl;
-        cout << "  -v, --volumetric: Generate volumetric (closed manifold) mesh instead of surface mesh" << endl;
+        cout << "  -s, --surface: Generate surface mesh instead of volumetric (closed manifold) mesh" << endl;
         cout << "  --base <z>: Set base level for volumetric mesh (default: 0.0)" << endl;
         cout << "  -h, --help: Show this help message" << endl;
         cout << "Arguments:" << endl;
@@ -136,16 +136,17 @@ int main(int argc, char **argv)
         cout << "  point_limit: Maximum number of vertices (default: 10000)" << endl;
         cout << "Supported file formats:" << endl;
         cout << "  - PGM (.pgm): Portable Graymap format heightfields" << endl;
+        cout << "Default behavior: Volumetric meshing with adaptive localized error metrics" << endl;
         return 0;
     }
     
     // Parse command line arguments
     int arg_idx = 1;
     while (arg_idx < argc) {
-        if (strcmp(argv[arg_idx], "-v") == 0 || strcmp(argv[arg_idx], "--volumetric") == 0) {
-            volumetric = true;
+        if (strcmp(argv[arg_idx], "-s") == 0 || strcmp(argv[arg_idx], "--surface") == 0) {
+            volumetric = false;
             if (strcmp(output_file, "terrain_mesh.obj") == 0) {
-                output_file = "terrain_volumetric.obj"; // Change default output for volumetric
+                output_file = "terrain_surface.obj"; // Change default output for surface
             }
         } else if (strcmp(argv[arg_idx], "--base") == 0 && arg_idx + 1 < argc) {
             z_base = atof(argv[++arg_idx]);
@@ -181,7 +182,7 @@ int main(int argc, char **argv)
     cout << "Output: " << output_file << endl;
     cout << "Error threshold: " << error_threshold << endl;
     cout << "Point limit: " << point_limit << endl;
-    cout << "Mesh type: " << (volumetric ? "Volumetric (manifold)" : "Surface only") << endl;
+    cout << "Mesh type: " << (volumetric ? "Volumetric (manifold) with adaptive refinement" : "Surface only") << endl;
     if (volumetric) {
         cout << "Base level: " << z_base << endl;
     }
@@ -196,7 +197,7 @@ int main(int argc, char **argv)
     
     // Generate mesh using the TerraScape API
     cout << "Generating " << (volumetric ? "volumetric" : "surface") 
-         << " mesh using greedy refinement algorithm..." << endl;
+         << " mesh using adaptive greedy refinement with localized error metrics..." << endl;
     
     TerraScape::MeshResult mesh;
     if (volumetric) {

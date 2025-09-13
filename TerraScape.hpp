@@ -316,12 +316,29 @@ inline MeshResult grid_to_mesh_impl(
     
     gc_opt.base_error_threshold = adaptive_error_threshold;
     
+    // Enable localized error metrics and volume convergence for better terrain detail
+    gc_opt.use_localized_error = true;
+    gc_opt.use_volume_convergence = true;
+    gc_opt.local_error_scale_factor = 1.5;      // Allow 50% higher error in complex areas
+    gc_opt.terrain_complexity_threshold = elev_range * 0.1; // 10% of elevation range
+    gc_opt.volume_convergence_threshold = 0.005; // 0.5% volume change for convergence
+    
     // Terrain-optimized parameters that balance quality and performance
     // These parameters automatically adjust based on elevation range and desired detail level
     float relative_threshold = adaptive_error_threshold / elev_range;
     
     if (relative_threshold < 0.001f) {
         // High detail mode - more triangles, longer processing
+        gc_opt.slope_weight = 0.5;              // Reduced weight for more triangles
+        gc_opt.curvature_weight = 1.0;          // Reduced weight for more triangles
+        gc_opt.min_angle_deg = 5.0;             // Allow sharper angles for detail
+        gc_opt.max_aspect_ratio = 20.0;         // Allow thinner triangles
+        gc_opt.min_area = 0.001;                // Allow smaller triangles
+        gc_opt.max_refinement_passes = 8;       // More passes for detail
+        gc_opt.max_initial_iterations = 15000000;
+        std::cerr << "TerraScape: Using high-detail terrain parameters with localized error metrics" << std::endl;
+    } else if (relative_threshold < 0.01f) {
+        // Medium detail mode - balanced quality and performance
         gc_opt.slope_weight = 0.8;
         gc_opt.curvature_weight = 2.0;
         gc_opt.min_angle_deg = 8.0;
@@ -329,27 +346,17 @@ inline MeshResult grid_to_mesh_impl(
         gc_opt.min_area = 0.01;
         gc_opt.max_refinement_passes = 6;
         gc_opt.max_initial_iterations = 10000000;
-        std::cerr << "TerraScape: Using high-detail terrain parameters" << std::endl;
-    } else if (relative_threshold < 0.01f) {
-        // Medium detail mode - balanced quality and performance
+        std::cerr << "TerraScape: Using medium-detail terrain parameters with localized error metrics" << std::endl;
+    } else {
+        // Low detail mode - fast processing, coarser mesh
         gc_opt.slope_weight = 1.0;
         gc_opt.curvature_weight = 3.0;
-        gc_opt.min_angle_deg = 12.0;
+        gc_opt.min_angle_deg = 10.0;
         gc_opt.max_aspect_ratio = 12.0;
         gc_opt.min_area = 0.1;
         gc_opt.max_refinement_passes = 4;
         gc_opt.max_initial_iterations = 5000000;
-        std::cerr << "TerraScape: Using medium-detail terrain parameters" << std::endl;
-    } else {
-        // Low detail mode - fast processing, coarser mesh
-        gc_opt.slope_weight = 1.5;
-        gc_opt.curvature_weight = 5.0;
-        gc_opt.min_angle_deg = 15.0;
-        gc_opt.max_aspect_ratio = 8.0;
-        gc_opt.min_area = 0.5;
-        gc_opt.max_refinement_passes = 3;
-        gc_opt.max_initial_iterations = 1000000;
-        std::cerr << "TerraScape: Using low-detail terrain parameters" << std::endl;
+        std::cerr << "TerraScape: Using low-detail terrain parameters with localized error metrics" << std::endl;
     }
 
     // Run Greedy Cuts triangulation
