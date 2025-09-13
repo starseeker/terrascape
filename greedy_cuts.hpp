@@ -72,11 +72,6 @@ struct GreedyCutsOptions {
   double det_eps = 1e-12;
   double area_eps = 1e-12;
   
-  // Localized error metrics
-  bool use_localized_error = true;           // Enable spatial variation of error thresholds
-  double local_error_scale_factor = 2.0;    // How much local complexity can increase error threshold
-  double terrain_complexity_threshold = 0.1; // Minimum complexity to trigger local scaling
-  
   // Volume-based convergence criteria
   bool use_volume_convergence = false;       // Enable volume-based stopping criteria
   double volume_convergence_threshold = 0.01; // Stop when volume change < this fraction
@@ -216,38 +211,6 @@ static inline double adaptive_threshold(double base,
 {
   double denom = 1.0 + slope_w * slope + curvature_w * curvature;
   return std::clamp(base / denom, 1e-9, 1e9);
-}
-
-// Localized adaptive threshold that varies spatially based on terrain complexity
-// Optimized version that reuses existing slope and curvature calculations
-static inline double localized_adaptive_threshold(double base,
-                                                  double slope,
-                                                  double slope_w,
-                                                  double curvature,
-                                                  double curvature_w,
-                                                  int width, int height,
-                                                  const float* elev,
-                                                  int cx, int cy,
-                                                  const GreedyCutsOptions& opt)
-{
-  if (!opt.use_localized_error) {
-    return adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
-  }
-  
-  // Use already-calculated slope and curvature as complexity measures
-  // This avoids any additional neighborhood sampling
-  double terrain_complexity = slope + curvature * 0.1;
-  
-  // Scale error threshold based on terrain complexity
-  double complexity_factor = 1.0;
-  if (terrain_complexity > opt.terrain_complexity_threshold) {
-    // Allow higher error in complex areas (up to scale_factor times)
-    complexity_factor = 1.0 + (opt.local_error_scale_factor - 1.0) * 
-                       std::min(1.0, terrain_complexity / (opt.terrain_complexity_threshold * 10.0));
-  }
-  
-  double base_threshold = adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
-  return base_threshold * complexity_factor;
 }
 
 // Error evaluation with optional early-exit and mask
@@ -452,8 +415,7 @@ inline void triangulateGreedyCuts(const float* elevations,
     int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
     double slope = tri_local_slope(A,B,C);
     double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-    return localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                       W, H, elevations, icx, icy, opt);
+    return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
   };
 
   while (!pq.empty() && safety_iters++ < opt.max_initial_iterations) {
@@ -587,15 +549,14 @@ inline void triangulateGreedyCuts(const float* elevations,
       if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.min_area) {
         continue;
       }
-      // Local threshold with localized error metrics
+      // Local threshold calculation
       double cx = (A[0]+B[0]+C[0])/3.0;
       double cy = (A[1]+B[1]+C[1])/3.0;
       int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
       int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
       double slope = tri_local_slope(A,B,C);
       double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-      double thresh = localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                                  W, H, elevations, icx, icy, opt);
+      double thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
 
       // Error with early-exit
       auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
@@ -646,18 +607,6 @@ inline void triangulateGreedyCuts(const float* elevations,
       }
       if (best_x == -1 || best_y == -1) {
         // No interior valid point found; keep or drop based on quality
-        if (opt.use_localized_error) {
-          // Debug output to understand why no interior points are found
-          static int debug_count = 0;
-          if (debug_count < 5) { // Limit debug output to first 5 cases
-            std::cerr << "DEBUG: No interior point found for triangle with vertices:" << std::endl;
-            std::cerr << "  A=(" << A[0] << "," << A[1] << "," << A[2] << ")" << std::endl;
-            std::cerr << "  B=(" << B[0] << "," << B[1] << "," << B[2] << ")" << std::endl;
-            std::cerr << "  C=(" << C[0] << "," << C[1] << "," << C[2] << ")" << std::endl;
-            std::cerr << "  Search bounds: x[" << minx << "," << maxx << "] y[" << miny << "," << maxy << "]" << std::endl;
-            debug_count++;
-          }
-        }
         if (triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
           tris_out.push_back(t);
         continue;
@@ -668,15 +617,6 @@ inline void triangulateGreedyCuts(const float* elevations,
       std::array<double,3> P = {static_cast<double>(best_x),
                                 static_cast<double>(best_y),
                                 static_cast<double>(elevations[idx_row_major(best_x,best_y,W)])};
-      
-      // Debug output for successful interior point insertion
-      if (opt.use_localized_error) {
-        static int insert_count = 0;
-        if (insert_count < 3) { // Limit debug output to first 3 insertions
-          std::cerr << "DEBUG: Inserting interior point (" << best_x << "," << best_y << "," << P[2] << ") with error " << best_err << std::endl;
-          insert_count++;
-        }
-      }
       
       // Only keep sub-tris that pass quality
       std::array<std::array<int,3>,3> candidates = {{
