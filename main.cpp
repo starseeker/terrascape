@@ -11,34 +11,6 @@ using namespace std;
 
 #include "version.h"
 #include "TerraScape.hpp"  // Use new consolidated TerraScape header
-#include "dsp_reader.hpp"  // For terra.bin processing
-
-// Read terra.bin file and extract elevation data
-bool readTerraBinToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
-    DSPReader::DSPTerrainInfo info;
-    
-    if (!DSPReader::readTerraBinFile(filename, width, height, elevations, &info)) {
-        cerr << "Error: Failed to read terra.bin file " << filename << endl;
-        return false;
-    }
-    
-    cout << "Successfully read terra.bin: " << width << "x" << height << " elevations" << endl;
-    cout << "Data type: " << info.data_type << endl;
-    cout << "Elevation range: " << info.min_elevation << " to " << info.max_elevation << endl;
-    
-    // Validate terrain data for potential issues
-    vector<string> warnings;
-    DSPReader::validateTerrainData(elevations, width, height, warnings);
-    
-    if (!warnings.empty()) {
-        cout << "Terrain data warnings:" << endl;
-        for (const auto& warning : warnings) {
-            cout << "  - " << warning << endl;
-        }
-    }
-    
-    return true;
-}
 
 // Simple PGM reader that extracts elevation data into a float array
 bool readPGMToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
@@ -106,10 +78,7 @@ bool readElevationFile(const char* filename, int& width, int& height, vector<flo
         }
     }
     
-    if (extension == ".bin" || fname.find("terra.bin") != string::npos) {
-        cout << "Detected terra.bin file format" << endl;
-        return readTerraBinToFloatArray(filename, width, height, elevations);
-    } else if (extension == ".pgm") {
+    if (extension == ".pgm") {
         cout << "Detected PGM file format" << endl;
         return readPGMToFloatArray(filename, width, height, elevations);
     } else {
@@ -161,13 +130,12 @@ int main(int argc, char **argv)
         cout << "  --base <z>: Set base level for volumetric mesh (default: 0.0)" << endl;
         cout << "  -h, --help: Show this help message" << endl;
         cout << "Arguments:" << endl;
-        cout << "  input: Input heightfield file (.pgm or .bin formats, default: auto-detect)" << endl;
+        cout << "  input: Input heightfield file (.pgm format, default: auto-detect)" << endl;
         cout << "  output.obj: Output OBJ mesh file (default: terrain_mesh.obj)" << endl;
         cout << "  error_threshold: Maximum error threshold (default: 1.0)" << endl;
         cout << "  point_limit: Maximum number of vertices (default: 10000)" << endl;
         cout << "Supported file formats:" << endl;
         cout << "  - PGM (.pgm): Portable Graymap format heightfields" << endl;
-        cout << "  - Terra.bin (.bin): BRL-CAD DSP-style binary terrain data" << endl;
         return 0;
     }
     
@@ -200,10 +168,7 @@ int main(int argc, char **argv)
     
     // If no input file was specified, auto-detect available input files
     if (input_file == nullptr) {
-        if (filesystem::exists("terra.bin")) {
-            input_file = "terra.bin";
-            cout << "Found terra.bin file - will use for processing" << endl;
-        } else if (filesystem::exists("crater.pgm")) {
+        if (filesystem::exists("crater.pgm")) {
             input_file = "crater.pgm";
             cout << "Found crater.pgm file - will use for processing" << endl;
         } else {
@@ -222,7 +187,7 @@ int main(int argc, char **argv)
     }
     cout << endl;
     
-    // Read elevation file (supports both PGM and terra.bin)
+    // Read elevation file (supports PGM format)
     int width, height;
     vector<float> elevations;
     if (!readElevationFile(input_file, width, height, elevations)) {

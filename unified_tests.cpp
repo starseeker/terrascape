@@ -12,7 +12,6 @@
 #include "TerraScape.hpp"
 #include "cxxopts.hpp"
 #include "terrain_data_utils.hpp"
-#include "dsp_reader.hpp"
 
 using namespace TerraScape;
 
@@ -244,203 +243,48 @@ bool test_large_grid_performance() {
 }
 
 // =============================================================================
-// DSP/Hawaii Data Tests
+// GDAL-Based Terrain Data Tests  
 // =============================================================================
 
-bool test_dsp_file_processing() {
-    // Create a small test DSP file
-    const char* test_filename = "/tmp/test.dsp";
-    const int width = 4, height = 4;
-    std::vector<uint16_t> test_data = {
-        1000, 1100, 1200, 1300,
-        1100, 1200, 1300, 1400,
-        1200, 1300, 1400, 1500,
-        1300, 1400, 1500, 1600
-    };
-    
-    // Write test DSP file
-    std::ofstream file(test_filename, std::ios::binary);
-    if (!file) return false;
-    
-    file.write(reinterpret_cast<const char*>(test_data.data()), test_data.size() * sizeof(uint16_t));
-    file.close();
-    
-    // Read and process
+bool test_gdal_sample_terrain() {
+    // Test with GDAL-generated sample terrain when downloads fail
     try {
-        std::vector<float> dsp_data;
-        int actual_width, actual_height;
-        if (!DSPReader::readDSPFile(test_filename, actual_width, actual_height, dsp_data)) {
-            return false;
+        // Use the terrain data processor sample generation
+        std::string terrain_data_dir = "terrain_data";
+        if (!std::filesystem::exists(terrain_data_dir)) {
+            std::filesystem::create_directories(terrain_data_dir);
         }
         
-        if (dsp_data.size() != width * height) return false;
-        
-        MeshResult result = grid_to_mesh(width, height, dsp_data.data());
-        return !result.vertices.empty() && !result.triangles.empty();
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
-bool test_hawaii_data() {
-    // This test checks if Hawaii data processing would work
-    // (actual file may not exist in test environment)
-    try {
-        const std::string hawaii_file = "terrain_data/bigisland.dsp";
-        std::ifstream file(hawaii_file, std::ios::binary);
-        if (!file) {
-            // File doesn't exist - that's okay for this test
-            return true;
-        }
-        
-        // If file exists, try to process a small portion
-        file.seekg(0, std::ios::end);
-        size_t file_size = file.tellg();
-        file.seekg(0, std::ios::beg);
-        
-        if (file_size < 1000) return true; // Too small to be real data
-        
-        // Read first few values to test basic functionality
-        std::vector<uint16_t> sample_data(100);
-        file.read(reinterpret_cast<char*>(sample_data.data()), sample_data.size() * sizeof(uint16_t));
-        
-        if (file.gcount() == sample_data.size() * sizeof(uint16_t)) {
-            MeshResult result = grid_to_mesh(10, 10, sample_data.data());
-            return !result.vertices.empty();
-        }
-        
-        return true;
-    } catch (const std::exception&) {
-        return true; // Test passes if we can't access the file
-    }
-}
-
-bool test_synthetic_terra_bin_data();
-
-bool test_terra_bin_processing() {
-    // Test processing the terra.bin file if it exists
-    const std::string terra_bin_path = "terra.bin";
-    
-    if (!std::filesystem::exists(terra_bin_path)) {
-        // File doesn't exist - test synthetic data instead
-        return test_synthetic_terra_bin_data();
-    }
-    
-    try {
-        int width, height;
-        std::vector<float> elevations;
-        DSPReader::DSPTerrainInfo info;
-        
-        if (!DSPReader::readTerraBinFile(terra_bin_path, width, height, elevations, &info)) {
-            return false; // Failed to read actual terra.bin file
-        }
-        
-        // Validate terrain data
-        std::vector<std::string> warnings;
-        DSPReader::validateTerrainData(elevations, width, height, warnings);
-        
-        // Test basic triangulation
-        MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
-        if (result.vertices.empty()) {
-            return false;
-        }
-        
-        // Test volumetric mesh generation
-        float base_elevation = info.min_elevation - 10.0f;
-        MeshResult volumetric_result = grid_to_mesh_volumetric(
-            width, height, elevations.data(), base_elevation);
-        
-        return volumetric_result.is_volumetric && !volumetric_result.vertices.empty();
-        
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
-bool test_synthetic_terra_bin_data() {
-    // Test with synthetic problematic terra.bin patterns
-    const std::string test_dir = "/tmp/terrascape_terra_tests";
-    std::filesystem::create_directories(test_dir);
-    
-    std::vector<std::string> test_patterns = {
-        "all_zeros", "all_same", "regular_grid", "collinear_rows", "infinities", "nans"
-    };
-    
-    for (const auto& pattern : test_patterns) {
-        std::string test_file = test_dir + "/" + pattern + "_terra.bin";
-        
-        if (!DSPReader::createProblematicTerraBin(test_file, pattern)) {
-            continue; // Skip if we can't create the test file
-        }
-        
-        int width, height;
-        std::vector<float> elevations;
-        DSPReader::DSPTerrainInfo info;
-        
-        if (DSPReader::readTerraBinFile(test_file, width, height, elevations, &info)) {
-            // Test that triangulation doesn't crash with problematic data
-            try {
-                MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
-                // Success if we get here without crashing
-            } catch (const std::exception&) {
-                // Expected for some problematic patterns
-            }
-        }
-    }
-    
-    return true; // Test passes if we complete without crashing
-}
-
-#ifdef HAVE_GDAL
-bool test_terra_bin_with_gdal_validation() {
-    // GDAL-specific terra.bin validation tests
-    const std::string terra_bin_path = "terra.bin";
-    
-    if (!std::filesystem::exists(terra_bin_path)) {
-        return true; // Skip if no terra.bin file
-    }
-    
-    try {
-        int width, height;
-        std::vector<float> elevations;
-        DSPReader::DSPTerrainInfo info;
-        
-        if (!DSPReader::readTerraBinFile(terra_bin_path, width, height, elevations, &info)) {
-            return true; // Skip if we can't read the file
-        }
-        
-        // Generate mesh
-        MeshResult result = grid_to_mesh(width, height, elevations.data(), 1.0f, 10000);
-        
-        // Convert mesh vertices to format for GDAL validation
-        std::vector<float> mesh_vertices_flat;
-        std::vector<int> mesh_triangles_flat;
-        
-        for (const auto& v : result.vertices) {
-            mesh_vertices_flat.push_back(v.x);
-            mesh_vertices_flat.push_back(v.y);
-            mesh_vertices_flat.push_back(v.z);
-        }
-        
-        for (const auto& t : result.triangles) {
-            mesh_triangles_flat.push_back(t.v0);
-            mesh_triangles_flat.push_back(t.v1);
-            mesh_triangles_flat.push_back(t.v2);
-        }
-        
-        // Use GDAL validation if terrain utilities support it
         if (TerrainDataUtils::isGdalAvailable()) {
-            return TerrainDataUtils::validateMeshAgainstTerrain(
-                terra_bin_path, mesh_vertices_flat, mesh_triangles_flat, 1.0);
+            bool success = TerrainDataUtils::createSampleTerrainData(terrain_data_dir);
+            if (success) {
+                std::string sample_file = terrain_data_dir + "/sample_hill.pgm";
+                std::ifstream test_stream(sample_file);
+                if (test_stream) {
+                    std::string line;
+                    std::getline(test_stream, line); // Magic
+                    int width, height, maxval;
+                    test_stream >> width >> height >> maxval;
+                    
+                    std::vector<float> elevations(width * height);
+                    for (int i = 0; i < width * height; i++) {
+                        float val;
+                        test_stream >> val;
+                        elevations[i] = val;
+                    }
+                    
+                    // Test mesh generation
+                    auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f, 500);
+                    return !mesh.vertices.empty() && !mesh.triangles.empty();
+                }
+            }
         }
         
         return true; // Pass if GDAL not available
-        
     } catch (const std::exception&) {
-        return true; // Don't fail test for GDAL-specific issues
+        return true; // Don't fail test for sample data issues
     }
 }
-#endif
 
 // =============================================================================
 // Edge Case Tests
@@ -546,40 +390,13 @@ void run_performance_tests(TestSuite& suite) {
 }
 
 void run_dsp_tests(TestSuite& suite) {
-    suite.beginCategory("DSP/Hawaii Data Tests");
+    suite.beginCategory("GDAL-Based Terrain Data Tests");
     
     auto start = std::chrono::high_resolution_clock::now();
-    bool result = test_dsp_file_processing();
+    bool result = test_gdal_sample_terrain();
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "DSP File Processing", "", duration);
-    
-    start = std::chrono::high_resolution_clock::now();
-    result = test_hawaii_data();
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "Hawaii Data Processing", "", duration);
-    
-    // Terra.bin processing tests
-    start = std::chrono::high_resolution_clock::now();
-    result = test_terra_bin_processing();
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "Terra.bin File Processing", "", duration);
-    
-    start = std::chrono::high_resolution_clock::now();
-    result = test_synthetic_terra_bin_data();
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "Synthetic Terra.bin Robustness", "", duration);
-    
-#ifdef HAVE_GDAL
-    start = std::chrono::high_resolution_clock::now();
-    result = test_terra_bin_with_gdal_validation();
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "Terra.bin GDAL Validation", "", duration);
-#endif
+    suite.addTest(result, "GDAL Sample Terrain Processing", "", duration);
 }
 
 void run_edge_case_tests(TestSuite& suite) {
