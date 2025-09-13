@@ -37,6 +37,14 @@
 #include <sys/sysctl.h>
 #endif
 
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic push /* start new diagnostic pragma */
+#  pragma GCC diagnostic ignored "-Wfloat-equal"
+#elif defined(__clang__)
+#  pragma clang diagnostic push /* start new diagnostic pragma */
+#  pragma clang diagnostic ignored "-Wfloat-equal"
+#endif
+
 namespace TerraScape {
 
 // ================================= BRL-CAD Tolerance Integration =================================
@@ -1096,3 +1104,10 @@ inline MeshResult region_growing_triangulation_advanced(const float* elevations,
 }
 
 } // namespace TerraScape
+
+#if defined(__GNUC__) && !defined(__clang__)
+#  pragma GCC diagnostic pop /* end ignoring warnings */
+#elif defined(__clang__)
+#  pragma clang diagnostic pop /* end ignoring warnings */
+#endif
+
