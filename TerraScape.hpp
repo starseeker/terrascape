@@ -265,6 +265,13 @@ PreprocessingResult<T> preprocess_input_data(
 template<typename T>
 inline double calculate_heightfield_volume(int width, int height, const T* elevations, float z_base = 0.0f) {
     double total_volume = 0.0;
+    
+    // If z_base is 0, use the minimum elevation as the effective base
+    if (z_base == 0.0f) {
+        T min_elev = *std::min_element(elevations, elevations + width * height);
+        z_base = static_cast<float>(min_elev);
+    }
+    
     for (int i = 0; i < width * height; ++i) {
         float height_above_base = static_cast<float>(elevations[i]) - z_base;
         if (height_above_base > 0.0f) {
@@ -476,13 +483,16 @@ inline MeshResult grid_to_mesh_impl(
     }
 
     // Volume validation sanity check
-    double heightfield_volume = calculate_heightfield_volume(width, height, preprocessing.processed_elevations.data(), 0.0f);
-    double mesh_volume = calculate_mesh_volume(result, 0.0f);
+    float min_elev_for_volume = *std::min_element(preprocessing.processed_elevations.begin(), 
+                                      preprocessing.processed_elevations.end());
+    double heightfield_volume = calculate_heightfield_volume(width, height, preprocessing.processed_elevations.data(), min_elev_for_volume);
+    double mesh_volume = calculate_mesh_volume(result, min_elev_for_volume);
     double volume_ratio = (heightfield_volume > 1e-12) ? (mesh_volume / heightfield_volume) : 0.0;
     
     std::cerr << "TerraScape Volume Validation:" << std::endl;
-    std::cerr << "  Height field volume: " << heightfield_volume << std::endl;
-    std::cerr << "  Mesh volume: " << mesh_volume << std::endl;
+    std::cerr << "  Elevation range: " << min_elev_for_volume << " to " << max_elev << std::endl;
+    std::cerr << "  Height field volume (above min): " << heightfield_volume << std::endl;
+    std::cerr << "  Mesh volume (above min): " << mesh_volume << std::endl;
     std::cerr << "  Volume ratio (mesh/heightfield): " << volume_ratio << std::endl;
     
     if (volume_ratio < 0.5 || volume_ratio > 2.0) {
