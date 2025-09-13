@@ -53,8 +53,9 @@ struct GreedyCutsOptions {
   double min_area = 0.5;         // in grid units (2D area)
 
   // Refinement
-  int max_refinement_passes = 5;
+  int max_refinement_passes = 2; // Reduced from 5 for better performance
   int max_initial_iterations = 5'000'000; // safety cap for very large fronts
+  int max_pq_size = 50000; // Limit priority queue size for performance
 
   // Sampling control
   // If true, attempt early-exit in error calculation when err > local_threshold
@@ -72,15 +73,18 @@ struct GreedyCutsOptions {
   double det_eps = 1e-12;
   double area_eps = 1e-12;
   
-  // Localized error metrics
-  bool use_localized_error = true;           // Enable spatial variation of error thresholds
-  double local_error_scale_factor = 2.0;    // How much local complexity can increase error threshold
-  double terrain_complexity_threshold = 0.1; // Minimum complexity to trigger local scaling
-  
   // Volume-based convergence criteria
   bool use_volume_convergence = false;       // Enable volume-based stopping criteria
   double volume_convergence_threshold = 0.01; // Stop when volume change < this fraction
   int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
+
+  // Pre-computed terrain complexity
+  bool use_precomputed_complexity = true;    // Enable optimized pre-computed terrain complexity map
+  double complexity_scale_factor = 1.0;      // Scale factor for pre-computed complexity values
+  
+  // Alternative region-growing algorithm
+  bool use_region_growing = false;           // Use region-growing approach instead of advancing front
+  double region_merge_threshold = 0.5;       // Height difference threshold for region merging
 };
 
 struct Mesh {
@@ -218,84 +222,283 @@ static inline double adaptive_threshold(double base,
   return std::clamp(base / denom, 1e-9, 1e9);
 }
 
-// Calculate local terrain complexity for localized error metrics
-static inline double calculate_local_complexity(int width, int height,
-                                               const float* elev,
-                                               int cx, int cy,
-                                               int radius = 2)
+// Pre-compute terrain complexity map for all grid cells (optimized for performance)
+static inline std::vector<double> precompute_terrain_complexity(const float* elevations,
+                                                                int width, int height,
+                                                                const uint8_t* mask = nullptr)
 {
-  // Sample terrain in a local neighborhood to assess complexity
-  double slope_variance = 0.0;
-  double elevation_variance = 0.0;
-  double mean_elevation = 0.0;
-  int sample_count = 0;
+  std::vector<double> complexity_map(static_cast<size_t>(width) * static_cast<size_t>(height), 0.0);
   
-  // First pass: calculate mean elevation
-  for (int dy = -radius; dy <= radius; ++dy) {
-    for (int dx = -radius; dx <= radius; ++dx) {
-      int x = std::clamp(cx + dx, 0, width - 1);
-      int y = std::clamp(cy + dy, 0, height - 1);
-      mean_elevation += static_cast<double>(elev[idx_row_major(x, y, width)]);
-      sample_count++;
+  // Optimized single-pass computation focusing on essential features
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      if (mask && mask[idx_row_major(x, y, width)] == 0) {
+        complexity_map[idx_row_major(x, y, width)] = 0.0;
+        continue;
+      }
+      
+      // Simple gradient calculation using immediate neighbors only
+      auto E = [&](int ix, int iy) -> double {
+        ix = std::clamp(ix, 0, width-1);
+        iy = std::clamp(iy, 0, height-1);
+        return static_cast<double>(elevations[idx_row_major(ix, iy, width)]);
+      };
+      
+      double center = E(x, y);
+      
+      // Simplified gradient using only immediate cross neighbors (faster than Sobel)
+      double gx = E(x+1, y) - E(x-1, y);
+      double gy = E(x, y+1) - E(x, y-1);
+      double gradient = std::sqrt(gx*gx + gy*gy) * 0.25; // normalized and scaled down
+      
+      // Simple curvature using immediate cross neighbors only
+      double curvature = std::abs(E(x+1, y) + E(x-1, y) + E(x, y+1) + E(x, y-1) - 4.0*center) * 0.1;
+      
+      // Combine into complexity metric (keep it simple and fast)
+      complexity_map[idx_row_major(x, y, width)] = gradient + curvature;
     }
   }
-  mean_elevation /= sample_count;
   
-  // Second pass: calculate variances and slopes
-  for (int dy = -radius; dy <= radius; ++dy) {
-    for (int dx = -radius; dx <= radius; ++dx) {
-      int x = std::clamp(cx + dx, 0, width - 1);
-      int y = std::clamp(cy + dy, 0, height - 1);
-      double elev_here = static_cast<double>(elev[idx_row_major(x, y, width)]);
+  return complexity_map;
+}
+
+// Region-growing triangulation approach
+static inline void triangulateRegionGrowing(const float* elevations,
+                                            int width, int height,
+                                            const uint8_t* mask,
+                                            const GreedyCutsOptions& opt,
+                                            Mesh& out_mesh)
+{
+  const int W = width, H = height;
+  const size_t total_cells = static_cast<size_t>(W) * static_cast<size_t>(H);
+  
+  // Step 1: Find local minima and maxima
+  std::vector<std::pair<int, int>> local_extrema;
+  std::vector<int> region_labels(total_cells, -1); // -1 = unassigned
+  
+  auto get_elevation = [&](int x, int y) -> float {
+    if (x < 0 || y < 0 || x >= W || y >= H) return std::numeric_limits<float>::max();
+    if (mask && mask[idx_row_major(x, y, W)] == 0) return std::numeric_limits<float>::max();
+    return elevations[idx_row_major(x, y, W)];
+  };
+  
+  // Find local extrema (min/max within 3x3 neighborhood)
+  for (int y = 1; y < H-1; ++y) {
+    for (int x = 1; x < W-1; ++x) {
+      if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
       
-      // Elevation variance
-      double elev_diff = elev_here - mean_elevation;
-      elevation_variance += elev_diff * elev_diff;
+      float center = get_elevation(x, y);
+      bool is_min = true, is_max = true;
       
-      // Local slope if not at boundary
-      if (dx != 0 || dy != 0) {
-        double dist = std::hypot(dx, dy);
-        double slope = std::abs(elev_diff) / dist;
-        slope_variance += slope * slope;
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dx == 0 && dy == 0) continue;
+          float neighbor = get_elevation(x+dx, y+dy);
+          if (neighbor <= center) is_max = false;
+          if (neighbor >= center) is_min = false;
+        }
+      }
+      
+      if (is_min || is_max) {
+        local_extrema.push_back({x, y});
       }
     }
   }
   
-  elevation_variance /= sample_count;
-  slope_variance /= std::max(1, sample_count - 1);
+  // Step 2: Grow regions from extrema
+  std::queue<std::tuple<int, int, int>> growth_queue; // x, y, region_id
   
-  // Combine elevation variance and slope variance for complexity measure
-  return std::sqrt(elevation_variance) + std::sqrt(slope_variance);
-}
-
-// Localized adaptive threshold that varies spatially based on terrain complexity
-static inline double localized_adaptive_threshold(double base,
-                                                  double slope,
-                                                  double slope_w,
-                                                  double curvature,
-                                                  double curvature_w,
-                                                  int width, int height,
-                                                  const float* elev,
-                                                  int cx, int cy,
-                                                  const GreedyCutsOptions& opt)
-{
-  if (!opt.use_localized_error) {
-    return adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
+  for (size_t i = 0; i < local_extrema.size(); ++i) {
+    int x = local_extrema[i].first;
+    int y = local_extrema[i].second;
+    int region_id = static_cast<int>(i);
+    region_labels[idx_row_major(x, y, W)] = region_id;
+    growth_queue.push({x, y, region_id});
   }
   
-  // Calculate local terrain complexity
-  double local_complexity = calculate_local_complexity(width, height, elev, cx, cy);
+  // Grow regions using breadth-first search
+  std::vector<int> region_sizes(local_extrema.size(), 0);
   
-  // Scale error threshold based on local complexity
-  double complexity_factor = 1.0;
-  if (local_complexity > opt.terrain_complexity_threshold) {
-    // Allow higher error in complex areas (up to scale_factor times)
-    complexity_factor = 1.0 + (opt.local_error_scale_factor - 1.0) * 
-                       std::min(1.0, local_complexity / (opt.terrain_complexity_threshold * 10.0));
+  while (!growth_queue.empty()) {
+    auto [x, y, region_id] = growth_queue.front();
+    growth_queue.pop();
+    
+    region_sizes[region_id]++;
+    float center_elev = get_elevation(x, y);
+    
+    // Check 4-connected neighbors
+    for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
+      int nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+      if (mask && mask[idx_row_major(nx, ny, W)] == 0) continue;
+      
+      size_t nidx = idx_row_major(nx, ny, W);
+      if (region_labels[nidx] != -1) continue; // Already assigned
+      
+      float neighbor_elev = get_elevation(nx, ny);
+      float height_diff = std::abs(neighbor_elev - center_elev);
+      
+      // Assign to region if height difference is small enough
+      if (height_diff <= opt.region_merge_threshold) {
+        region_labels[nidx] = region_id;
+        growth_queue.push({nx, ny, region_id});
+      }
+    }
   }
   
-  double base_threshold = adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
-  return base_threshold * complexity_factor;
+  // Step 3: Handle collision resolution - assign unassigned cells to closest region
+  for (int y = 0; y < H; ++y) {
+    for (int x = 0; x < W; ++x) {
+      size_t idx = idx_row_major(x, y, W);
+      if (region_labels[idx] != -1) continue; // Already assigned
+      if (mask && mask[idx] == 0) continue; // Masked
+      
+      float center_elev = get_elevation(x, y);
+      int best_region = -1;
+      float best_score = std::numeric_limits<float>::max();
+      
+      // Find best region based on neighboring cells
+      for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
+        int nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        
+        size_t nidx = idx_row_major(nx, ny, W);
+        int neighbor_region = region_labels[nidx];
+        if (neighbor_region == -1) continue;
+        
+        float neighbor_elev = get_elevation(nx, ny);
+        float height_diff = std::abs(neighbor_elev - center_elev);
+        
+        // Prefer region with smallest height difference, then smallest area
+        float score = height_diff * 1000.0 + static_cast<float>(region_sizes[neighbor_region]);
+        if (score < best_score) {
+          best_score = score;
+          best_region = neighbor_region;
+        }
+      }
+      
+      if (best_region != -1) {
+        region_labels[idx] = best_region;
+        region_sizes[best_region]++;
+      }
+    }
+  }
+  
+  // Step 4: Triangulate each region selectively using representative points
+  // Instead of full grid triangulation, sample points based on region complexity
+  
+  out_mesh.vertices.clear();
+  out_mesh.triangles.clear();
+  
+  std::vector<int> vertex_map(total_cells, -1); // Maps grid position to vertex index
+  
+  // Sample representative points from each region
+  for (size_t region_id = 0; region_id < local_extrema.size(); ++region_id) {
+    if (region_sizes[region_id] == 0) continue;
+    
+    // Add the extremum point for this region
+    int ex_x = local_extrema[region_id].first;
+    int ex_y = local_extrema[region_id].second;
+    size_t ex_idx = idx_row_major(ex_x, ex_y, W);
+    
+    if (vertex_map[ex_idx] == -1) {
+      vertex_map[ex_idx] = static_cast<int>(out_mesh.vertices.size());
+      out_mesh.vertices.push_back({static_cast<double>(ex_x),
+                                   static_cast<double>(ex_y),
+                                   static_cast<double>(elevations[ex_idx])});
+    }
+    
+    // Sample additional points from this region based on complexity
+    int sample_step = std::max(1, static_cast<int>(std::sqrt(region_sizes[region_id]) / 10));
+    
+    for (int y = 0; y < H; y += sample_step) {
+      for (int x = 0; x < W; x += sample_step) {
+        size_t idx = idx_row_major(x, y, W);
+        if (region_labels[idx] != static_cast<int>(region_id)) continue;
+        if (mask && mask[idx] == 0) continue;
+        if (vertex_map[idx] != -1) continue; // Already added
+        
+        // Check if this point adds complexity
+        float center_elev = elevations[idx];
+        float max_diff = 0.0;
+        
+        for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            float neighbor_elev = elevations[idx_row_major(nx, ny, W)];
+            max_diff = std::max(max_diff, std::abs(neighbor_elev - center_elev));
+          }
+        }
+        
+        // Add point if it represents significant height variation
+        if (max_diff > opt.base_error_threshold * 0.5) {
+          vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+          out_mesh.vertices.push_back({static_cast<double>(x),
+                                       static_cast<double>(y),
+                                       static_cast<double>(elevations[idx])});
+        }
+      }
+    }
+  }
+  
+  // Add boundary points to ensure mesh covers the entire area
+  for (int x = 0; x < W; x += std::max(1, W/50)) {
+    for (int y : {0, H-1}) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (vertex_map[idx] == -1) {
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.vertices.push_back({static_cast<double>(x),
+                                     static_cast<double>(y),
+                                     static_cast<double>(elevations[idx])});
+      }
+    }
+  }
+  
+  for (int y = 0; y < H; y += std::max(1, H/50)) {
+    for (int x : {0, W-1}) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (vertex_map[idx] == -1) {
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.vertices.push_back({static_cast<double>(x),
+                                     static_cast<double>(y),
+                                     static_cast<double>(elevations[idx])});
+      }
+    }
+  }
+  
+  // Simple triangulation using a regular grid pattern where vertices exist
+  for (int y = 0; y < H-1; ++y) {
+    for (int x = 0; x < W-1; ++x) {
+      // Look for 2x2 grid cells where we have vertices
+      std::vector<std::pair<int, int>> available_vertices;
+      std::vector<int> vertex_indices;
+      
+      for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,0}, {1,0}, {0,1}, {1,1}}) {
+        int nx = x + dx, ny = y + dy;
+        if (nx < W && ny < H) {
+          size_t idx = idx_row_major(nx, ny, W);
+          if (vertex_map[idx] != -1) {
+            available_vertices.push_back({nx, ny});
+            vertex_indices.push_back(vertex_map[idx]);
+          }
+        }
+      }
+      
+      // Create triangles if we have enough vertices
+      if (vertex_indices.size() >= 3) {
+        // Create triangles using the available vertices
+        if (vertex_indices.size() == 3) {
+          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+        } else if (vertex_indices.size() == 4) {
+          // Create two triangles for a quad
+          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+          out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[3], vertex_indices[2]});
+        }
+      }
+    }
+  }
 }
 
 // Error evaluation with optional early-exit and mask
@@ -306,7 +509,7 @@ struct TriError {
   bool any_valid = false;
 };
 
-// Scans triangle's bounding box; early-exits if err > stop_at (if stop_at > 0)
+// Scans triangle's bounding box with adaptive sampling; early-exits if err > stop_at (if stop_at > 0)
 static inline TriError triangle_error_and_argmax(const std::array<double,3>& v0,
                                                  const std::array<double,3>& v1,
                                                  const std::array<double,3>& v2,
@@ -350,9 +553,22 @@ static inline TriError triangle_error_and_argmax(const std::array<double,3>& v0,
   // If early coarse exceeded stop_at, early return
   if (opt.early_exit_error_eval && stop_at > 0.0 && out.error > stop_at) return out;
 
-  // Full scan
-  for (int sy = iy0; sy <= iy1; ++sy) {
-    for (int sx = ix0; sx <= ix1; ++sx) {
+  // Adaptive sampling: use coarser sampling for large triangles to improve performance
+  int bbox_width = ix1 - ix0 + 1;
+  int bbox_height = iy1 - iy0 + 1;
+  int total_pixels = bbox_width * bbox_height;
+  
+  // For large triangles, use coarser sampling
+  int sample_step = 1;
+  if (total_pixels > 10000) {
+    sample_step = 4; // Sample every 4th pixel for very large triangles
+  } else if (total_pixels > 2500) {
+    sample_step = 2; // Sample every 2nd pixel for large triangles
+  }
+
+  // Full scan with adaptive step
+  for (int sy = iy0; sy <= iy1; sy += sample_step) {
+    for (int sx = ix0; sx <= ix1; sx += sample_step) {
       eval_point(sx, sy);
       if (opt.early_exit_error_eval && stop_at > 0.0 && out.error > stop_at) return out;
     }
@@ -439,7 +655,19 @@ inline void triangulateGreedyCuts(const float* elevations,
                                   Mesh& out_mesh)
 {
   assert(width > 1 && height > 1);
+  
+  // Use alternative region-growing approach if enabled
+  if (opt.use_region_growing) {
+    return triangulateRegionGrowing(elevations, width, height, mask, opt, out_mesh);
+  }
+  
   const int W = width, H = height;
+
+  // Pre-compute terrain complexity map if enabled
+  std::vector<double> complexity_map;
+  if (opt.use_precomputed_complexity) {
+    complexity_map = precompute_terrain_complexity(elevations, W, H, mask);
+  }
 
   // Prepare vertices (grid x,y with z from elevations)
   out_mesh.vertices.resize(static_cast<size_t>(W) * static_cast<size_t>(H));
@@ -472,6 +700,8 @@ inline void triangulateGreedyCuts(const float* elevations,
     const auto& C = out_mesh.vertices[nodes[n].vid];
     // skip degenerate
     if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.area_eps) return;
+    // Skip if PQ is getting too large for performance
+    if (pq.size() >= static_cast<size_t>(opt.max_pq_size)) return;
     // Compute error (no threshold yet, PQ is by error)
     auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt, -1.0);
     double e = terr.any_valid ? terr.error : 0.0;
@@ -493,15 +723,28 @@ inline void triangulateGreedyCuts(const float* elevations,
   auto local_threshold = [&](const std::array<double,3>& A,
                              const std::array<double,3>& B,
                              const std::array<double,3>& C){
-    // centroid for curvature sampling
-    double cx = (A[0]+B[0]+C[0])/3.0;
-    double cy = (A[1]+B[1]+C[1])/3.0;
-    int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
-    int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
-    double slope = tri_local_slope(A,B,C);
-    double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-    return localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                       W, H, elevations, icx, icy, opt);
+    if (opt.use_precomputed_complexity && !complexity_map.empty()) {
+      // Use pre-computed complexity from terrain map
+      double cx = (A[0]+B[0]+C[0])/3.0;
+      double cy = (A[1]+B[1]+C[1])/3.0;
+      int icx = std::clamp(static_cast<int>(std::llround(cx)), 0, W-1);
+      int icy = std::clamp(static_cast<int>(std::llround(cy)), 0, H-1);
+      double complexity = complexity_map[idx_row_major(icx, icy, W)] * opt.complexity_scale_factor;
+      
+      // Split complexity back into slope and curvature components for threshold calculation
+      double slope = complexity * 0.9; // most of complexity is slope
+      double curvature = complexity * 0.1; // small portion is curvature
+      return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curvature, opt.curvature_weight);
+    } else {
+      // Fallback to direct calculation
+      double cx = (A[0]+B[0]+C[0])/3.0;
+      double cy = (A[1]+B[1]+C[1])/3.0;
+      int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
+      int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
+      double slope = tri_local_slope(A,B,C);
+      double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
+      return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+    }
   };
 
   while (!pq.empty() && safety_iters++ < opt.max_initial_iterations) {
@@ -635,19 +878,31 @@ inline void triangulateGreedyCuts(const float* elevations,
       if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.min_area) {
         continue;
       }
-      // Local threshold with localized error metrics
+      // Local threshold calculation
       double cx = (A[0]+B[0]+C[0])/3.0;
       double cy = (A[1]+B[1]+C[1])/3.0;
-      int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
-      int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
-      double slope = tri_local_slope(A,B,C);
-      double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-      double thresh = localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
-                                                  W, H, elevations, icx, icy, opt);
+      double thresh;
+      if (opt.use_precomputed_complexity && !complexity_map.empty()) {
+        // Use pre-computed complexity
+        int icx = std::clamp(static_cast<int>(std::llround(cx)), 0, W-1);
+        int icy = std::clamp(static_cast<int>(std::llround(cy)), 0, H-1);
+        double complexity = complexity_map[idx_row_major(icx, icy, W)] * opt.complexity_scale_factor;
+        double slope = complexity * 0.9;
+        double curvature = complexity * 0.1;
+        thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curvature, opt.curvature_weight);
+      } else {
+        // Fallback to direct calculation
+        int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
+        int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
+        double slope = tri_local_slope(A,B,C);
+        double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
+        thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+      }
 
-      // Error with early-exit
+      // Error with early-exit - be more aggressive about early termination in refinement
+      double early_exit_threshold = thresh * 2.0; // Accept if error is within 2x threshold 
       auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
-                                            opt.early_exit_error_eval ? -1.0 : -1.0);
+                                            opt.early_exit_error_eval ? early_exit_threshold : -1.0);
       if (!terr.any_valid) {
         // Skip masked-only triangles
         continue;
@@ -694,18 +949,6 @@ inline void triangulateGreedyCuts(const float* elevations,
       }
       if (best_x == -1 || best_y == -1) {
         // No interior valid point found; keep or drop based on quality
-        if (opt.use_localized_error) {
-          // Debug output to understand why no interior points are found
-          static int debug_count = 0;
-          if (debug_count < 5) { // Limit debug output to first 5 cases
-            std::cerr << "DEBUG: No interior point found for triangle with vertices:" << std::endl;
-            std::cerr << "  A=(" << A[0] << "," << A[1] << "," << A[2] << ")" << std::endl;
-            std::cerr << "  B=(" << B[0] << "," << B[1] << "," << B[2] << ")" << std::endl;
-            std::cerr << "  C=(" << C[0] << "," << C[1] << "," << C[2] << ")" << std::endl;
-            std::cerr << "  Search bounds: x[" << minx << "," << maxx << "] y[" << miny << "," << maxy << "]" << std::endl;
-            debug_count++;
-          }
-        }
         if (triangle_is_quality_2d(A,B,C, opt.min_angle_deg, opt.max_aspect_ratio, opt.min_area))
           tris_out.push_back(t);
         continue;
@@ -716,15 +959,6 @@ inline void triangulateGreedyCuts(const float* elevations,
       std::array<double,3> P = {static_cast<double>(best_x),
                                 static_cast<double>(best_y),
                                 static_cast<double>(elevations[idx_row_major(best_x,best_y,W)])};
-      
-      // Debug output for successful interior point insertion
-      if (opt.use_localized_error) {
-        static int insert_count = 0;
-        if (insert_count < 3) { // Limit debug output to first 3 insertions
-          std::cerr << "DEBUG: Inserting interior point (" << best_x << "," << best_y << "," << P[2] << ") with error " << best_err << std::endl;
-          insert_count++;
-        }
-      }
       
       // Only keep sub-tris that pass quality
       std::array<std::array<int,3>,3> candidates = {{
