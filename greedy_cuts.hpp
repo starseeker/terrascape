@@ -384,54 +384,119 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // Step 4: Triangulate each region independently using Delaunay-like approach
-  // For simplicity, we'll use a basic grid-based triangulation within each region
+  // Step 4: Triangulate each region selectively using representative points
+  // Instead of full grid triangulation, sample points based on region complexity
   
-  // Prepare vertices
-  out_mesh.vertices.resize(total_cells);
-  for (int y = 0; y < H; ++y) {
-    for (int x = 0; x < W; ++x) {
-      size_t vid = idx_row_major(x, y, W);
-      out_mesh.vertices[vid] = {static_cast<double>(x),
-                                static_cast<double>(y),
-                                static_cast<double>(elevations[vid])};
+  out_mesh.vertices.clear();
+  out_mesh.triangles.clear();
+  
+  std::vector<int> vertex_map(total_cells, -1); // Maps grid position to vertex index
+  
+  // Sample representative points from each region
+  for (size_t region_id = 0; region_id < local_extrema.size(); ++region_id) {
+    if (region_sizes[region_id] == 0) continue;
+    
+    // Add the extremum point for this region
+    int ex_x = local_extrema[region_id].first;
+    int ex_y = local_extrema[region_id].second;
+    size_t ex_idx = idx_row_major(ex_x, ex_y, W);
+    
+    if (vertex_map[ex_idx] == -1) {
+      vertex_map[ex_idx] = static_cast<int>(out_mesh.vertices.size());
+      out_mesh.vertices.push_back({static_cast<double>(ex_x),
+                                   static_cast<double>(ex_y),
+                                   static_cast<double>(elevations[ex_idx])});
+    }
+    
+    // Sample additional points from this region based on complexity
+    int sample_step = std::max(1, static_cast<int>(std::sqrt(region_sizes[region_id]) / 10));
+    
+    for (int y = 0; y < H; y += sample_step) {
+      for (int x = 0; x < W; x += sample_step) {
+        size_t idx = idx_row_major(x, y, W);
+        if (region_labels[idx] != static_cast<int>(region_id)) continue;
+        if (mask && mask[idx] == 0) continue;
+        if (vertex_map[idx] != -1) continue; // Already added
+        
+        // Check if this point adds complexity
+        float center_elev = elevations[idx];
+        float max_diff = 0.0;
+        
+        for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            float neighbor_elev = elevations[idx_row_major(nx, ny, W)];
+            max_diff = std::max(max_diff, std::abs(neighbor_elev - center_elev));
+          }
+        }
+        
+        // Add point if it represents significant height variation
+        if (max_diff > opt.base_error_threshold * 0.5) {
+          vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+          out_mesh.vertices.push_back({static_cast<double>(x),
+                                       static_cast<double>(y),
+                                       static_cast<double>(elevations[idx])});
+        }
+      }
     }
   }
   
-  out_mesh.triangles.clear();
+  // Add boundary points to ensure mesh covers the entire area
+  for (int x = 0; x < W; x += std::max(1, W/50)) {
+    for (int y : {0, H-1}) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (vertex_map[idx] == -1) {
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.vertices.push_back({static_cast<double>(x),
+                                     static_cast<double>(y),
+                                     static_cast<double>(elevations[idx])});
+      }
+    }
+  }
   
-  // Simple grid triangulation within each region
+  for (int y = 0; y < H; y += std::max(1, H/50)) {
+    for (int x : {0, W-1}) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (vertex_map[idx] == -1) {
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.vertices.push_back({static_cast<double>(x),
+                                     static_cast<double>(y),
+                                     static_cast<double>(elevations[idx])});
+      }
+    }
+  }
+  
+  // Simple triangulation using a regular grid pattern where vertices exist
   for (int y = 0; y < H-1; ++y) {
     for (int x = 0; x < W-1; ++x) {
-      // Get the 4 corners of this grid cell
-      std::array<size_t, 4> corners = {
-        idx_row_major(x, y, W),
-        idx_row_major(x+1, y, W),
-        idx_row_major(x, y+1, W),
-        idx_row_major(x+1, y+1, W)
-      };
+      // Look for 2x2 grid cells where we have vertices
+      std::vector<std::pair<int, int>> available_vertices;
+      std::vector<int> vertex_indices;
       
-      // Check if all corners are valid and belong to the same region
-      int common_region = region_labels[corners[0]];
-      bool all_same_region = true;
-      bool all_valid = true;
-      
-      for (size_t corner : corners) {
-        if (mask && mask[corner] == 0) all_valid = false;
-        if (region_labels[corner] != common_region) all_same_region = false;
+      for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,0}, {1,0}, {0,1}, {1,1}}) {
+        int nx = x + dx, ny = y + dy;
+        if (nx < W && ny < H) {
+          size_t idx = idx_row_major(nx, ny, W);
+          if (vertex_map[idx] != -1) {
+            available_vertices.push_back({nx, ny});
+            vertex_indices.push_back(vertex_map[idx]);
+          }
+        }
       }
       
-      if (!all_valid || !all_same_region || common_region == -1) continue;
-      
-      // Create two triangles for this grid cell
-      // Triangle 1: (0,1,2) - top-left, top-right, bottom-left
-      // Triangle 2: (1,3,2) - top-right, bottom-right, bottom-left
-      out_mesh.triangles.push_back({static_cast<int>(corners[0]), 
-                                   static_cast<int>(corners[1]), 
-                                   static_cast<int>(corners[2])});
-      out_mesh.triangles.push_back({static_cast<int>(corners[1]), 
-                                   static_cast<int>(corners[3]), 
-                                   static_cast<int>(corners[2])});
+      // Create triangles if we have enough vertices
+      if (vertex_indices.size() >= 3) {
+        // Create triangles using the available vertices
+        if (vertex_indices.size() == 3) {
+          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+        } else if (vertex_indices.size() == 4) {
+          // Create two triangles for a quad
+          out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+          out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[3], vertex_indices[2]});
+        }
+      }
     }
   }
 }
