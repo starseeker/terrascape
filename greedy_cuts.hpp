@@ -32,6 +32,7 @@
 #include <deque>
 #include <limits>
 #include <queue>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -42,49 +43,39 @@ namespace terrascape {
 // --------------------------------- Types ---------------------------------
 
 struct GreedyCutsOptions {
-  // Error model
-  double base_error_threshold = 0.2;
-  double slope_weight = 3.0;
-  double curvature_weight = 10.0;
-
-  // Quality constraints
-  double min_angle_deg = 20.0;
-  double max_aspect_ratio = 6.0; // longest/shortest edge (2D)
-  double min_area = 0.5;         // in grid units (2D area)
-
-  // Refinement
-  int max_refinement_passes = 2; // Reduced from 5 for better performance
-  int max_initial_iterations = 5'000'000; // safety cap for very large fronts
-  int max_pq_size = 50000; // Limit priority queue size for performance
-
-  // Sampling control
-  // If true, attempt early-exit in error calculation when err > local_threshold
-  bool early_exit_error_eval = true;
-
-  // NoData support (mask==nullptr => all valid)
-  // If provided, mask[y*width + x] == 0 => invalid sample
-  // Triangles covering only invalid area are considered low-confidence and skipped.
-  bool treat_all_invalid_as_blocking = true;
-
-  // Barycentric epsilon to decide interior points (avoid edge points for refinement)
-  double bary_eps = 1e-6;
-
-  // Degeneracy and numeric tolerances
-  double det_eps = 1e-12;
-  double area_eps = 1e-12;
+  // PRIMARY INTERFACE: Single mesh density parameter (0.0 = coarsest, 1.0 = finest)
+  double mesh_density = 0.5;                 // Controls overall mesh resolution and detail level
   
-  // Volume-based convergence criteria
-  bool use_volume_convergence = false;       // Enable volume-based stopping criteria
-  double volume_convergence_threshold = 0.01; // Stop when volume change < this fraction
-  int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
-
-  // Pre-computed terrain complexity
-  bool use_precomputed_complexity = true;    // Enable optimized pre-computed terrain complexity map
-  double complexity_scale_factor = 1.0;      // Scale factor for pre-computed complexity values
+  // ALGORITHM SELECTION: Region-growing is now the default approach
+  bool use_region_growing = true;            // Use fast region-growing approach (default)
+  bool use_advancing_front = false;          // Use slower advancing front method (legacy)
   
-  // Alternative region-growing algorithm
-  bool use_region_growing = false;           // Use region-growing approach instead of advancing front
+  // DERIVED PARAMETERS: Automatically calculated from mesh_density (can be overridden)
   double region_merge_threshold = 0.5;       // Height difference threshold for region merging
+  int sampling_step = 1;                     // Point sampling step size for triangulation
+  double base_error_threshold = 0.2;         // Error threshold for mesh approximation
+  
+  // QUALITY CONSTRAINTS: Mesh quality control
+  double min_angle_deg = 20.0;               // Minimum triangle angle constraint
+  double max_aspect_ratio = 6.0;             // Maximum aspect ratio (longest/shortest edge)
+  double min_area = 0.5;                     // Minimum triangle area in grid units
+  
+  // ADVANCED PARAMETERS: Typically not modified by users
+  double slope_weight = 3.0;                 // Weight for slope-based error calculation
+  double curvature_weight = 10.0;            // Weight for curvature-based error calculation
+  int max_refinement_passes = 2;             // Number of refinement passes
+  int max_initial_iterations = 5'000'000;    // Safety cap for very large datasets
+  int max_pq_size = 50000;                   // Priority queue size limit
+  bool early_exit_error_eval = true;         // Enable early-exit in error calculation
+  bool treat_all_invalid_as_blocking = true; // How to handle masked areas
+  double bary_eps = 1e-6;                    // Barycentric coordinate epsilon
+  double det_eps = 1e-12;                    // Determinant epsilon for numerical stability
+  double area_eps = 1e-12;                   // Area epsilon for numerical stability
+  bool use_volume_convergence = false;       // Enable volume-based stopping criteria
+  double volume_convergence_threshold = 0.01; // Volume change threshold for convergence
+  int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
+  bool use_precomputed_complexity = true;    // Use pre-computed terrain complexity
+  double complexity_scale_factor = 1.0;      // Complexity scaling factor
 };
 
 struct Mesh {
@@ -262,15 +253,42 @@ static inline std::vector<double> precompute_terrain_complexity(const float* ele
   return complexity_map;
 }
 
+// Calculate region-growing parameters from mesh_density
+static inline GreedyCutsOptions calculate_region_parameters(GreedyCutsOptions opt, int width, int height) {
+  // Mesh density ranges from 0.0 (coarsest) to 1.0 (finest)
+  double density = std::max(0.0, std::min(1.0, opt.mesh_density));
+  
+  // Calculate region merge threshold (larger = coarser regions)
+  // At density 0.0: large regions with high threshold
+  // At density 1.0: small regions with low threshold
+  opt.region_merge_threshold = 50.0 * (1.0 - density) + 0.1 * density;
+  
+  // Calculate sampling step (larger = sparser sampling)
+  // At density 0.0: very sparse sampling (coarse mesh)
+  // At density 1.0: dense sampling (fine mesh)
+  int max_step = std::max(1, std::min(width, height) / 10);  // Never more than 1/10 of smallest dimension
+  opt.sampling_step = static_cast<int>(max_step * (1.0 - density)) + 1;
+  
+  // Calculate error threshold (larger = more tolerance, coarser mesh)
+  // At density 0.0: high tolerance (coarse approximation)
+  // At density 1.0: low tolerance (fine approximation)
+  opt.base_error_threshold = 10.0 * (1.0 - density) + 0.01 * density;
+  
+  return opt;
+}
+
 // Region-growing triangulation approach
 static inline void triangulateRegionGrowing(const float* elevations,
                                             int width, int height,
                                             const uint8_t* mask,
-                                            const GreedyCutsOptions& opt,
+                                            GreedyCutsOptions opt,  // Pass by value to allow modification
                                             Mesh& out_mesh)
 {
   const int W = width, H = height;
   const size_t total_cells = static_cast<size_t>(W) * static_cast<size_t>(H);
+  
+  // Calculate region-growing parameters from mesh_density
+  opt = calculate_region_parameters(opt, width, height);
   
   // Step 1: Find local minima and maxima
   std::vector<std::pair<int, int>> local_extrema;
@@ -408,8 +426,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
                                    static_cast<double>(elevations[ex_idx])});
     }
     
-    // Sample additional points from this region based on complexity
-    int sample_step = std::max(1, static_cast<int>(std::sqrt(region_sizes[region_id]) / 10));
+    // Sample additional points from this region based on calculated sampling step
+    int base_sample_step = opt.sampling_step;
+    int adaptive_step = std::max(base_sample_step, static_cast<int>(std::sqrt(region_sizes[region_id]) / 20));
+    int sample_step = std::min(adaptive_step, base_sample_step * 3); // Cap at 3x base step
     
     for (int y = 0; y < H; y += sample_step) {
       for (int x = 0; x < W; x += sample_step) {
@@ -442,7 +462,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
   }
   
   // Add boundary points to ensure mesh covers the entire area
-  for (int x = 0; x < W; x += std::max(1, W/50)) {
+  int boundary_step = std::max(opt.sampling_step, std::max(1, std::max(W, H) / (50 / opt.sampling_step)));
+  
+  for (int x = 0; x < W; x += boundary_step) {
     for (int y : {0, H-1}) {
       size_t idx = idx_row_major(x, y, W);
       if (mask && mask[idx] == 0) continue;
@@ -455,7 +477,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  for (int y = 0; y < H; y += std::max(1, H/50)) {
+  for (int y = 0; y < H; y += boundary_step) {
     for (int x : {0, W-1}) {
       size_t idx = idx_row_major(x, y, W);
       if (mask && mask[idx] == 0) continue;
@@ -468,11 +490,16 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // Simple triangulation using a regular grid pattern where vertices exist
+  // Improved triangulation using Delaunay-like approach for sparse vertices
+  // First, try simple grid-based triangulation, then fall back to more general approach
+  
+  int initial_triangle_count = 0;
+  
+  // Simple grid-based triangulation for dense meshes
   for (int y = 0; y < H-1; ++y) {
     for (int x = 0; x < W-1; ++x) {
-      // Look for 2x2 grid cells where we have vertices
-      std::vector<std::pair<int, int>> available_vertices;
+      // Look for available vertices in 2x2 grid cells
+      std::vector<std::pair<int, int>> available_positions;
       std::vector<int> vertex_indices;
       
       for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,0}, {1,0}, {0,1}, {1,1}}) {
@@ -480,7 +507,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
         if (nx < W && ny < H) {
           size_t idx = idx_row_major(nx, ny, W);
           if (vertex_map[idx] != -1) {
-            available_vertices.push_back({nx, ny});
+            available_positions.push_back({nx, ny});
             vertex_indices.push_back(vertex_map[idx]);
           }
         }
@@ -488,13 +515,78 @@ static inline void triangulateRegionGrowing(const float* elevations,
       
       // Create triangles if we have enough vertices
       if (vertex_indices.size() >= 3) {
-        // Create triangles using the available vertices
         if (vertex_indices.size() == 3) {
           out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
+          initial_triangle_count++;
         } else if (vertex_indices.size() == 4) {
           // Create two triangles for a quad
           out_mesh.triangles.push_back({vertex_indices[0], vertex_indices[1], vertex_indices[2]});
           out_mesh.triangles.push_back({vertex_indices[1], vertex_indices[3], vertex_indices[2]});
+          initial_triangle_count += 2;
+        }
+      }
+    }
+  }
+  
+  // If we didn't get many triangles from grid approach, use a more general triangulation
+  if (initial_triangle_count < out_mesh.vertices.size() / 10) {
+    out_mesh.triangles.clear();
+    
+    // Create a simpler triangulation for better performance
+    if (out_mesh.vertices.size() >= 3) {
+      auto distance_squared = [&](int i, int j) -> double {
+        double dx = out_mesh.vertices[i][0] - out_mesh.vertices[j][0];
+        double dy = out_mesh.vertices[i][1] - out_mesh.vertices[j][1];
+        return dx*dx + dy*dy;
+      };
+      
+      // For performance, limit the triangulation complexity
+      std::set<std::tuple<int,int,int>> added_triangles;
+      int max_triangles = static_cast<int>(out_mesh.vertices.size()) * 8; // Reasonable limit
+      
+      for (size_t i = 0; i < out_mesh.vertices.size() && out_mesh.triangles.size() < max_triangles; ++i) {
+        std::vector<std::pair<double, int>> nearby_vertices;
+        
+        // Only consider vertices within reasonable distance
+        double max_search_dist = (W + H) * 0.2;
+        max_search_dist *= max_search_dist; // Square it
+        
+        for (size_t j = i + 1; j < out_mesh.vertices.size(); ++j) {
+          double dist_sq = distance_squared(static_cast<int>(i), static_cast<int>(j));
+          if (dist_sq < max_search_dist) {
+            nearby_vertices.push_back({dist_sq, static_cast<int>(j)});
+          }
+        }
+        
+        // Sort by distance and take closest vertices (limit to improve performance)
+        std::sort(nearby_vertices.begin(), nearby_vertices.end());
+        if (nearby_vertices.size() > 8) {
+          nearby_vertices.resize(8); // Limit for performance
+        }
+        
+        // Create triangles with nearby vertices
+        for (size_t j = 0; j < nearby_vertices.size(); ++j) {
+          for (size_t k = j+1; k < nearby_vertices.size(); ++k) {
+            int v0 = static_cast<int>(i);
+            int v1 = nearby_vertices[j].second;
+            int v2 = nearby_vertices[k].second;
+            
+            // Sort vertices to create canonical triangle representation
+            std::array<int, 3> triangle = {v0, v1, v2};
+            std::sort(triangle.begin(), triangle.end());
+            
+            auto tri_tuple = std::make_tuple(triangle[0], triangle[1], triangle[2]);
+            
+            // Add triangle if not already added
+            if (added_triangles.find(tri_tuple) == added_triangles.end()) {
+              out_mesh.triangles.push_back({triangle[0], triangle[1], triangle[2]});
+              added_triangles.insert(tri_tuple);
+              
+              // Break early if we have enough triangles
+              if (out_mesh.triangles.size() >= max_triangles) break;
+            }
+          }
+          if (out_mesh.triangles.size() >= max_triangles) break;
         }
       }
     }
@@ -648,6 +740,20 @@ static inline void erase_node(std::vector<FrontNode>& nodes, int node_idx) {
 
 // --------------------------------- Main API ---------------------------------
 
+// Primary simplified interface using mesh density parameter
+inline void triangulateRegionGrowing(const float* elevations,
+                                     int width, int height,
+                                     Mesh& out_mesh,
+                                     double mesh_density = 0.5,
+                                     const uint8_t* mask = nullptr)
+{
+  GreedyCutsOptions opt;
+  opt.mesh_density = mesh_density;
+  opt.use_region_growing = true;
+  triangulateRegionGrowing(elevations, width, height, mask, opt, out_mesh);
+}
+
+// Full interface with all options (for backward compatibility and advanced usage)
 inline void triangulateGreedyCuts(const float* elevations,
                                   int width, int height,
                                   const uint8_t* mask, // optional, nullptr if none
@@ -656,9 +762,17 @@ inline void triangulateGreedyCuts(const float* elevations,
 {
   assert(width > 1 && height > 1);
   
-  // Use alternative region-growing approach if enabled
+  // Default to region-growing approach (much faster and simpler)
   if (opt.use_region_growing) {
     return triangulateRegionGrowing(elevations, width, height, mask, opt, out_mesh);
+  }
+  
+  // Legacy advancing front approach (slower but maintained for compatibility)
+  if (!opt.use_advancing_front) {
+    std::cerr << "Warning: Neither region-growing nor advancing front enabled. Defaulting to region-growing." << std::endl;
+    GreedyCutsOptions region_opt = opt;
+    region_opt.use_region_growing = true;
+    return triangulateRegionGrowing(elevations, width, height, mask, region_opt, out_mesh);
   }
   
   const int W = width, H = height;
