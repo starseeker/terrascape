@@ -71,6 +71,16 @@ struct GreedyCutsOptions {
   // Degeneracy and numeric tolerances
   double det_eps = 1e-12;
   double area_eps = 1e-12;
+  
+  // Localized error metrics
+  bool use_localized_error = true;           // Enable spatial variation of error thresholds
+  double local_error_scale_factor = 2.0;    // How much local complexity can increase error threshold
+  double terrain_complexity_threshold = 0.1; // Minimum complexity to trigger local scaling
+  
+  // Volume-based convergence criteria
+  bool use_volume_convergence = false;       // Enable volume-based stopping criteria
+  double volume_convergence_threshold = 0.01; // Stop when volume change < this fraction
+  int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
 };
 
 struct Mesh {
@@ -206,6 +216,86 @@ static inline double adaptive_threshold(double base,
 {
   double denom = 1.0 + slope_w * slope + curvature_w * curvature;
   return std::clamp(base / denom, 1e-9, 1e9);
+}
+
+// Calculate local terrain complexity for localized error metrics
+static inline double calculate_local_complexity(int width, int height,
+                                               const float* elev,
+                                               int cx, int cy,
+                                               int radius = 2)
+{
+  // Sample terrain in a local neighborhood to assess complexity
+  double slope_variance = 0.0;
+  double elevation_variance = 0.0;
+  double mean_elevation = 0.0;
+  int sample_count = 0;
+  
+  // First pass: calculate mean elevation
+  for (int dy = -radius; dy <= radius; ++dy) {
+    for (int dx = -radius; dx <= radius; ++dx) {
+      int x = std::clamp(cx + dx, 0, width - 1);
+      int y = std::clamp(cy + dy, 0, height - 1);
+      mean_elevation += static_cast<double>(elev[idx_row_major(x, y, width)]);
+      sample_count++;
+    }
+  }
+  mean_elevation /= sample_count;
+  
+  // Second pass: calculate variances and slopes
+  for (int dy = -radius; dy <= radius; ++dy) {
+    for (int dx = -radius; dx <= radius; ++dx) {
+      int x = std::clamp(cx + dx, 0, width - 1);
+      int y = std::clamp(cy + dy, 0, height - 1);
+      double elev_here = static_cast<double>(elev[idx_row_major(x, y, width)]);
+      
+      // Elevation variance
+      double elev_diff = elev_here - mean_elevation;
+      elevation_variance += elev_diff * elev_diff;
+      
+      // Local slope if not at boundary
+      if (dx != 0 || dy != 0) {
+        double dist = std::hypot(dx, dy);
+        double slope = std::abs(elev_diff) / dist;
+        slope_variance += slope * slope;
+      }
+    }
+  }
+  
+  elevation_variance /= sample_count;
+  slope_variance /= std::max(1, sample_count - 1);
+  
+  // Combine elevation variance and slope variance for complexity measure
+  return std::sqrt(elevation_variance) + std::sqrt(slope_variance);
+}
+
+// Localized adaptive threshold that varies spatially based on terrain complexity
+static inline double localized_adaptive_threshold(double base,
+                                                  double slope,
+                                                  double slope_w,
+                                                  double curvature,
+                                                  double curvature_w,
+                                                  int width, int height,
+                                                  const float* elev,
+                                                  int cx, int cy,
+                                                  const GreedyCutsOptions& opt)
+{
+  if (!opt.use_localized_error) {
+    return adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
+  }
+  
+  // Calculate local terrain complexity
+  double local_complexity = calculate_local_complexity(width, height, elev, cx, cy);
+  
+  // Scale error threshold based on local complexity
+  double complexity_factor = 1.0;
+  if (local_complexity > opt.terrain_complexity_threshold) {
+    // Allow higher error in complex areas (up to scale_factor times)
+    complexity_factor = 1.0 + (opt.local_error_scale_factor - 1.0) * 
+                       std::min(1.0, local_complexity / (opt.terrain_complexity_threshold * 10.0));
+  }
+  
+  double base_threshold = adaptive_threshold(base, slope, slope_w, curvature, curvature_w);
+  return base_threshold * complexity_factor;
 }
 
 // Error evaluation with optional early-exit and mask
@@ -410,7 +500,8 @@ inline void triangulateGreedyCuts(const float* elevations,
     int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
     double slope = tri_local_slope(A,B,C);
     double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-    return adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+    return localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
+                                       W, H, elevations, icx, icy, opt);
   };
 
   while (!pq.empty() && safety_iters++ < opt.max_initial_iterations) {
@@ -544,14 +635,15 @@ inline void triangulateGreedyCuts(const float* elevations,
       if (tri_area2d(A[0],A[1],B[0],B[1],C[0],C[1]) < opt.min_area) {
         continue;
       }
-      // Local threshold
+      // Local threshold with localized error metrics
       double cx = (A[0]+B[0]+C[0])/3.0;
       double cy = (A[1]+B[1]+C[1])/3.0;
       int icx = std::clamp(static_cast<int>(std::llround(cx)), 1, W-2);
       int icy = std::clamp(static_cast<int>(std::llround(cy)), 1, H-2);
       double slope = tri_local_slope(A,B,C);
       double curv  = tri_local_curvature_8n(W,H,elevations,icx,icy);
-      double thresh = adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight);
+      double thresh = localized_adaptive_threshold(opt.base_error_threshold, slope, opt.slope_weight, curv, opt.curvature_weight,
+                                                  W, H, elevations, icx, icy, opt);
 
       // Error with early-exit
       auto terr = triangle_error_and_argmax(A, B, C, elevations, mask, W, H, opt,
@@ -615,12 +707,43 @@ inline void triangulateGreedyCuts(const float* elevations,
     return refined_any;
   };
 
-  // Run refinement passes
+  // Calculate initial mesh volume for convergence tracking
+  auto calculate_mesh_volume = [&](const std::vector<std::array<int,3>>& triangles) -> double {
+    double volume = 0.0;
+    for (const auto& t : triangles) {
+      const auto& v0 = out_mesh.vertices[t[0]];
+      const auto& v1 = out_mesh.vertices[t[1]];
+      const auto& v2 = out_mesh.vertices[t[2]];
+      // Signed volume contribution of tetrahedron from origin
+      volume += (v0[0] * (v1[1] * v2[2] - v1[2] * v2[1]) +
+                 v1[0] * (v2[1] * v0[2] - v2[2] * v0[1]) +
+                 v2[0] * (v0[1] * v1[2] - v0[2] * v1[1])) / 6.0;
+    }
+    return std::abs(volume);
+  };
+
+  // Run refinement passes with volume convergence check
   std::vector<std::array<int,3>> work = out_mesh.triangles;
   std::vector<std::array<int,3>> next;
+  double prev_volume = calculate_mesh_volume(work);
+  
   for (int pass = 0; pass < opt.max_refinement_passes; ++pass) {
     bool did_refine = refine_once(work, next);
     if (!did_refine) { break; }
+    
+    // Check volume convergence if enabled
+    if (opt.use_volume_convergence && pass >= opt.min_volume_passes) {
+      double curr_volume = calculate_mesh_volume(next);
+      double volume_change = std::abs(curr_volume - prev_volume) / std::max(prev_volume, 1e-12);
+      if (volume_change < opt.volume_convergence_threshold) {
+        std::cerr << "Volume converged after " << (pass + 1) << " passes (change: " 
+                  << (volume_change * 100.0) << "%)" << std::endl;
+        work.swap(next);
+        break;
+      }
+      prev_volume = curr_volume;
+    }
+    
     work.swap(next);
   }
   out_mesh.triangles.swap(work);

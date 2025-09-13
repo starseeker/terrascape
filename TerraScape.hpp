@@ -281,17 +281,83 @@ inline MeshResult grid_to_mesh_impl(
         }
     }
 
-    // Configure Greedy Cuts options
+    // Configure Greedy Cuts options with terrain-appropriate parameters
     ::terrascape::GreedyCutsOptions gc_opt;
-    gc_opt.base_error_threshold = preprocessing.adjusted_error_threshold;
-    // Defaults for slope/curvature weights and mesh quality are set in greedy_cuts.hpp;
-    // override here if desired:
-    // gc_opt.slope_weight = 3.0;
-    // gc_opt.curvature_weight = 10.0;
-    // gc_opt.min_angle_deg = 20.0;
-    // gc_opt.max_aspect_ratio = 6.0;
-    // gc_opt.min_area = 0.5;
-    // gc_opt.max_refinement_passes = 5;
+    
+    // Calculate elevation range for adaptive parameter setting
+    float min_elev = *std::min_element(preprocessing.processed_elevations.begin(), 
+                                      preprocessing.processed_elevations.end());
+    float max_elev = *std::max_element(preprocessing.processed_elevations.begin(), 
+                                      preprocessing.processed_elevations.end());
+    float elev_range = max_elev - min_elev;
+    
+    // Determine appropriate error threshold for terrain data
+    float adaptive_error_threshold = preprocessing.adjusted_error_threshold;
+    if (elev_range > 0.1f) {
+        // If user provided a small threshold relative to elevation range, respect it
+        // but provide guidance on reasonable ranges
+        float relative_user_threshold = adaptive_error_threshold / elev_range;
+        
+        if (relative_user_threshold < 0.0001f) {
+            // Very small threshold - use a minimum of 0.01% of range to avoid excessive detail
+            adaptive_error_threshold = elev_range * 0.0001f;
+            std::cerr << "TerraScape: Error threshold very small relative to elevation range, "
+                      << "using minimum " << adaptive_error_threshold << std::endl;
+        } else if (relative_user_threshold > 0.1f) {
+            // Large threshold - warn but allow it
+            std::cerr << "TerraScape: Large error threshold relative to elevation range, "
+                      << "mesh may be very coarse" << std::endl;
+        }
+        
+        std::cerr << "TerraScape: Using error threshold " << adaptive_error_threshold 
+                  << " (" << (adaptive_error_threshold/elev_range*100.0f) << "% of elevation range: " 
+                  << elev_range << ")" << std::endl;
+    }
+    
+    gc_opt.base_error_threshold = adaptive_error_threshold;
+    
+    // Enable localized error metrics and volume convergence for better terrain detail
+    gc_opt.use_localized_error = true;
+    gc_opt.use_volume_convergence = true;
+    gc_opt.local_error_scale_factor = 1.5;      // Allow 50% higher error in complex areas
+    gc_opt.terrain_complexity_threshold = elev_range * 0.1; // 10% of elevation range
+    gc_opt.volume_convergence_threshold = 0.005; // 0.5% volume change for convergence
+    
+    // Terrain-optimized parameters that balance quality and performance
+    // These parameters automatically adjust based on elevation range and desired detail level
+    float relative_threshold = adaptive_error_threshold / elev_range;
+    
+    if (relative_threshold < 0.001f) {
+        // High detail mode - more triangles, longer processing
+        gc_opt.slope_weight = 0.5;              // Reduced weight for more triangles
+        gc_opt.curvature_weight = 1.0;          // Reduced weight for more triangles
+        gc_opt.min_angle_deg = 5.0;             // Allow sharper angles for detail
+        gc_opt.max_aspect_ratio = 20.0;         // Allow thinner triangles
+        gc_opt.min_area = 0.001;                // Allow smaller triangles
+        gc_opt.max_refinement_passes = 8;       // More passes for detail
+        gc_opt.max_initial_iterations = 15000000;
+        std::cerr << "TerraScape: Using high-detail terrain parameters with localized error metrics" << std::endl;
+    } else if (relative_threshold < 0.01f) {
+        // Medium detail mode - balanced quality and performance
+        gc_opt.slope_weight = 0.8;
+        gc_opt.curvature_weight = 2.0;
+        gc_opt.min_angle_deg = 8.0;
+        gc_opt.max_aspect_ratio = 15.0;
+        gc_opt.min_area = 0.01;
+        gc_opt.max_refinement_passes = 6;
+        gc_opt.max_initial_iterations = 10000000;
+        std::cerr << "TerraScape: Using medium-detail terrain parameters with localized error metrics" << std::endl;
+    } else {
+        // Low detail mode - fast processing, coarser mesh
+        gc_opt.slope_weight = 1.0;
+        gc_opt.curvature_weight = 3.0;
+        gc_opt.min_angle_deg = 10.0;
+        gc_opt.max_aspect_ratio = 12.0;
+        gc_opt.min_area = 0.1;
+        gc_opt.max_refinement_passes = 4;
+        gc_opt.max_initial_iterations = 5000000;
+        std::cerr << "TerraScape: Using low-detail terrain parameters with localized error metrics" << std::endl;
+    }
 
     // Run Greedy Cuts triangulation
     ::terrascape::Mesh gc_mesh;
@@ -337,15 +403,32 @@ inline MeshResult grid_to_mesh_impl(
     }
 
     // Convert Greedy Cuts mesh to TerraScape MeshResult
-    result.vertices.reserve(gc_mesh.vertices.size());
-    for (const auto& v : gc_mesh.vertices) {
+    // Only include vertices that are actually used by triangles
+    std::unordered_set<int> used_vertices;
+    for (const auto& t : gc_mesh.triangles) {
+        used_vertices.insert(t[0]);
+        used_vertices.insert(t[1]);
+        used_vertices.insert(t[2]);
+    }
+    
+    // Create mapping from old vertex indices to new ones
+    std::vector<int> vertex_mapping(gc_mesh.vertices.size(), -1);
+    result.vertices.reserve(used_vertices.size());
+    
+    for (int old_idx : used_vertices) {
+        vertex_mapping[old_idx] = static_cast<int>(result.vertices.size());
+        const auto& v = gc_mesh.vertices[old_idx];
         result.vertices.push_back({static_cast<float>(v[0]),
                                    static_cast<float>(v[1]),
                                    static_cast<float>(v[2])});
     }
+    
+    // Update triangle indices to use new vertex mapping
     result.triangles.reserve(gc_mesh.triangles.size());
     for (const auto& t : gc_mesh.triangles) {
-        result.triangles.push_back({t[0], t[1], t[2]});
+        result.triangles.push_back({vertex_mapping[t[0]], 
+                                   vertex_mapping[t[1]], 
+                                   vertex_mapping[t[2]]});
     }
 
     return result;

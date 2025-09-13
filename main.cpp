@@ -11,34 +11,6 @@ using namespace std;
 
 #include "version.h"
 #include "TerraScape.hpp"  // Use new consolidated TerraScape header
-#include "dsp_reader.hpp"  // For terra.bin processing
-
-// Read terra.bin file and extract elevation data
-bool readTerraBinToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
-    DSPReader::DSPTerrainInfo info;
-    
-    if (!DSPReader::readTerraBinFile(filename, width, height, elevations, &info)) {
-        cerr << "Error: Failed to read terra.bin file " << filename << endl;
-        return false;
-    }
-    
-    cout << "Successfully read terra.bin: " << width << "x" << height << " elevations" << endl;
-    cout << "Data type: " << info.data_type << endl;
-    cout << "Elevation range: " << info.min_elevation << " to " << info.max_elevation << endl;
-    
-    // Validate terrain data for potential issues
-    vector<string> warnings;
-    DSPReader::validateTerrainData(elevations, width, height, warnings);
-    
-    if (!warnings.empty()) {
-        cout << "Terrain data warnings:" << endl;
-        for (const auto& warning : warnings) {
-            cout << "  - " << warning << endl;
-        }
-    }
-    
-    return true;
-}
 
 // Simple PGM reader that extracts elevation data into a float array
 bool readPGMToFloatArray(const char* filename, int& width, int& height, vector<float>& elevations) {
@@ -106,10 +78,7 @@ bool readElevationFile(const char* filename, int& width, int& height, vector<flo
         }
     }
     
-    if (extension == ".bin" || fname.find("terra.bin") != string::npos) {
-        cout << "Detected terra.bin file format" << endl;
-        return readTerraBinToFloatArray(filename, width, height, elevations);
-    } else if (extension == ".pgm") {
+    if (extension == ".pgm") {
         cout << "Detected PGM file format" << endl;
         return readPGMToFloatArray(filename, width, height, elevations);
     } else {
@@ -150,34 +119,34 @@ int main(int argc, char **argv)
     const char* output_file = "terrain_mesh.obj";
     float error_threshold = 1.0f;     // Lower default for more detail
     int point_limit = 10000;          // Higher default for better quality
-    bool volumetric = false;          // Generate volumetric mesh?
+    bool volumetric = true;           // Generate volumetric mesh by default
     float z_base = 0.0f;             // Base level for volumetric mesh
     
     // Simple command line parsing
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         cout << "Usage: " << argv[0] << " [options] [input] [output.obj] [error_threshold] [point_limit]" << endl;
         cout << "Options:" << endl;
-        cout << "  -v, --volumetric: Generate volumetric (closed manifold) mesh instead of surface mesh" << endl;
+        cout << "  -s, --surface: Generate surface mesh instead of volumetric (closed manifold) mesh" << endl;
         cout << "  --base <z>: Set base level for volumetric mesh (default: 0.0)" << endl;
         cout << "  -h, --help: Show this help message" << endl;
         cout << "Arguments:" << endl;
-        cout << "  input: Input heightfield file (.pgm or .bin formats, default: auto-detect)" << endl;
+        cout << "  input: Input heightfield file (.pgm format, default: auto-detect)" << endl;
         cout << "  output.obj: Output OBJ mesh file (default: terrain_mesh.obj)" << endl;
         cout << "  error_threshold: Maximum error threshold (default: 1.0)" << endl;
         cout << "  point_limit: Maximum number of vertices (default: 10000)" << endl;
         cout << "Supported file formats:" << endl;
         cout << "  - PGM (.pgm): Portable Graymap format heightfields" << endl;
-        cout << "  - Terra.bin (.bin): BRL-CAD DSP-style binary terrain data" << endl;
+        cout << "Default behavior: Volumetric meshing with adaptive localized error metrics" << endl;
         return 0;
     }
     
     // Parse command line arguments
     int arg_idx = 1;
     while (arg_idx < argc) {
-        if (strcmp(argv[arg_idx], "-v") == 0 || strcmp(argv[arg_idx], "--volumetric") == 0) {
-            volumetric = true;
+        if (strcmp(argv[arg_idx], "-s") == 0 || strcmp(argv[arg_idx], "--surface") == 0) {
+            volumetric = false;
             if (strcmp(output_file, "terrain_mesh.obj") == 0) {
-                output_file = "terrain_volumetric.obj"; // Change default output for volumetric
+                output_file = "terrain_surface.obj"; // Change default output for surface
             }
         } else if (strcmp(argv[arg_idx], "--base") == 0 && arg_idx + 1 < argc) {
             z_base = atof(argv[++arg_idx]);
@@ -200,10 +169,7 @@ int main(int argc, char **argv)
     
     // If no input file was specified, auto-detect available input files
     if (input_file == nullptr) {
-        if (filesystem::exists("terra.bin")) {
-            input_file = "terra.bin";
-            cout << "Found terra.bin file - will use for processing" << endl;
-        } else if (filesystem::exists("crater.pgm")) {
+        if (filesystem::exists("crater.pgm")) {
             input_file = "crater.pgm";
             cout << "Found crater.pgm file - will use for processing" << endl;
         } else {
@@ -216,13 +182,13 @@ int main(int argc, char **argv)
     cout << "Output: " << output_file << endl;
     cout << "Error threshold: " << error_threshold << endl;
     cout << "Point limit: " << point_limit << endl;
-    cout << "Mesh type: " << (volumetric ? "Volumetric (manifold)" : "Surface only") << endl;
+    cout << "Mesh type: " << (volumetric ? "Volumetric (manifold) with adaptive refinement" : "Surface only") << endl;
     if (volumetric) {
         cout << "Base level: " << z_base << endl;
     }
     cout << endl;
     
-    // Read elevation file (supports both PGM and terra.bin)
+    // Read elevation file (supports PGM format)
     int width, height;
     vector<float> elevations;
     if (!readElevationFile(input_file, width, height, elevations)) {
@@ -231,7 +197,7 @@ int main(int argc, char **argv)
     
     // Generate mesh using the TerraScape API
     cout << "Generating " << (volumetric ? "volumetric" : "surface") 
-         << " mesh using greedy refinement algorithm..." << endl;
+         << " mesh using adaptive greedy refinement with localized error metrics..." << endl;
     
     TerraScape::MeshResult mesh;
     if (volumetric) {
