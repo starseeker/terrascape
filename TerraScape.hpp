@@ -649,19 +649,105 @@ static inline void triangulateRegionGrowing(const float* elevations,
   }
   
   // Robust triangulation for irregularly sampled vertices
-  // Improved approach: Handle sparse vertex distributions better
+  // Improved approach: Handle both sparse and dense vertex distributions
   int triangles_created = 0;
   
-  // First, try local grid-based triangulation in larger neighborhoods
-  std::vector<bool> triangle_created_map(total_cells, false); // Track which cells have been triangulated
+  // For very dense vertex distributions, use a systematic grid-based approach
+  double total_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
   
-  // Use larger search neighborhoods for sparse vertex distributions
-  int search_radius = std::max(1, std::min(opt.sampling_step, std::max(W, H) / 20));
-  
-  // Adaptive triangle density limit based on grid size
-  int adaptive_triangle_limit = static_cast<int>(total_cells > 10000 ? 
-    out_mesh.vertices.size() * 1.5 :  // Conservative for large grids
-    out_mesh.vertices.size() * 2.5);  // More permissive for smaller grids
+  if (total_vertex_density > 0.5) {
+    // Dense mesh: Use systematic grid triangulation
+    std::cerr << "TerraScape: Using systematic grid triangulation for dense mesh (" 
+              << total_vertex_density << " vertices per cell)" << std::endl;
+    
+    // Create regular grid triangulation for vertices that exist
+    for (int y = 0; y < H - 1; y++) {
+      for (int x = 0; x < W - 1; x++) {
+        // Try to create triangles for 2x2 grid cells
+        std::vector<std::pair<std::pair<int, int>, int>> cell_vertices;
+        
+        // Check all 4 corners of the current cell
+        for (int dy = 0; dy <= 1; dy++) {
+          for (int dx = 0; dx <= 1; dx++) {
+            int nx = x + dx, ny = y + dy;
+            if (nx < W && ny < H) {
+              size_t idx = idx_row_major(nx, ny, W);
+              if (vertex_map[idx] != -1) {
+                cell_vertices.push_back({{nx, ny}, vertex_map[idx]});
+              }
+            }
+          }
+        }
+        
+        // Create triangles if we have at least 3 vertices in this cell
+        if (cell_vertices.size() >= 3) {
+          // Sort by position for consistent triangulation
+          std::sort(cell_vertices.begin(), cell_vertices.end(),
+            [](const auto& a, const auto& b) {
+              if (a.first.second != b.first.second) return a.first.second < b.first.second;
+              return a.first.first < b.first.first;
+            });
+          
+          if (cell_vertices.size() == 3) {
+            // Single triangle
+            int v0 = cell_vertices[0].second;
+            int v1 = cell_vertices[1].second;
+            int v2 = cell_vertices[2].second;
+            
+            // Check for valid triangle (non-degenerate)
+            auto& p0 = cell_vertices[0].first;
+            auto& p1 = cell_vertices[1].first;
+            auto& p2 = cell_vertices[2].first;
+            
+            double cross = (p1.first - p0.first) * (p2.second - p0.second) - 
+                          (p2.first - p0.first) * (p1.second - p0.second);
+            
+            if (std::abs(cross) > 0.1) { // Non-degenerate
+              if (cross > 0) {
+                out_mesh.add_triangle(v0, v1, v2); // CCW
+              } else {
+                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
+              }
+              triangles_created++;
+            }
+          } else if (cell_vertices.size() == 4) {
+            // Quad - create two triangles
+            int v0 = cell_vertices[0].second; // bottom-left
+            int v1 = cell_vertices[1].second; // bottom-right or top-left
+            int v2 = cell_vertices[2].second; // top-left or bottom-right
+            int v3 = cell_vertices[3].second; // top-right
+            
+            // Determine the diagonal to use (shorter diagonal for better triangles)
+            auto& p0 = cell_vertices[0].first;
+            auto& p1 = cell_vertices[1].first;
+            auto& p2 = cell_vertices[2].first;
+            auto& p3 = cell_vertices[3].first;
+            
+            // Create two triangles with consistent winding
+            out_mesh.add_triangle(v0, v1, v2); // First triangle
+            out_mesh.add_triangle(v0, v2, v3); // Second triangle
+            triangles_created += 2;
+          }
+        }
+      }
+    }
+    
+    std::cerr << "TerraScape: Grid triangulation created " << triangles_created << " triangles" << std::endl;
+  } else {
+    // Sparse mesh: Use the existing neighborhood-based approach
+    std::cerr << "TerraScape: Using neighborhood triangulation for sparse mesh (" 
+              << total_vertex_density << " vertices per cell)" << std::endl;
+              
+    // First, try local grid-based triangulation in larger neighborhoods
+    std::vector<bool> triangle_created_map(total_cells, false); // Track which cells have been triangulated
+    
+    // Use larger search neighborhoods for sparse vertex distributions
+    int search_radius = std::max(1, std::min(opt.sampling_step, std::max(W, H) / 20));
+    
+    // Adaptive triangle density limit based on grid size
+    int adaptive_triangle_limit = static_cast<int>(total_cells > 10000 ? 
+      out_mesh.vertices.size() * 1.5 :  // Conservative for large grids
+      out_mesh.vertices.size() * 2.5);  // More permissive for smaller grids
   
   for (int y = 0; y < H; y += search_radius) {
     for (int x = 0; x < W; x += search_radius) {
@@ -875,7 +961,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
     } // End of spatial grid approach
     
     std::cerr << "TerraScape: Fallback triangulation created " << triangles_created << " triangles" << std::endl;
-  }
+  } // End of sparse triangulation logic
+  } // End of triangulation approach selection
   
   // Comprehensive terrain mesh validation including surface area comparison
   if (opt.volume_delta_pct > 0.0) {
