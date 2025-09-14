@@ -671,6 +671,57 @@ bool test_advanced_triangulation_with_features() {
     return mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
 }
 
+bool test_triangulation_fallback() {
+    // Create a test case that might trigger the triangulation fallback
+    std::vector<float> elevations = {
+        1, 1, 5, 1, 1,
+        1, 5, 1, 5, 1,
+        5, 1, 1, 1, 5,
+        1, 5, 1, 5, 1,
+        1, 1, 5, 1, 1
+    };
+    
+    // Use settings that create sparse vertex sampling
+    RegionGrowingOptions opts;
+    opts.enable_feature_detection = true;
+    opts.enable_graph_optimization = true;
+    opts.base_error_threshold = 2.0;  // High threshold
+    opts.sampling_step = 3;           // Large sampling step
+    
+    auto mesh = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts);
+    
+    // Should generate valid mesh even if fallback triangulation is used
+    return mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+}
+
+bool test_zero_triangle_validation() {
+    // Test that zero-triangle cases are properly reported
+    std::vector<float> elevations(25, 1.0f); // 5x5 perfectly flat
+    
+    RegionGrowingOptions opts;
+    opts.enable_feature_detection = true;
+    opts.abs_tolerance_mm = 10.0;  // Very high tolerance
+    opts.rel_tolerance = 1.0;      // Very high relative tolerance
+    opts.base_error_threshold = 10.0; // Very high threshold
+    
+    // Capture output to check for error messages
+    std::streambuf* orig = std::cout.rdbuf();
+    std::ostringstream capture;
+    std::cout.rdbuf(capture.rdbuf());
+    
+    auto mesh = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts);
+    
+    std::cout.rdbuf(orig);
+    std::string output = capture.str();
+    
+    // Should either generate triangles OR properly report the issue
+    bool has_triangles = mesh.triangles.size() > 0;
+    bool reports_issue = output.find("CRITICAL ERROR") != std::string::npos || 
+                        output.find("WARNING") != std::string::npos;
+    
+    return has_triangles || reports_issue;
+}
+
 bool test_differential_feature_impact() {
     // Create terrain data
     std::vector<float> elevations = {
@@ -732,6 +783,18 @@ void run_feature_tests(TestSuite& suite) {
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
     suite.addTest(result, "Advanced Triangulation with Features", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_triangulation_fallback();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Triangulation Fallback Mechanism", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_zero_triangle_validation();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Zero Triangle Validation", "", duration);
     
     start = std::chrono::high_resolution_clock::now();
     result = test_differential_feature_impact();
