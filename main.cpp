@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cfloat>  // For HUGE_VAL
+#include <cmath>   // For log10
 #include <vector>
 #include <filesystem>
 
@@ -127,6 +128,9 @@ int main(int argc, char **argv)
     double norm_tolerance_deg = 15.0;
     double volume_delta_pct = 10.0;
     
+    // Mesh density control (can be set directly or calculated from tolerance)
+    double mesh_density = -1.0;  // -1 means calculate from rel_tolerance
+    
     // New feature detection and graph optimization options
     bool enable_feature_detection = false;
     bool enable_graph_optimization = false;
@@ -143,6 +147,8 @@ int main(int argc, char **argv)
         cout << "  --base <z>: Set base level for volumetric mesh (default: 0.0)" << endl;
         cout << "  --abs-tolerance <mm>: Absolute tolerance in millimeters (default: 0.1)" << endl;
         cout << "  --rel-tolerance <frac>: Relative tolerance as fraction (default: 0.01)" << endl;
+        cout << "                          Lower values create denser meshes, higher values create coarser meshes" << endl;
+        cout << "  --mesh-density <val>: Direct mesh density control 0.0-1.0 (overrides rel-tolerance if set)" << endl;
         cout << "  --norm-tolerance <deg>: Normal angle tolerance in degrees (default: 15.0)" << endl;
         cout << "  --volume-delta <pct>: Max volume delta percentage (default: 10.0)" << endl;
         cout << "  --enable-features: Enable terrain feature detection" << endl;
@@ -176,6 +182,12 @@ int main(int argc, char **argv)
             abs_tolerance_mm = atof(argv[++arg_idx]);
         } else if (strcmp(argv[arg_idx], "--rel-tolerance") == 0 && arg_idx + 1 < argc) {
             rel_tolerance = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--mesh-density") == 0 && arg_idx + 1 < argc) {
+            mesh_density = atof(argv[++arg_idx]);
+            if (mesh_density < 0.0 || mesh_density > 1.0) {
+                cerr << "Error: mesh-density must be between 0.0 and 1.0" << endl;
+                return 1;
+            }
         } else if (strcmp(argv[arg_idx], "--norm-tolerance") == 0 && arg_idx + 1 < argc) {
             norm_tolerance_deg = atof(argv[++arg_idx]);
         } else if (strcmp(argv[arg_idx], "--volume-delta") == 0 && arg_idx + 1 < argc) {
@@ -242,6 +254,28 @@ int main(int argc, char **argv)
     if (!readElevationFile(input_file, width, height, elevations)) {
         return 1;
     }
+
+    // Calculate mesh density from relative tolerance if not explicitly set
+    if (mesh_density < 0.0) {
+        // Map relative tolerance to mesh density
+        // rel_tolerance: 0.001 (very fine) -> 0.1 (very coarse)
+        // mesh_density: 1.0 (finest) -> 0.0 (coarsest)
+        
+        // Use logarithmic mapping to provide good sensitivity across the range
+        double log_rel_tol = log10(rel_tolerance);
+        double log_min = log10(0.001);  // -3.0
+        double log_max = log10(0.1);    // -1.0
+        
+        // Clamp to reasonable range
+        log_rel_tol = std::max(log_min, std::min(log_max, log_rel_tol));
+        
+        // Map to mesh density (inverted: lower tolerance = higher density)
+        mesh_density = 1.0 - (log_rel_tol - log_min) / (log_max - log_min);
+        
+        cout << "Calculated mesh density: " << mesh_density << " from rel_tolerance: " << rel_tolerance << endl;
+    } else {
+        cout << "Using explicit mesh density: " << mesh_density << endl;
+    }
     
     // Generate mesh using the TerraScape API
     cout << "Generating " << (volumetric ? "volumetric" : "surface") 
@@ -260,6 +294,7 @@ int main(int argc, char **argv)
         opts.rel_tolerance = rel_tolerance;
         opts.norm_tolerance_deg = norm_tolerance_deg;
         opts.volume_delta_pct = volume_delta_pct;
+        opts.mesh_density = mesh_density;  // Apply calculated mesh density
         
         // Set feature detection and graph optimization options
         opts.enable_feature_detection = enable_feature_detection;
@@ -280,13 +315,15 @@ int main(int argc, char **argv)
             mesh = surface_mesh;
         }
     } else {
-        // Use standard API for backward compatibility
+        // Use region-growing API for better mesh density control
+        TerraScape::MeshResult surface_mesh = TerraScape::region_growing_triangulation(
+            elevations.data(), width, height, mesh_density, nullptr);
+        
         if (volumetric) {
-            mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(), 
-                                                      z_base, error_threshold);
+            cout << "Converting surface mesh to volumetric mesh with base level: " << z_base << endl;
+            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base);
         } else {
-            mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                           error_threshold);
+            mesh = surface_mesh;
         }
     }
     
