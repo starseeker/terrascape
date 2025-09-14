@@ -6,7 +6,7 @@
  * This library provides efficient grid-to-mesh conversion with advanced
  * triangulation and refinement algorithms.
  *
- * Greedy Cuts advancing front triangulation is used for grid heightfields,
+ * Advanced Delaunay triangulation is used for grid heightfields,
  * with adaptive error control, mesh-quality constraints, and multi-pass refinement.
  */
 
@@ -1431,7 +1431,7 @@ inline double calculate_mesh_volume(const MeshResult& mesh, float z_base = 0.0f)
     return std::abs(volume);
 }
 
-// --- Greedy Cuts grid-to-mesh implementation ---
+// --- Advanced grid-to-mesh implementation ---
 
 /**
  * grid_to_mesh_impl
