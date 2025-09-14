@@ -269,14 +269,15 @@ int main(int argc, char **argv)
         opts.use_mst_for_regions = use_mst_for_regions;
         opts.use_mincut_for_boundaries = use_mincut_for_boundaries;
         
-        // For now, use the advanced region growing function directly
-        // TODO: Need to integrate volumetric support with advanced options
-        mesh = TerraScape::region_growing_triangulation_advanced(
+        // Generate surface mesh with advanced features first
+        TerraScape::MeshResult surface_mesh = TerraScape::region_growing_triangulation_advanced(
             elevations.data(), width, height, nullptr, opts);
         
         if (volumetric) {
-            cout << "Note: Volumetric mesh generation with advanced features not yet fully integrated." << endl;
-            cout << "      Generating surface mesh with advanced features instead." << endl;
+            cout << "Converting surface mesh to volumetric mesh with base level: " << z_base << endl;
+            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base);
+        } else {
+            mesh = surface_mesh;
         }
     } else {
         // Use standard API for backward compatibility
