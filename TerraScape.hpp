@@ -235,6 +235,58 @@ static inline void triangulateRegionGrowing(const float* elevations,
   // Calculate region-growing parameters from mesh_density
   opt = calculate_region_parameters(opt, width, height);
   
+  // FEATURE DETECTION & GRAPH OPTIMIZATION: Apply terrain feature analysis
+  std::vector<std::vector<double>> feature_map;
+  bool has_feature_map = false;
+  
+  if (opt.enable_feature_detection) {
+    std::cerr << "TerraScape: Computing terrain feature map..." << std::endl;
+    
+    // Create elevation grid for feature detection
+    ElevationGrid grid(elevations, width, height);
+    
+    // Configure feature detection options
+    FeatureDetection::FeatureDetectionOptions feature_opts;
+    feature_opts.gradient_threshold = opt.base_error_threshold * 0.5; // Scale with error threshold
+    feature_opts.curvature_threshold = opt.base_error_threshold * 0.3;
+    
+    // Compute feature map
+    feature_map = FeatureDetection::compute_feature_map(grid, feature_opts);
+    has_feature_map = true;
+    
+    // Count strong features for user feedback
+    auto strong_features = FeatureDetection::find_strong_features(feature_map, opt.feature_threshold);
+    std::cerr << "TerraScape: Found " << strong_features.size() << " strong terrain features" << std::endl;
+  }
+  
+  // GRAPH-BASED OPTIMIZATION: Modify triangulation parameters based on features
+  if (opt.enable_graph_optimization && has_feature_map) {
+    std::cerr << "TerraScape: Applying graph-based segmentation optimization..." << std::endl;
+    
+    // Build terrain graph with feature-weighted edges
+    auto terrain_graph = Lemon::buildTerrainGraph(width, height, feature_map, opt.feature_penalty_weight);
+    
+    if (opt.use_mst_for_regions) {
+      // Use MST to guide region connectivity
+      auto mst_edges = Lemon::kruskalMST(terrain_graph);
+      std::cerr << "TerraScape: MST computed with " << mst_edges.size() << " edges" << std::endl;
+      
+      // Adjust region merging threshold based on MST structure
+      double total_mst_weight = 0.0;
+      for (auto edge_id : mst_edges) {
+        total_mst_weight += terrain_graph.edge(edge_id).weight;
+      }
+      double avg_mst_weight = total_mst_weight / mst_edges.size();
+      
+      // Scale region merge threshold by average MST edge weight
+      opt.region_merge_threshold *= (avg_mst_weight / opt.feature_penalty_weight);
+      std::cerr << "TerraScape: Adjusted region merge threshold to " << opt.region_merge_threshold << std::endl;
+    }
+    
+    // Additional graph optimizations could be added here
+    // (min-cut for boundary placement, etc.)
+  }
+  
   // Step 1: Find local minima and maxima
   std::vector<std::pair<int, int>> local_extrema;
   std::vector<int> region_labels(total_cells, -1); // -1 = unassigned
