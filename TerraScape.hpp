@@ -380,8 +380,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
     // (min-cut for boundary placement, etc.)
   }
   
-  // Step 1: Find local minima and maxima
-  std::vector<std::pair<int, int>> local_extrema;
+  // Step 1: Compute terrain features for intelligent vertex selection
+  std::vector<std::pair<int, int>> feature_vertices;
   std::vector<int> region_labels(total_cells, -1); // -1 = unassigned
   
   auto get_elevation = [&](int x, int y) -> float {
@@ -390,70 +390,98 @@ static inline void triangulateRegionGrowing(const float* elevations,
     return elevations[idx_row_major(x, y, W)];
   };
   
-  // Find local extrema (min/max within 3x3 neighborhood) with tolerance checking
-  // FIXED: Include ALL points as potential seeds, not just interior points
-  for (int y = 0; y < H; ++y) {
-    for (int x = 0; x < W; ++x) {
+  // Create elevation grid for feature detection
+  ElevationGrid grid(elevations, W, H);
+  
+  // Configure feature detection for terrain analysis
+  FeatureDetection::FeatureDetectionOptions feature_opts;
+  feature_opts.gradient_threshold = opt.base_error_threshold * 5.0;  // Much more selective
+  feature_opts.curvature_threshold = opt.base_error_threshold * 2.0; // More selective  
+  feature_opts.use_sobel_operator = true; // More robust gradient estimation
+  
+  // Compute curvature and gradient maps for intelligent vertex selection
+  auto curvature_map = FeatureDetection::compute_curvature_map(grid, feature_opts);
+  auto gradient_map = FeatureDetection::compute_gradient_map(grid, feature_opts);
+  
+  // Find significant terrain features instead of just height extrema
+  // This approach selects vertices based on curvature changes (second derivatives)
+  // and significant slopes, which is more appropriate for terrain representation
+  
+  // Use intelligent sampling to avoid excessive vertex density
+  int feature_sample_step = std::max(1, std::min(opt.sampling_step, std::max(W, H) / 100)); // Denser sampling
+  
+  for (int y = 1; y < H - 1; y += feature_sample_step) {
+    for (int x = 1; x < W - 1; x += feature_sample_step) {
       if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
       
       float center = get_elevation(x, y);
-      bool is_min = true, is_max = true;
-      bool has_significant_diff = false;
-      bool is_boundary = (x == 0 || x == W-1 || y == 0 || y == H-1);
+      bool is_boundary = (x <= 1 || x >= W-2 || y <= 1 || y >= H-2);
       
-      // For boundary points, use a more lenient criteria since they have fewer neighbors
-      if (is_boundary) {
-        // Boundary points should be included as seeds to ensure coverage
-        has_significant_diff = true;
-        // Check if it's at least locally extreme among available neighbors
-        for (int dy = -1; dy <= 1; ++dy) {
-          for (int dx = -1; dx <= 1; ++dx) {
-            if (dx == 0 && dy == 0) continue;
-            int nx = x + dx, ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-            float neighbor = get_elevation(nx, ny);
-            if (neighbor <= center) is_max = false;
-            if (neighbor >= center) is_min = false;
+      // Get curvature and gradient at this point
+      double curvature = curvature_map[y][x];
+      double gradient = gradient_map[y][x];
+      
+      // Feature-based selection criteria (more stringent):
+      bool is_curvature_feature = curvature > feature_opts.curvature_threshold;
+      bool is_gradient_feature = gradient > feature_opts.gradient_threshold;
+      bool is_boundary_point = is_boundary;
+      
+      // Height-based significance check (for compatibility with BRL-CAD tolerances)
+      bool has_significant_height_variation = false;
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dx == 0 && dy == 0) continue;
+          float neighbor = get_elevation(x+dx, y+dy);
+          double height_diff = std::abs(neighbor - center);
+          if (meets_tolerance_threshold(height_diff, center, opt.abs_tolerance_mm, opt.rel_tolerance)) {
+            has_significant_height_variation = true;
+            break;
           }
         }
-      } else {
-        // Interior points use the original logic
-        for (int dy = -1; dy <= 1; ++dy) {
-          for (int dx = -1; dx <= 1; ++dx) {
-            if (dx == 0 && dy == 0) continue;
-            float neighbor = get_elevation(x+dx, y+dy);
-            if (neighbor <= center) is_max = false;
-            if (neighbor >= center) is_min = false;
-            
-            // BRL-CAD tolerance: require difference from neighbors >= tolerance
-            double height_diff = std::abs(neighbor - center);
-            if (meets_tolerance_threshold(height_diff, center, opt.abs_tolerance_mm, opt.rel_tolerance)) {
-              has_significant_diff = true;
-            }
-          }
-        }
+        if (has_significant_height_variation) break;
       }
       
-      // Include extrema that meet tolerance requirements OR are boundary points
-      if ((is_min || is_max) && (has_significant_diff || is_boundary)) {
-        local_extrema.push_back({x, y});
+      // Select vertex if it represents a significant terrain feature
+      if (is_curvature_feature || is_gradient_feature || is_boundary_point || has_significant_height_variation) {
+        feature_vertices.push_back({x, y});
       }
     }
   }
   
-  // Step 2: Grow regions from extrema
+  // Add boundary points explicitly to ensure complete coverage
+  for (int x = 0; x < W; ++x) {
+    for (int y : {0, H-1}) {
+      if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
+      feature_vertices.push_back({x, y});
+    }
+  }
+  for (int y = 0; y < H; ++y) {
+    for (int x : {0, W-1}) {
+      if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
+      feature_vertices.push_back({x, y});
+    }
+  }
+  
+  // Remove duplicates and sort
+  std::sort(feature_vertices.begin(), feature_vertices.end());
+  feature_vertices.erase(std::unique(feature_vertices.begin(), feature_vertices.end()), feature_vertices.end());
+  
+  std::cerr << "TerraScape: Selected " << feature_vertices.size() << " feature-based vertices from " 
+            << (W * H) << " grid cells (density: " << (static_cast<double>(feature_vertices.size()) / (W * H)) << ")" << std::endl;
+  
+  // Step 2: Improved region growing using curvature and slope changes
   std::queue<std::tuple<int, int, int>> growth_queue; // x, y, region_id
   
-  for (size_t i = 0; i < local_extrema.size(); ++i) {
-    int x = local_extrema[i].first;
-    int y = local_extrema[i].second;
+  for (size_t i = 0; i < feature_vertices.size(); ++i) {
+    int x = feature_vertices[i].first;
+    int y = feature_vertices[i].second;
     int region_id = static_cast<int>(i);
     region_labels[idx_row_major(x, y, W)] = region_id;
     growth_queue.push({x, y, region_id});
   }
   
-  // Grow regions using breadth-first search
-  std::vector<int> region_sizes(local_extrema.size(), 0);
+  // Grow regions using improved criteria based on slope consistency
+  std::vector<int> region_sizes(feature_vertices.size(), 0);
   
   while (!growth_queue.empty()) {
     auto [x, y, region_id] = growth_queue.front();
@@ -462,7 +490,16 @@ static inline void triangulateRegionGrowing(const float* elevations,
     region_sizes[region_id]++;
     float center_elev = get_elevation(x, y);
     
-    // Check 4-connected neighbors
+    // Get slope at center point (using central differences)
+    float slope_x = 0.0f, slope_y = 0.0f;
+    if (x > 0 && x < W-1) {
+      slope_x = (get_elevation(x+1, y) - get_elevation(x-1, y)) * 0.5f;
+    }
+    if (y > 0 && y < H-1) {
+      slope_y = (get_elevation(x, y+1) - get_elevation(x, y-1)) * 0.5f;
+    }
+    
+    // Check 4-connected neighbors  
     for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
       int nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
@@ -474,16 +511,36 @@ static inline void triangulateRegionGrowing(const float* elevations,
       float neighbor_elev = get_elevation(nx, ny);
       float height_diff = std::abs(neighbor_elev - center_elev);
       
-      // BRL-CAD tolerance: merge condition using more lenient thresholds for better coverage
-      // Use a more generous tolerance to ensure comprehensive terrain coverage
-      double tolerance_threshold = std::max({
+      // Compute neighbor slope for slope consistency check
+      float neighbor_slope_x = 0.0f, neighbor_slope_y = 0.0f;
+      if (nx > 0 && nx < W-1) {
+        neighbor_slope_x = (get_elevation(nx+1, ny) - get_elevation(nx-1, ny)) * 0.5f;
+      }
+      if (ny > 0 && ny < H-1) {
+        neighbor_slope_y = (get_elevation(nx, ny+1) - get_elevation(nx, ny-1)) * 0.5f;
+      }
+      
+      // Calculate slope difference (second derivative indicator)
+      float slope_diff = std::sqrt((slope_x - neighbor_slope_x) * (slope_x - neighbor_slope_x) + 
+                                  (slope_y - neighbor_slope_y) * (slope_y - neighbor_slope_y));
+      
+      // Improved region merging criteria:
+      // 1. Height difference within tolerance (as before)
+      // 2. Slope consistency (small slope changes = similar terrain character)
+      double height_threshold = std::max({
         opt.region_merge_threshold,
-        opt.abs_tolerance_mm * 2.0,  // Double absolute tolerance for better coverage
-        opt.rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev)) * 2.0  // Double relative tolerance
+        opt.abs_tolerance_mm * 2.0,
+        opt.rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev)) * 2.0
       });
       
-      // Assign to region if height difference is within tolerance
-      if (height_diff <= tolerance_threshold) {
+      // Slope threshold based on base error threshold
+      double slope_threshold = opt.base_error_threshold * 2.0; // Allow some slope variation
+      
+      // Assign to region if both height and slope are consistent
+      bool height_compatible = height_diff <= height_threshold;
+      bool slope_compatible = slope_diff <= slope_threshold;
+      
+      if (height_compatible && slope_compatible) {
         region_labels[nidx] = region_id;
         growth_queue.push({nx, ny, region_id});
       }
@@ -538,12 +595,12 @@ static inline void triangulateRegionGrowing(const float* elevations,
   std::vector<int> vertex_map(total_cells, -1); // Maps grid position to vertex index
   
   // Sample representative points from each region
-  for (size_t region_id = 0; region_id < local_extrema.size(); ++region_id) {
+  for (size_t region_id = 0; region_id < feature_vertices.size(); ++region_id) {
     if (region_sizes[region_id] == 0) continue;
     
-    // Add the extremum point for this region
-    int ex_x = local_extrema[region_id].first;
-    int ex_y = local_extrema[region_id].second;
+    // Add the feature point for this region
+    int ex_x = feature_vertices[region_id].first;
+    int ex_y = feature_vertices[region_id].second;
     size_t ex_idx = idx_row_major(ex_x, ex_y, W);
     
     if (vertex_map[ex_idx] == -1) {
@@ -592,59 +649,81 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // CRITICAL FIX: Add vertices for ALL uncovered terrain areas
-  // This ensures complete terrain coverage, which is essential for terrain meshes
-  // For terrain meshes, we MUST have adequate coverage - use aggressive sampling
-  int coverage_step = std::max(1, std::min({
-    opt.sampling_step / 4,  // Use much finer sampling for coverage (was /2, now /4)
-    std::max(W, H) / 200,   // Never exceed 1/200 of largest dimension (was /100, now /200)
-    5                       // Cap at smaller maximum (was 10, now 5)
-  }));
+  // Intelligent sparse sampling for uncovered areas
+  // Use curvature and gradient information to determine where additional vertices are needed
+  double current_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
+  std::cerr << "TerraScape: Current vertex density after feature selection: " << current_vertex_density 
+            << " (" << out_mesh.vertices.size() << " vertices)" << std::endl;
   
-  int uncovered_added = 0;
-  for (int y = 0; y < H; y += coverage_step) {
-    for (int x = 0; x < W; x += coverage_step) {
+  // Adaptive coverage based on terrain complexity rather than uniform sampling
+  int intelligent_added = 0;
+  
+  // Use a smaller sampling step to ensure better coverage while still being intelligent
+  int coverage_sample_step = std::max(2, opt.sampling_step * 2);
+  
+  // Only add vertices in areas with significant terrain variation that weren't captured by features
+  for (int y = 2; y < H - 2; y += coverage_sample_step) {
+    for (int x = 2; x < W - 2; x += coverage_sample_step) {
       size_t idx = idx_row_major(x, y, W);
       if (mask && mask[idx] == 0) continue;
       if (vertex_map[idx] != -1) continue; // Already has vertex
       
-      // Add vertex for this uncovered area
-      vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
-      out_mesh.add_vertex(static_cast<double>(x),
-                          static_cast<double>(y),
-                          static_cast<double>(elevations[idx]));
-      uncovered_added++;
-    }
-  }
-  
-  std::cerr << "TerraScape: Added " << uncovered_added << " vertices for previously uncovered terrain areas" << std::endl;
-  
-  // CRITICAL: Check coverage and add more vertices if insufficient
-  // For terrain meshes, we need comprehensive coverage
-  double initial_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
-  if (initial_vertex_density < 0.3) {  // If coverage is too low, force denser sampling
-    std::cerr << "TerraScape: Initial coverage too low (" << (initial_vertex_density * 100.0) << "%), adding forced dense coverage" << std::endl;
-    
-    int dense_step = std::max(1, std::min(coverage_step, std::max(W, H) / 300)); // Very dense sampling
-    int forced_added = 0;
-    
-    for (int y = 0; y < H; y += dense_step) {
-      for (int x = 0; x < W; x += dense_step) {
-        size_t idx = idx_row_major(x, y, W);
-        if (mask && mask[idx] == 0) continue;
-        if (vertex_map[idx] != -1) continue; // Already has vertex
-        
-        // Add vertex for this uncovered area
+      // Check if there's a vertex nearby (within sampling radius)
+      bool has_nearby_vertex = false;
+      int search_radius = coverage_sample_step;
+      for (int dy = -search_radius; dy <= search_radius && !has_nearby_vertex; dy++) {
+        for (int dx = -search_radius; dx <= search_radius && !has_nearby_vertex; dx++) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            size_t nidx = idx_row_major(nx, ny, W);
+            if (vertex_map[nidx] != -1) {
+              has_nearby_vertex = true;
+            }
+          }
+        }
+      }
+      
+      if (has_nearby_vertex) continue; // Skip if there's already a vertex nearby
+      
+      // Check terrain complexity in this area
+      double local_curvature = (x < W-1 && y < H-1) ? curvature_map[y][x] : 0.0;
+      double local_gradient = (x < W-1 && y < H-1) ? gradient_map[y][x] : 0.0;
+      
+      // Add vertex only if this area has significant terrain features that need representation
+      bool needs_vertex = false;
+      
+      // Check if area has significant terrain variation
+      float center_elev = elevations[idx];
+      float max_local_diff = 0.0;
+      for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            float neighbor_elev = elevations[idx_row_major(nx, ny, W)];
+            max_local_diff = std::max(max_local_diff, std::abs(neighbor_elev - center_elev));
+          }
+        }
+      }
+      
+      // Add vertex if there's significant local variation or features (more lenient criteria)
+      if (local_curvature > feature_opts.curvature_threshold * 0.3 ||
+          local_gradient > feature_opts.gradient_threshold * 0.3 ||
+          max_local_diff > opt.base_error_threshold * 0.5) {
+        needs_vertex = true;
+      }
+      
+      if (needs_vertex) {
         vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
         out_mesh.add_vertex(static_cast<double>(x),
                             static_cast<double>(y),
                             static_cast<double>(elevations[idx]));
-        forced_added++;
+        intelligent_added++;
       }
     }
-    
-    std::cerr << "TerraScape: Added " << forced_added << " vertices through forced dense coverage" << std::endl;
   }
+  
+  std::cerr << "TerraScape: Added " << intelligent_added 
+            << " vertices through intelligent terrain-based sampling" << std::endl;
   
   // Add boundary points to ensure mesh covers the entire area
   // Improved boundary sampling for better terrain coverage
