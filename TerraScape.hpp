@@ -270,14 +270,14 @@ static inline RegionGrowingOptions calculate_region_parameters(RegionGrowingOpti
   opt.region_merge_threshold = 50.0 * (1.0 - density) + 0.1 * density;
   
   // Calculate sampling step (larger = sparser sampling)
-  // Improved sampling for terrain data - much denser sampling by default
-  // At density 0.0: moderate sampling (terrain still needs reasonable detail)
+  // IMPROVED: Much denser sampling by default to ensure complete terrain coverage
+  // At density 0.0: still reasonably dense sampling (terrain needs comprehensive coverage)
   // At density 1.0: very dense sampling (capture all terrain features)
-  int max_step = std::max(1, std::min(width, height) / 50);  // Changed from /10 to /50 for denser sampling
-  opt.sampling_step = std::max(1, static_cast<int>(max_step * (1.0 - density))) + 1;
+  int max_step = std::max(1, std::min(width, height) / 100);  // Changed from /50 to /100 for much denser sampling
+  opt.sampling_step = std::max(1, static_cast<int>(max_step * (1.0 - density * 0.8))) + 1;  // Reduced density impact
   
-  // For terrain data, cap the sampling step to ensure reasonable triangle density
-  int terrain_max_step = std::max(2, std::min(width, height) / 20); // Never exceed 1/20 of dimension
+  // For terrain data, cap the sampling step to ensure comprehensive coverage
+  int terrain_max_step = std::max(1, std::min(width, height) / 50); // Never exceed 1/50 of dimension (was /20, now /50)
   opt.sampling_step = std::min(opt.sampling_step, terrain_max_step);
   
   // Calculate error threshold (larger = more tolerance, coarser mesh)
@@ -594,10 +594,11 @@ static inline void triangulateRegionGrowing(const float* elevations,
   
   // CRITICAL FIX: Add vertices for ALL uncovered terrain areas
   // This ensures complete terrain coverage, which is essential for terrain meshes
+  // For terrain meshes, we MUST have adequate coverage - use aggressive sampling
   int coverage_step = std::max(1, std::min({
-    opt.sampling_step / 2,  // Use finer sampling for coverage
-    std::max(W, H) / 100,   // Never exceed 1/100 of largest dimension
-    10                      // Cap at reasonable maximum
+    opt.sampling_step / 4,  // Use much finer sampling for coverage (was /2, now /4)
+    std::max(W, H) / 200,   // Never exceed 1/200 of largest dimension (was /100, now /200)
+    5                       // Cap at smaller maximum (was 10, now 5)
   }));
   
   int uncovered_added = 0;
@@ -617,6 +618,33 @@ static inline void triangulateRegionGrowing(const float* elevations,
   }
   
   std::cerr << "TerraScape: Added " << uncovered_added << " vertices for previously uncovered terrain areas" << std::endl;
+  
+  // CRITICAL: Check coverage and add more vertices if insufficient
+  // For terrain meshes, we need comprehensive coverage
+  double initial_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
+  if (initial_vertex_density < 0.3) {  // If coverage is too low, force denser sampling
+    std::cerr << "TerraScape: Initial coverage too low (" << (initial_vertex_density * 100.0) << "%), adding forced dense coverage" << std::endl;
+    
+    int dense_step = std::max(1, std::min(coverage_step, std::max(W, H) / 300)); // Very dense sampling
+    int forced_added = 0;
+    
+    for (int y = 0; y < H; y += dense_step) {
+      for (int x = 0; x < W; x += dense_step) {
+        size_t idx = idx_row_major(x, y, W);
+        if (mask && mask[idx] == 0) continue;
+        if (vertex_map[idx] != -1) continue; // Already has vertex
+        
+        // Add vertex for this uncovered area
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.add_vertex(static_cast<double>(x),
+                            static_cast<double>(y),
+                            static_cast<double>(elevations[idx]));
+        forced_added++;
+      }
+    }
+    
+    std::cerr << "TerraScape: Added " << forced_added << " vertices through forced dense coverage" << std::endl;
+  }
   
   // Add boundary points to ensure mesh covers the entire area
   // Improved boundary sampling for better terrain coverage
@@ -997,15 +1025,14 @@ static inline void triangulateRegionGrowing(const float* elevations,
       std::cout << "  Mesh surface area: " << mesh_surface_area << std::endl;
       std::cout << "  Area ratio (mesh/terrain): " << area_ratio << " (" << (area_ratio * 100.0) << "%)" << std::endl;
       
-      // Check coverage adequacy
-      if (vertex_density < 0.01) {
-        std::cout << "  ⚠ WARNING: Very sparse mesh - may lose significant terrain detail" << std::endl;
-      } else if (vertex_density < 0.05) {
-        std::cout << "  ⚠ CAUTION: Sparse mesh - some terrain detail may be lost" << std::endl;
-      } else if (vertex_density > 0.5) {
-        std::cout << "  ✓ Dense mesh - high terrain detail preserved" << std::endl;
+      // Check coverage adequacy - STRICTER validation for terrain meshes
+      if (vertex_density < 0.5) {  // Terrain meshes need substantial coverage
+        std::cout << "  ❌ FAIL: Insufficient terrain coverage (" << (vertex_density * 100.0) << "%) - mesh inadequate for terrain representation!" << std::endl;
+        std::cout << "  ⚠ WARNING: For terrain meshes, coverage should be >= 50% to ensure proper terrain representation" << std::endl;
+      } else if (vertex_density < 0.8) {
+        std::cout << "  ⚠ CAUTION: Moderate terrain coverage - some detail may be lost" << std::endl;
       } else {
-        std::cout << "  ✓ Good mesh density for terrain representation" << std::endl;
+        std::cout << "  ✓ Good terrain coverage - terrain detail well preserved" << std::endl;
       }
       
       // Surface area validation
