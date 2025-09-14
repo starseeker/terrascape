@@ -1230,6 +1230,119 @@ inline MeshResult grid_to_mesh_impl(
 
 // --- Volumetric mesh implementations ---
 
+// Helper function to organize boundary vertices into chains for wall creation
+inline std::vector<std::vector<int>> organize_boundary_vertices(
+    const MeshResult& surface_mesh,
+    const std::vector<int>& boundary_vertices,
+    float min_x, float max_x, float min_y, float max_y,
+    float tolerance) {
+    
+    std::vector<std::vector<int>> chains;
+    if (boundary_vertices.empty()) return chains;
+    
+    // Group vertices by which boundary edge they belong to
+    std::vector<int> left_edge, right_edge, bottom_edge, top_edge;
+    
+    for (int idx : boundary_vertices) {
+        const Vertex& v = surface_mesh.vertices[idx];
+        
+        if (std::abs(v.x - min_x) < tolerance) {
+            left_edge.push_back(idx);
+        }
+        if (std::abs(v.x - max_x) < tolerance) {
+            right_edge.push_back(idx);
+        }
+        if (std::abs(v.y - min_y) < tolerance) {
+            bottom_edge.push_back(idx);
+        }
+        if (std::abs(v.y - max_y) < tolerance) {
+            top_edge.push_back(idx);
+        }
+    }
+    
+    // Sort each edge by the appropriate coordinate
+    auto sort_by_y = [&surface_mesh](int a, int b) {
+        return surface_mesh.vertices[a].y < surface_mesh.vertices[b].y;
+    };
+    auto sort_by_x = [&surface_mesh](int a, int b) {
+        return surface_mesh.vertices[a].x < surface_mesh.vertices[b].x;
+    };
+    
+    std::sort(left_edge.begin(), left_edge.end(), sort_by_y);
+    std::sort(right_edge.begin(), right_edge.end(), sort_by_y);
+    std::sort(bottom_edge.begin(), bottom_edge.end(), sort_by_x);
+    std::sort(top_edge.begin(), top_edge.end(), sort_by_x);
+    
+    // Add non-empty chains
+    if (!left_edge.empty()) chains.push_back(left_edge);
+    if (!bottom_edge.empty()) chains.push_back(bottom_edge);
+    if (!right_edge.empty()) {
+        std::reverse(right_edge.begin(), right_edge.end()); // Reverse for consistent winding
+        chains.push_back(right_edge);
+    }
+    if (!top_edge.empty()) {
+        std::reverse(top_edge.begin(), top_edge.end()); // Reverse for consistent winding
+        chains.push_back(top_edge);
+    }
+    
+    return chains;
+}
+
+// Create uniform, planar walls from the geometric boundary of the terrain data
+inline void create_geometric_boundary_walls(MeshResult& volumetric_result, 
+                                           const MeshResult& surface_mesh, 
+                                           const std::vector<int>& base_vertex_mapping, 
+                                           float z_base) {
+    // Find the actual geometric boundaries of the terrain data
+    // by analyzing vertex positions to determine the bounding rectangle
+    if (surface_mesh.vertices.empty()) return;
+    
+    float min_x = surface_mesh.vertices[0].x, max_x = surface_mesh.vertices[0].x;
+    float min_y = surface_mesh.vertices[0].y, max_y = surface_mesh.vertices[0].y;
+    
+    for (const auto& v : surface_mesh.vertices) {
+        min_x = std::min(min_x, v.x);
+        max_x = std::max(max_x, v.x);
+        min_y = std::min(min_y, v.y);
+        max_y = std::max(max_y, v.y);
+    }
+    
+    // Tolerance for determining if a vertex is on the boundary
+    const float boundary_tolerance = 0.01f;
+    
+    // Find vertices that are actually on the geometric boundary
+    std::vector<int> boundary_vertices;
+    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
+        const Vertex& v = surface_mesh.vertices[i];
+        bool on_boundary = (std::abs(v.x - min_x) < boundary_tolerance) ||
+                          (std::abs(v.x - max_x) < boundary_tolerance) ||
+                          (std::abs(v.y - min_y) < boundary_tolerance) ||
+                          (std::abs(v.y - max_y) < boundary_tolerance);
+        if (on_boundary) {
+            boundary_vertices.push_back(static_cast<int>(i));
+        }
+    }
+    
+    // Create walls by connecting adjacent boundary vertices
+    // Sort boundary vertices to create proper wall segments
+    std::vector<std::vector<int>> boundary_chains = organize_boundary_vertices(
+        surface_mesh, boundary_vertices, min_x, max_x, min_y, max_y, boundary_tolerance);
+    
+    // Create wall triangles for each boundary chain
+    for (const auto& chain : boundary_chains) {
+        for (size_t i = 0; i < chain.size() - 1; ++i) {
+            int surface_v0 = chain[i];
+            int surface_v1 = chain[i + 1];
+            int base_v0 = base_vertex_mapping[surface_v0];
+            int base_v1 = base_vertex_mapping[surface_v1];
+            
+            // Create two triangles for the wall segment (ensuring proper winding)
+            volumetric_result.triangles.push_back(Triangle{surface_v0, surface_v1, base_v1});
+            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v1, base_v0});
+        }
+    }
+}
+
 inline std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles) {
     std::map<Edge, int> edge_count;
 
@@ -1277,19 +1390,9 @@ inline MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_b
         volumetric_result.triangles.push_back(Triangle{base_v0, base_v2, base_v1}); // Flipped winding
     }
 
-    // Find boundary edges and create side faces
-    std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
-
-    for (const Edge& edge : boundary_edges) {
-        int surface_v0 = edge.v0;
-        int surface_v1 = edge.v1;
-        int base_v0 = base_vertex_mapping[surface_v0];
-        int base_v1 = base_vertex_mapping[surface_v1];
-
-        // Create two triangles for the side face
-        volumetric_result.triangles.push_back(Triangle{surface_v0, surface_v1, base_v1});
-        volumetric_result.triangles.push_back(Triangle{surface_v0, base_v1, base_v0});
-    }
+    // Create uniform, planar walls from the geometric boundary of the terrain data
+    // This ensures walls represent the actual data boundaries, not triangulation artifacts
+    create_geometric_boundary_walls(volumetric_result, surface_mesh, base_vertex_mapping, z_base);
 
     return volumetric_result;
 }
