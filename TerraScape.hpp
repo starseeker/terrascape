@@ -100,41 +100,6 @@ struct RegionGrowingOptions {
   bool use_mincut_for_boundaries = false;     // Use min-cut for optimal boundary placement
 };
 
-// Helper function to compute triangle normal
-static inline std::array<double, 3> compute_triangle_normal(
-    const std::array<double, 3>& v0,
-    const std::array<double, 3>& v1, 
-    const std::array<double, 3>& v2) {
-  // Compute edge vectors
-  double edge1_x = v1[0] - v0[0];
-  double edge1_y = v1[1] - v0[1];
-  double edge1_z = v1[2] - v0[2];
-  
-  double edge2_x = v2[0] - v0[0];
-  double edge2_y = v2[1] - v0[1];
-  double edge2_z = v2[2] - v0[2];
-  
-  // Cross product: edge1 × edge2
-  double normal_x = edge1_y * edge2_z - edge1_z * edge2_y;
-  double normal_y = edge1_z * edge2_x - edge1_x * edge2_z;
-  double normal_z = edge1_x * edge2_y - edge1_y * edge2_x;
-  
-  // Normalize
-  double length = std::sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z);
-  if (length > 1e-10) {
-    normal_x /= length;
-    normal_y /= length;
-    normal_z /= length;
-  } else {
-    // Degenerate triangle - return upward normal
-    normal_x = 0.0;
-    normal_y = 0.0;
-    normal_z = 1.0;
-  }
-  
-  return {normal_x, normal_y, normal_z};
-}
-
 // Internal mesh structure for region-growing algorithm
 struct InternalMesh {
   std::vector<std::array<double, 3>> vertices; // x,y,z (grid coords + elevation)
@@ -146,28 +111,6 @@ struct InternalMesh {
   }
   
   void add_triangle(int v0, int v1, int v2) {
-    triangles.emplace_back(std::array<int, 3>{v0, v1, v2});
-  }
-  
-  // Add triangle with normal validation for surface triangles
-  void add_triangle_validated(int v0, int v1, int v2, bool is_surface_triangle = false) {
-    // For surface triangles, validate that the normal is upward-facing
-    if (is_surface_triangle && v0 < vertices.size() && v1 < vertices.size() && v2 < vertices.size()) {
-      auto normal = compute_triangle_normal(vertices[v0], vertices[v1], vertices[v2]);
-      
-      // Reject surface triangles with downward normals (normal.z < 0)
-      if (normal[2] < 0.0) {
-        // Log rejection for debugging (in practice, might want to make this conditional)
-        #ifdef DEBUG_TRIANGLE_REJECTION
-        std::cerr << "TerraScape: Rejected surface triangle with downward normal: "
-                  << "v" << v0 << " v" << v1 << " v" << v2 
-                  << " normal=(" << normal[0] << "," << normal[1] << "," << normal[2] << ")"
-                  << std::endl;
-        #endif
-        return; // Reject this triangle
-      }
-    }
-    
     triangles.emplace_back(std::array<int, 3>{v0, v1, v2});
   }
 };
@@ -868,9 +811,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
             
             if (std::abs(cross) > 0.1) { // Non-degenerate
               if (cross > 0) {
-                out_mesh.add_triangle_validated(v0, v1, v2, true); // CCW
+                out_mesh.add_triangle(v0, v1, v2); // CCW
               } else {
-                out_mesh.add_triangle_validated(v0, v2, v1, true); // Flip to CCW
+                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
               }
               triangles_created++;
             }
@@ -888,8 +831,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
             auto& p3 = cell_vertices[3].first;
             
             // Create two triangles with consistent winding
-            out_mesh.add_triangle_validated(v0, v1, v2, true); // First triangle
-            out_mesh.add_triangle_validated(v0, v2, v3, true); // Second triangle
+            out_mesh.add_triangle(v0, v1, v2); // First triangle
+            out_mesh.add_triangle(v0, v2, v3); // Second triangle
             triangles_created += 2;
           }
         }
@@ -983,9 +926,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
                 
                 // Ensure counter-clockwise winding
                 if (cross_product > 0) {
-                  out_mesh.add_triangle_validated(v0, v1, v2, true); // CCW
+                  out_mesh.add_triangle(v0, v1, v2); // CCW
                 } else {
-                  out_mesh.add_triangle_validated(v0, v2, v1, true); // Flip to CCW
+                  out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
                 }
                 triangles_created++;
                 
@@ -1043,7 +986,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
         int v0 = sorted_vertices[0].second;
         int v1 = sorted_vertices[i].second;
         int v2 = sorted_vertices[i + 1].second;
-        out_mesh.add_triangle_validated(v0, v2, v1, true); // Reversed winding for correct normals
+        out_mesh.add_triangle(v0, v2, v1); // Reversed winding for correct normals
         triangles_created++;
       }
     } else {
@@ -1112,9 +1055,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
             if (area > 0.1) { // Avoid degenerate triangles
               // Ensure counter-clockwise winding for upward-facing normals
               if (cross_product > 0) {
-                out_mesh.add_triangle_validated(v0, v1, v2, true); // CCW winding
+                out_mesh.add_triangle(v0, v1, v2); // CCW winding
               } else {
-                out_mesh.add_triangle_validated(v0, v2, v1, true); // Flip to CCW winding
+                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW winding
               }
               triangles_created++;
             }
