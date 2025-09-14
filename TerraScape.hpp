@@ -1532,22 +1532,50 @@ inline std::vector<std::vector<int>> organize_boundary_vertices(
     if (boundary_vertices.empty()) return chains;
     
     // Group vertices by which boundary edge they belong to
+    // FIXED: Ensure each vertex belongs to only one edge to avoid non-manifold issues
     std::vector<int> left_edge, right_edge, bottom_edge, top_edge;
     
     for (int idx : boundary_vertices) {
         const Vertex& v = surface_mesh.vertices[idx];
         
-        if (std::abs(v.x - min_x) < tolerance) {
-            left_edge.push_back(idx);
-        }
-        if (std::abs(v.x - max_x) < tolerance) {
-            right_edge.push_back(idx);
-        }
-        if (std::abs(v.y - min_y) < tolerance) {
+        // Check corners first to avoid duplicate assignment
+        bool is_corner = false;
+        
+        // Bottom-left corner
+        if (std::abs(v.x - min_x) < tolerance && std::abs(v.y - min_y) < tolerance) {
             bottom_edge.push_back(idx);
+            is_corner = true;
         }
-        if (std::abs(v.y - max_y) < tolerance) {
+        // Bottom-right corner  
+        else if (std::abs(v.x - max_x) < tolerance && std::abs(v.y - min_y) < tolerance) {
+            bottom_edge.push_back(idx);
+            is_corner = true;
+        }
+        // Top-right corner
+        else if (std::abs(v.x - max_x) < tolerance && std::abs(v.y - max_y) < tolerance) {
+            right_edge.push_back(idx);
+            is_corner = true;
+        }
+        // Top-left corner
+        else if (std::abs(v.x - min_x) < tolerance && std::abs(v.y - max_y) < tolerance) {
             top_edge.push_back(idx);
+            is_corner = true;
+        }
+        
+        // If not a corner, assign to appropriate edge
+        if (!is_corner) {
+            if (std::abs(v.x - min_x) < tolerance) {
+                left_edge.push_back(idx);
+            }
+            else if (std::abs(v.x - max_x) < tolerance) {
+                right_edge.push_back(idx);
+            }
+            else if (std::abs(v.y - min_y) < tolerance) {
+                bottom_edge.push_back(idx);
+            }
+            else if (std::abs(v.y - max_y) < tolerance) {
+                top_edge.push_back(idx);
+            }
         }
     }
     
@@ -1721,6 +1749,9 @@ inline void create_interior_walls_for_zero_regions(MeshResult& volumetric_result
     }
 }
 
+// Forward declaration for boundary edge detection
+inline std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles);
+
 // Create uniform, planar walls from the geometric boundary of the terrain data
 inline void create_geometric_boundary_walls(MeshResult& volumetric_result, 
                                            const MeshResult& surface_mesh, 
@@ -1756,28 +1787,22 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
         }
     }
     
-    // Create walls by connecting adjacent boundary vertices
-    // Sort boundary vertices to create proper wall segments
-    std::vector<std::vector<int>> boundary_chains = organize_boundary_vertices(
-        surface_mesh, boundary_vertices, min_x, max_x, min_y, max_y, boundary_tolerance);
+    // FIXED: Use proper boundary edge detection instead of geometric boundary approach
+    // Find the actual boundary edges of the surface mesh triangulation
+    std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
     
-    // Create wall triangles for each boundary chain with correct winding for outward normals
-    for (const auto& chain : boundary_chains) {
-        for (size_t i = 0; i < chain.size() - 1; ++i) {
-            int surface_v0 = chain[i];
-            int surface_v1 = chain[i + 1];
-            int base_v0 = base_vertex_mapping[surface_v0];
-            int base_v1 = base_vertex_mapping[surface_v1];
-            
-            // Create two triangles for the wall segment
-            // Winding order is critical for correct outward-facing normals
-            // 
-            // For a wall going from surface_v0 to surface_v1 (counter-clockwise around boundary):
-            // First triangle: surface_v0 -> base_v0 -> surface_v1 (outward normal)
-            // Second triangle: base_v0 -> base_v1 -> surface_v1 (outward normal)
-            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
-            volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
-        }
+    // Create wall triangles for each boundary edge
+    for (const Edge& edge : boundary_edges) {
+        int surface_v0 = edge.v0;
+        int surface_v1 = edge.v1;
+        int base_v0 = base_vertex_mapping[surface_v0];
+        int base_v1 = base_vertex_mapping[surface_v1];
+        
+        // Create two triangles for the wall segment
+        // Ensure proper winding for outward-facing normals
+        // The boundary edge defines the direction, we need to maintain consistency
+        volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+        volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
     }
 }
 
