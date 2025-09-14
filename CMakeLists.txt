@@ -68,6 +68,7 @@ add_test(NAME VolumetricMeshTests COMMAND unified_tests --volumetric --verbose)
 add_test(NAME PerformanceTests COMMAND unified_tests --performance --verbose)
 add_test(NAME DSPHawaiiTests COMMAND unified_tests --dsp --verbose)
 add_test(NAME EdgeCaseTests COMMAND unified_tests --edge --verbose)
+add_test(NAME ToleranceTests COMMAND unified_tests --tolerance --verbose)
 add_test(NAME AllTests COMMAND unified_tests --all --verbose)
 
 # Add GDAL-enabled terrain data tests if GDAL is available

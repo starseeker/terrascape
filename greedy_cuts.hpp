@@ -50,6 +50,12 @@ struct GreedyCutsOptions {
   bool use_region_growing = true;            // Use fast region-growing approach (default)
   bool use_advancing_front = false;          // Use slower advancing front method (legacy)
   
+  // BRL-CAD TOLERANCE INTEGRATION: Precision control parameters
+  double abs_tolerance_mm = 0.1;             // Absolute tolerance in millimeters
+  double rel_tolerance = 0.01;               // Relative tolerance (unitless, as fraction)
+  double norm_tolerance_deg = 15.0;          // Normal angle tolerance in degrees
+  double volume_delta_pct = 10.0;            // Max allowed mesh/cell volume % difference
+  
   // DERIVED PARAMETERS: Automatically calculated from mesh_density (can be overridden)
   double region_merge_threshold = 0.5;       // Height difference threshold for region merging
   int sampling_step = 1;                     // Point sampling step size for triangulation
@@ -96,6 +102,48 @@ static inline double hypot2d(double dx, double dy) {
 
 static inline double tri_area2d(double x0, double y0, double x1, double y1, double x2, double y2) {
   return 0.5 * std::abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+}
+
+// BRL-CAD tolerance helper functions
+static inline bool meets_tolerance_threshold(double height_diff, double center_elev, double abs_tolerance, double rel_tolerance) {
+  return height_diff >= abs_tolerance || height_diff >= rel_tolerance * std::abs(center_elev);
+}
+
+static inline bool within_tolerance_threshold(double height_diff, double center_elev, double neighbor_elev, double abs_tolerance, double rel_tolerance) {
+  double threshold = std::min(abs_tolerance, rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev)));
+  return height_diff <= threshold;
+}
+
+// Calculate mesh volume using divergence theorem (simple approximation)
+static inline double calculate_mesh_volume_simple(const Mesh& mesh) {
+  double volume = 0.0;
+  for (const auto& tri : mesh.triangles) {
+    const auto& v0 = mesh.vertices[tri[0]];
+    const auto& v1 = mesh.vertices[tri[1]];
+    const auto& v2 = mesh.vertices[tri[2]];
+    
+    // Signed volume contribution using cross product
+    double vol_contrib = (v0[0] * (v1[1] * v2[2] - v1[2] * v2[1]) +
+                         v1[0] * (v2[1] * v0[2] - v2[2] * v0[1]) +
+                         v2[0] * (v0[1] * v1[2] - v0[2] * v1[1])) / 6.0;
+    volume += vol_contrib;
+  }
+  return std::abs(volume);
+}
+
+// Calculate theoretical cell volume (simple height field integration)
+static inline double calculate_cell_volume_simple(const float* elevations, int width, int height, const uint8_t* mask = nullptr) {
+  double volume = 0.0;
+  double cell_area = 1.0; // Assuming unit grid cells
+  
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+      if (mask && mask[idx] == 0) continue;
+      volume += elevations[idx] * cell_area;
+    }
+  }
+  return volume;
 }
 
 static inline bool barycentric_uvwt(const std::array<double,3>& a,
@@ -301,13 +349,14 @@ static inline void triangulateRegionGrowing(const float* elevations,
     return elevations[idx_row_major(x, y, W)];
   };
   
-  // Find local extrema (min/max within 3x3 neighborhood)
+  // Find local extrema (min/max within 3x3 neighborhood) with tolerance checking
   for (int y = 1; y < H-1; ++y) {
     for (int x = 1; x < W-1; ++x) {
       if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
       
       float center = get_elevation(x, y);
       bool is_min = true, is_max = true;
+      bool has_significant_diff = false;
       
       for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx) {
@@ -315,10 +364,17 @@ static inline void triangulateRegionGrowing(const float* elevations,
           float neighbor = get_elevation(x+dx, y+dy);
           if (neighbor <= center) is_max = false;
           if (neighbor >= center) is_min = false;
+          
+          // BRL-CAD tolerance: require difference from neighbors >= tolerance
+          double height_diff = std::abs(neighbor - center);
+          if (meets_tolerance_threshold(height_diff, center, opt.abs_tolerance_mm, opt.rel_tolerance)) {
+            has_significant_diff = true;
+          }
         }
       }
       
-      if (is_min || is_max) {
+      // Only consider extrema that meet tolerance requirements
+      if ((is_min || is_max) && has_significant_diff) {
         local_extrema.push_back({x, y});
       }
     }
@@ -357,8 +413,15 @@ static inline void triangulateRegionGrowing(const float* elevations,
       float neighbor_elev = get_elevation(nx, ny);
       float height_diff = std::abs(neighbor_elev - center_elev);
       
-      // Assign to region if height difference is small enough
-      if (height_diff <= opt.region_merge_threshold) {
+      // BRL-CAD tolerance: merge condition using min of thresholds
+      double tolerance_threshold = std::min({
+        opt.region_merge_threshold,
+        opt.abs_tolerance_mm,
+        opt.rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev))
+      });
+      
+      // Assign to region if height difference is within tolerance
+      if (height_diff <= tolerance_threshold) {
         region_labels[nidx] = region_id;
         growth_queue.push({nx, ny, region_id});
       }
@@ -451,8 +514,12 @@ static inline void triangulateRegionGrowing(const float* elevations,
           }
         }
         
-        // Add point if it represents significant height variation
-        if (max_diff > opt.base_error_threshold * 0.5) {
+        // Add point if it represents significant height variation based on BRL-CAD tolerances
+        bool meets_abs_tolerance = max_diff > opt.abs_tolerance_mm;
+        bool meets_rel_tolerance = max_diff > opt.rel_tolerance * std::abs(center_elev);
+        bool meets_base_threshold = max_diff > opt.base_error_threshold * 0.5;
+        
+        if (meets_abs_tolerance || meets_rel_tolerance || meets_base_threshold) {
           vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
           out_mesh.vertices.push_back({static_cast<double>(x),
                                        static_cast<double>(y),
@@ -741,6 +808,27 @@ static inline void triangulateRegionGrowing(const float* elevations,
           }
         }
         if (out_mesh.triangles.size() >= out_mesh.vertices.size()) break;
+      }
+    }
+  }
+  
+  // BRL-CAD Volume Sanity Check: Compare mesh volume vs theoretical cell volume
+  if (opt.volume_delta_pct > 0.0 && out_mesh.triangles.size() > 0) {
+    double mesh_volume = calculate_mesh_volume_simple(out_mesh);
+    double cell_volume = calculate_cell_volume_simple(elevations, width, height, mask);
+    
+    if (cell_volume > 0.0) {
+      double volume_ratio = std::abs(mesh_volume - cell_volume) / cell_volume * 100.0;
+      
+      if (volume_ratio > opt.volume_delta_pct) {
+        std::cout << "WARNING: Volume delta exceeds tolerance (" << volume_ratio 
+                  << "% > " << opt.volume_delta_pct << "%)" << std::endl;
+        std::cout << "  Mesh volume: " << mesh_volume 
+                  << ", Cell volume: " << cell_volume << std::endl;
+        std::cout << "  Consider lowering tolerance thresholds for better accuracy" << std::endl;
+        
+        // Optionally trigger forced refinement by reducing thresholds
+        // For now, we just warn - forced refinement could be implemented here
       }
     }
   }

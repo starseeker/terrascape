@@ -427,6 +427,122 @@ void run_edge_case_tests(TestSuite& suite) {
     suite.addTest(result, "NaN and Infinity Handling", "", duration);
 }
 
+void run_tolerance_tests(TestSuite& suite) {
+    suite.beginCategory("BRL-CAD Tolerance Integration Tests");
+    
+    // Test 1: Default tolerance behavior
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        // Create test terrain data
+        std::vector<float> elevations = {0.0f, 1.0f, 2.0f, 3.0f, 
+                                        1.0f, 2.0f, 3.0f, 4.0f,
+                                        2.0f, 3.0f, 4.0f, 5.0f,
+                                        3.0f, 4.0f, 5.0f, 6.0f};
+        
+        terrascape::GreedyCutsOptions opt;
+        opt.use_region_growing = true;
+        // Use default tolerance values
+        
+        terrascape::Mesh mesh;
+        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        
+        bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+        
+        TestResult result = {passed, "Default Tolerance Values", passed ? "" : "Failed to generate mesh with default tolerances", duration};
+        suite.addTest(passed, "Default Tolerance Values", "", duration);
+    }
+    
+    // Test 2: Strict tolerance settings
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        std::vector<float> elevations = {0.0f, 0.1f, 0.2f, 0.3f, 
+                                        0.1f, 0.2f, 0.3f, 0.4f,
+                                        0.2f, 0.3f, 0.4f, 0.5f,
+                                        0.3f, 0.4f, 0.5f, 0.6f};
+        
+        terrascape::GreedyCutsOptions opt;
+        opt.use_region_growing = true;
+        opt.abs_tolerance_mm = 0.01;      // Very strict absolute tolerance
+        opt.rel_tolerance = 0.001;        // Very strict relative tolerance
+        opt.volume_delta_pct = 5.0;       // Strict volume tolerance
+        
+        terrascape::Mesh mesh;
+        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        
+        bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+        
+        suite.addTest(passed, "Strict Tolerance Settings", "", duration);
+    }
+    
+    // Test 3: Relaxed tolerance settings
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        std::vector<float> elevations = {0.0f, 10.0f, 20.0f, 30.0f, 
+                                        10.0f, 20.0f, 30.0f, 40.0f,
+                                        20.0f, 30.0f, 40.0f, 50.0f,
+                                        30.0f, 40.0f, 50.0f, 60.0f};
+        
+        terrascape::GreedyCutsOptions opt;
+        opt.use_region_growing = true;
+        opt.abs_tolerance_mm = 5.0;       // Relaxed absolute tolerance
+        opt.rel_tolerance = 0.1;          // Relaxed relative tolerance
+        opt.volume_delta_pct = 50.0;      // Relaxed volume tolerance
+        
+        terrascape::Mesh mesh;
+        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        
+        bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+        
+        suite.addTest(passed, "Relaxed Tolerance Settings", "", duration);
+    }
+    
+    // Test 4: Volume delta validation
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        // Create terrain with known volume characteristics
+        std::vector<float> elevations = {1.0f, 1.0f, 1.0f, 1.0f, 
+                                        1.0f, 1.0f, 1.0f, 1.0f,
+                                        1.0f, 1.0f, 1.0f, 1.0f,
+                                        1.0f, 1.0f, 1.0f, 1.0f};
+        
+        terrascape::GreedyCutsOptions opt;
+        opt.use_region_growing = true;
+        opt.volume_delta_pct = 1.0;       // Very strict volume tolerance - expect warning
+        
+        terrascape::Mesh mesh;
+        // Capture cout to check for volume warning
+        std::streambuf* orig = std::cout.rdbuf();
+        std::ostringstream capture;
+        std::cout.rdbuf(capture.rdbuf());
+        
+        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        
+        std::cout.rdbuf(orig);
+        std::string output = capture.str();
+        
+        bool has_volume_warning = output.find("Volume delta exceeds tolerance") != std::string::npos;
+        bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0 && has_volume_warning;
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+        
+        suite.addTest(passed, "Volume Delta Validation", "", duration);
+    }
+}
+
 int main(int argc, char* argv[]) {
     cxxopts::Options options("unified_tests", "TerraScape Unified Test Suite");
     
@@ -438,6 +554,7 @@ int main(int argc, char* argv[]) {
         ("p,performance", "Run performance tests", cxxopts::value<bool>()->default_value("false"))
         ("d,dsp", "Run DSP/Hawaii data tests", cxxopts::value<bool>()->default_value("false"))
         ("e,edge", "Run edge case tests", cxxopts::value<bool>()->default_value("false"))
+        ("t,tolerance", "Run BRL-CAD tolerance integration tests", cxxopts::value<bool>()->default_value("false"))
         ("a,all", "Run all tests", cxxopts::value<bool>()->default_value("false"));
 
     auto result = options.parse(argc, argv);
@@ -472,9 +589,14 @@ int main(int argc, char* argv[]) {
         run_edge_case_tests(suite);
     }
     
+    if (run_all || result["tolerance"].as<bool>()) {
+        run_tolerance_tests(suite);
+    }
+    
     // If no specific tests selected, run basic tests
     if (!run_all && !result["basic"].as<bool>() && !result["volumetric"].as<bool>() && 
-        !result["performance"].as<bool>() && !result["dsp"].as<bool>() && !result["edge"].as<bool>()) {
+        !result["performance"].as<bool>() && !result["dsp"].as<bool>() && !result["edge"].as<bool>() &&
+        !result["tolerance"].as<bool>()) {
         run_basic_tests(suite);
     }
     
