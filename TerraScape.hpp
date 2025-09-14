@@ -270,14 +270,14 @@ static inline RegionGrowingOptions calculate_region_parameters(RegionGrowingOpti
   opt.region_merge_threshold = 50.0 * (1.0 - density) + 0.1 * density;
   
   // Calculate sampling step (larger = sparser sampling)
-  // Improved sampling for terrain data - much denser sampling by default
-  // At density 0.0: moderate sampling (terrain still needs reasonable detail)
+  // IMPROVED: Much denser sampling by default to ensure complete terrain coverage
+  // At density 0.0: still reasonably dense sampling (terrain needs comprehensive coverage)
   // At density 1.0: very dense sampling (capture all terrain features)
-  int max_step = std::max(1, std::min(width, height) / 50);  // Changed from /10 to /50 for denser sampling
-  opt.sampling_step = std::max(1, static_cast<int>(max_step * (1.0 - density))) + 1;
+  int max_step = std::max(1, std::min(width, height) / 100);  // Changed from /50 to /100 for much denser sampling
+  opt.sampling_step = std::max(1, static_cast<int>(max_step * (1.0 - density * 0.8))) + 1;  // Reduced density impact
   
-  // For terrain data, cap the sampling step to ensure reasonable triangle density
-  int terrain_max_step = std::max(2, std::min(width, height) / 20); // Never exceed 1/20 of dimension
+  // For terrain data, cap the sampling step to ensure comprehensive coverage
+  int terrain_max_step = std::max(1, std::min(width, height) / 50); // Never exceed 1/50 of dimension (was /20, now /50)
   opt.sampling_step = std::min(opt.sampling_step, terrain_max_step);
   
   // Calculate error threshold (larger = more tolerance, coarser mesh)
@@ -594,10 +594,11 @@ static inline void triangulateRegionGrowing(const float* elevations,
   
   // CRITICAL FIX: Add vertices for ALL uncovered terrain areas
   // This ensures complete terrain coverage, which is essential for terrain meshes
+  // For terrain meshes, we MUST have adequate coverage - use aggressive sampling
   int coverage_step = std::max(1, std::min({
-    opt.sampling_step / 2,  // Use finer sampling for coverage
-    std::max(W, H) / 100,   // Never exceed 1/100 of largest dimension
-    10                      // Cap at reasonable maximum
+    opt.sampling_step / 4,  // Use much finer sampling for coverage (was /2, now /4)
+    std::max(W, H) / 200,   // Never exceed 1/200 of largest dimension (was /100, now /200)
+    5                       // Cap at smaller maximum (was 10, now 5)
   }));
   
   int uncovered_added = 0;
@@ -617,6 +618,33 @@ static inline void triangulateRegionGrowing(const float* elevations,
   }
   
   std::cerr << "TerraScape: Added " << uncovered_added << " vertices for previously uncovered terrain areas" << std::endl;
+  
+  // CRITICAL: Check coverage and add more vertices if insufficient
+  // For terrain meshes, we need comprehensive coverage
+  double initial_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
+  if (initial_vertex_density < 0.3) {  // If coverage is too low, force denser sampling
+    std::cerr << "TerraScape: Initial coverage too low (" << (initial_vertex_density * 100.0) << "%), adding forced dense coverage" << std::endl;
+    
+    int dense_step = std::max(1, std::min(coverage_step, std::max(W, H) / 300)); // Very dense sampling
+    int forced_added = 0;
+    
+    for (int y = 0; y < H; y += dense_step) {
+      for (int x = 0; x < W; x += dense_step) {
+        size_t idx = idx_row_major(x, y, W);
+        if (mask && mask[idx] == 0) continue;
+        if (vertex_map[idx] != -1) continue; // Already has vertex
+        
+        // Add vertex for this uncovered area
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.add_vertex(static_cast<double>(x),
+                            static_cast<double>(y),
+                            static_cast<double>(elevations[idx]));
+        forced_added++;
+      }
+    }
+    
+    std::cerr << "TerraScape: Added " << forced_added << " vertices through forced dense coverage" << std::endl;
+  }
   
   // Add boundary points to ensure mesh covers the entire area
   // Improved boundary sampling for better terrain coverage
@@ -997,15 +1025,14 @@ static inline void triangulateRegionGrowing(const float* elevations,
       std::cout << "  Mesh surface area: " << mesh_surface_area << std::endl;
       std::cout << "  Area ratio (mesh/terrain): " << area_ratio << " (" << (area_ratio * 100.0) << "%)" << std::endl;
       
-      // Check coverage adequacy
-      if (vertex_density < 0.01) {
-        std::cout << "  ⚠ WARNING: Very sparse mesh - may lose significant terrain detail" << std::endl;
-      } else if (vertex_density < 0.05) {
-        std::cout << "  ⚠ CAUTION: Sparse mesh - some terrain detail may be lost" << std::endl;
-      } else if (vertex_density > 0.5) {
-        std::cout << "  ✓ Dense mesh - high terrain detail preserved" << std::endl;
+      // Check coverage adequacy - STRICTER validation for terrain meshes
+      if (vertex_density < 0.5) {  // Terrain meshes need substantial coverage
+        std::cout << "  ❌ FAIL: Insufficient terrain coverage (" << (vertex_density * 100.0) << "%) - mesh inadequate for terrain representation!" << std::endl;
+        std::cout << "  ⚠ WARNING: For terrain meshes, coverage should be >= 50% to ensure proper terrain representation" << std::endl;
+      } else if (vertex_density < 0.8) {
+        std::cout << "  ⚠ CAUTION: Moderate terrain coverage - some detail may be lost" << std::endl;
       } else {
-        std::cout << "  ✓ Good mesh density for terrain representation" << std::endl;
+        std::cout << "  ✓ Good terrain coverage - terrain detail well preserved" << std::endl;
       }
       
       // Surface area validation
@@ -1505,22 +1532,50 @@ inline std::vector<std::vector<int>> organize_boundary_vertices(
     if (boundary_vertices.empty()) return chains;
     
     // Group vertices by which boundary edge they belong to
+    // FIXED: Ensure each vertex belongs to only one edge to avoid non-manifold issues
     std::vector<int> left_edge, right_edge, bottom_edge, top_edge;
     
     for (int idx : boundary_vertices) {
         const Vertex& v = surface_mesh.vertices[idx];
         
-        if (std::abs(v.x - min_x) < tolerance) {
-            left_edge.push_back(idx);
-        }
-        if (std::abs(v.x - max_x) < tolerance) {
-            right_edge.push_back(idx);
-        }
-        if (std::abs(v.y - min_y) < tolerance) {
+        // Check corners first to avoid duplicate assignment
+        bool is_corner = false;
+        
+        // Bottom-left corner
+        if (std::abs(v.x - min_x) < tolerance && std::abs(v.y - min_y) < tolerance) {
             bottom_edge.push_back(idx);
+            is_corner = true;
         }
-        if (std::abs(v.y - max_y) < tolerance) {
+        // Bottom-right corner  
+        else if (std::abs(v.x - max_x) < tolerance && std::abs(v.y - min_y) < tolerance) {
+            bottom_edge.push_back(idx);
+            is_corner = true;
+        }
+        // Top-right corner
+        else if (std::abs(v.x - max_x) < tolerance && std::abs(v.y - max_y) < tolerance) {
+            right_edge.push_back(idx);
+            is_corner = true;
+        }
+        // Top-left corner
+        else if (std::abs(v.x - min_x) < tolerance && std::abs(v.y - max_y) < tolerance) {
             top_edge.push_back(idx);
+            is_corner = true;
+        }
+        
+        // If not a corner, assign to appropriate edge
+        if (!is_corner) {
+            if (std::abs(v.x - min_x) < tolerance) {
+                left_edge.push_back(idx);
+            }
+            else if (std::abs(v.x - max_x) < tolerance) {
+                right_edge.push_back(idx);
+            }
+            else if (std::abs(v.y - min_y) < tolerance) {
+                bottom_edge.push_back(idx);
+            }
+            else if (std::abs(v.y - max_y) < tolerance) {
+                top_edge.push_back(idx);
+            }
         }
     }
     
@@ -1694,6 +1749,9 @@ inline void create_interior_walls_for_zero_regions(MeshResult& volumetric_result
     }
 }
 
+// Forward declaration for boundary edge detection
+inline std::vector<Edge> find_boundary_edges(const std::vector<Triangle>& triangles);
+
 // Create uniform, planar walls from the geometric boundary of the terrain data
 inline void create_geometric_boundary_walls(MeshResult& volumetric_result, 
                                            const MeshResult& surface_mesh, 
@@ -1729,28 +1787,22 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
         }
     }
     
-    // Create walls by connecting adjacent boundary vertices
-    // Sort boundary vertices to create proper wall segments
-    std::vector<std::vector<int>> boundary_chains = organize_boundary_vertices(
-        surface_mesh, boundary_vertices, min_x, max_x, min_y, max_y, boundary_tolerance);
+    // FIXED: Use proper boundary edge detection instead of geometric boundary approach
+    // Find the actual boundary edges of the surface mesh triangulation
+    std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
     
-    // Create wall triangles for each boundary chain with correct winding for outward normals
-    for (const auto& chain : boundary_chains) {
-        for (size_t i = 0; i < chain.size() - 1; ++i) {
-            int surface_v0 = chain[i];
-            int surface_v1 = chain[i + 1];
-            int base_v0 = base_vertex_mapping[surface_v0];
-            int base_v1 = base_vertex_mapping[surface_v1];
-            
-            // Create two triangles for the wall segment
-            // Winding order is critical for correct outward-facing normals
-            // 
-            // For a wall going from surface_v0 to surface_v1 (counter-clockwise around boundary):
-            // First triangle: surface_v0 -> base_v0 -> surface_v1 (outward normal)
-            // Second triangle: base_v0 -> base_v1 -> surface_v1 (outward normal)
-            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
-            volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
-        }
+    // Create wall triangles for each boundary edge
+    for (const Edge& edge : boundary_edges) {
+        int surface_v0 = edge.v0;
+        int surface_v1 = edge.v1;
+        int base_v0 = base_vertex_mapping[surface_v0];
+        int base_v1 = base_vertex_mapping[surface_v1];
+        
+        // Create two triangles for the wall segment
+        // Ensure proper winding for outward-facing normals
+        // The boundary edge defines the direction, we need to maintain consistency
+        volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+        volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
     }
 }
 
