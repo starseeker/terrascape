@@ -50,6 +50,32 @@ test_detailed_interior
 test_mixed_elevation
 test_wall_fixes
 
+# All debugging and test executables (generated during development)
+benchmark_comparison
+debug_region_growing
+edge_case_test
+mesh_density_demo
+quality_comparison
+test_coverage_validation
+test_crater_improved
+test_downward_normal_rejection
+test_fixed
+test_manifold
+test_manifold_debug
+test_region_growing
+test_region_growing_new
+test_region_growing_updated
+test_scale_independence
+test_wall_normals_final
+test_wall_normals_new
+test_winding
+test_winding_new
+triangle_quality_analysis
+unified_tests
+
+# CMake generated files
+CTestTestfile.cmake
+
 # Old documentation and test files (removed during v0.8 cleanup)
 # SoS_README.md - consolidated into main README.md
 # ISSUES.md - consolidated into main README.md  

@@ -220,6 +220,25 @@ bool test_volumetric_separated_mesh() {
     return result.has_positive_volume || result.has_negative_volume;
 }
 
+bool test_mesh_manifold_properties() {
+    auto data = create_gaussian_hill(5, 5);
+    MeshResult volumetric = grid_to_mesh_volumetric(5, 5, data.data(), 0.0f);
+    
+    if (volumetric.vertices.empty() || volumetric.triangles.empty()) {
+        return false;
+    }
+    
+    // Basic manifold check: no degenerate triangles
+    int degenerate_count = 0;
+    for (const auto& tri : volumetric.triangles) {
+        if (tri.v0 == tri.v1 || tri.v1 == tri.v2 || tri.v2 == tri.v0) {
+            degenerate_count++;
+        }
+    }
+    
+    return degenerate_count == 0;
+}
+
 // =============================================================================
 // Performance Tests
 // =============================================================================
@@ -365,6 +384,12 @@ void run_volumetric_tests(TestSuite& suite) {
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
     suite.addTest(result, "Separated Volumetric Mesh", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_mesh_manifold_properties();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Mesh Manifold Properties", "", duration);
 }
 
 void run_performance_tests(TestSuite& suite) {
