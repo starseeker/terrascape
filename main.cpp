@@ -238,13 +238,13 @@ int main(int argc, char **argv)
         cout << "Base level: " << z_base << endl;
     }
     
-    // Display BRL-CAD tolerance settings (currently for reference - direct greedy_cuts API needed for full control)
+    // Display BRL-CAD tolerance settings (currently for reference - direct TerraScape API provides full control)
     cout << "\n=== BRL-CAD Tolerance Settings (Reference) ===" << endl;
     cout << "Absolute tolerance: " << abs_tolerance_mm << " mm" << endl;
     cout << "Relative tolerance: " << rel_tolerance << " (fraction)" << endl;
     cout << "Normal tolerance: " << norm_tolerance_deg << " degrees" << endl;
     cout << "Volume delta tolerance: " << volume_delta_pct << "%" << endl;
-    cout << "Note: For full tolerance control, use greedy_cuts.hpp API directly" << endl;
+    cout << "Note: For full tolerance control, use TerraScape::grid_to_mesh API directly" << endl;
     cout << "===============================================" << endl;
     cout << endl;
     
@@ -279,7 +279,7 @@ int main(int argc, char **argv)
     
     // Generate mesh using the TerraScape API
     cout << "Generating " << (volumetric ? "volumetric" : "surface") 
-         << " mesh using adaptive greedy refinement with localized error metrics..." << endl;
+         << " mesh using adaptive error-driven refinement with localized error metrics..." << endl;
     
     TerraScape::MeshResult mesh;
     

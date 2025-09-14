@@ -1,6 +1,6 @@
 # TerraScape - Advanced Terrain Mesh Generation Library
 
-TerraScape is a modern C++ library for converting elevation grids to optimized triangle meshes using advanced Delaunay triangulation and greedy refinement algorithms. It is the evolution of the original Terra and Scape terrain simplification software by Michael Garland and Paul Heckbert.
+TerraScape is a modern C++ library for converting elevation grids to optimized triangle meshes using advanced Delaunay triangulation and error-driven refinement algorithms. It is the evolution of the original Terra and Scape terrain simplification software by Michael Garland and Paul Heckbert.
 
 ## Overview
 
@@ -9,7 +9,7 @@ TerraScape provides efficient grid-to-mesh conversion with robust geometric algo
 ## Key Features
 
 - **Advanced Delaunay Triangulation**: Uses robust geometric predicates and half-edge topology management
-- **Greedy Error-Driven Refinement**: Iteratively adds points where they reduce approximation error most
+- **Error-Driven Refinement**: Iteratively adds points where they reduce approximation error most
 - **BRL-CAD Tolerance Integration**: Precision control with absolute, relative, and volume tolerance parameters
 - **Multiple Refinement Strategies**: AUTO, HEAP, HYBRID, and SPARSE modes for different use cases
 - **Simulation of Simplicity (SoS)**: Robust handling of geometric degeneracies with production-ready implementation
@@ -122,17 +122,22 @@ TerraScape includes advanced tolerance control parameters for precision mesh gen
 ### Direct API Usage
 
 ```cpp
-#include "greedy_cuts.hpp"
+#include "TerraScape.hpp"
 
-terrascape::GreedyCutsOptions opts;
+TerraScape::ToleranceConfig opts;
 opts.abs_tolerance_mm = 0.1;      // 0.1mm absolute tolerance
 opts.rel_tolerance = 0.01;        // 1% relative tolerance  
 opts.norm_tolerance_deg = 15.0;   // 15° normal tolerance
 opts.volume_delta_pct = 10.0;     // 10% volume tolerance
-opts.use_region_growing = true;
 
-terrascape::Mesh mesh;
-terrascape::triangulateGreedyCuts(elevations.data(), width, height, nullptr, opts, mesh);
+// Generate mesh with tolerance control
+auto mesh = TerraScape::grid_to_mesh(
+    width, height, elevations.data(),
+    1.0f,    // error threshold
+    10000,   // maximum points
+    TerraScape::MeshRefineStrategy::AUTO,
+    opts
+);
 ```
 
 ### Command-Line Usage
@@ -268,7 +273,7 @@ detria::Triangulation<detria::PointD, uint32_t, SoSTriangulationConfig<detria::P
 ## Core Concepts from Original Papers
 
 ### From Scape (1995)
-- **Greedy Point Insertion**: Select points that most reduce approximation error
+- **Point Insertion**: Select points that most reduce approximation error
 - **Triangular Mesh Representation**: Efficient storage and processing of terrain
 - **Error Metrics**: Quantitative evaluation of terrain approximation quality
 
@@ -425,7 +430,7 @@ TerraScape builds upon decades of research in terrain simplification:
 - **Terra (1996)**: Improved structure and usability over Scape  
 - **TerraScape (2024)**: Modern C++ with robust geometric algorithms
 
-The core insight from the original papers remains valid: greedy insertion based on approximation error produces high-quality terrain meshes efficiently. TerraScape preserves this algorithmic foundation while adding modern robustness and geometric guarantees.
+The core insight from the original papers remains valid: error-driven insertion based on approximation error produces high-quality terrain meshes efficiently. TerraScape preserves this algorithmic foundation while adding modern robustness and geometric guarantees.
 
 ## References
 
