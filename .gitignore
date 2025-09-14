@@ -40,6 +40,9 @@ Thumbs.db
 
 # Test artifacts
 /tmp/
+test_wall_issue
+test_wall_fix  
+test_volumetric_walls
 
 # Old documentation and test files (removed during v0.8 cleanup)
 # SoS_README.md - consolidated into main README.md
