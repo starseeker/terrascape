@@ -561,7 +561,21 @@ static inline void triangulateRegionGrowing(const float* elevations,
       // Create triangles if we have enough vertices
       if (vertex_indices.size() >= 3) {
         if (vertex_indices.size() == 3) {
-          out_mesh.add_triangle(vertex_indices[0], vertex_indices[1], vertex_indices[2]);
+          // Ensure correct CCW winding for 3-vertex triangles
+          // Check the winding order using cross product of grid positions
+          auto& pos0 = vertex_grid_positions[0];
+          auto& pos1 = vertex_grid_positions[1]; 
+          auto& pos2 = vertex_grid_positions[2];
+          
+          // Cross product to determine winding
+          double cross = (pos1.first - pos0.first) * (pos2.second - pos0.second) - 
+                        (pos1.second - pos0.second) * (pos2.first - pos0.first);
+          
+          if (cross > 0) {
+            out_mesh.add_triangle(vertex_indices[0], vertex_indices[1], vertex_indices[2]); // CCW
+          } else {
+            out_mesh.add_triangle(vertex_indices[0], vertex_indices[2], vertex_indices[1]); // Flip to CCW
+          }
           triangles_created++;
         } else if (vertex_indices.size() == 4) {
           // Create two triangles for a quad - be careful about ordering
@@ -578,9 +592,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
             sorted_vertices.push_back(pair.second);
           }
           
-          // Create two triangles for the quad
-          out_mesh.add_triangle(sorted_vertices[0], sorted_vertices[1], sorted_vertices[2]);
-          out_mesh.add_triangle(sorted_vertices[1], sorted_vertices[3], sorted_vertices[2]);
+          // Create two triangles for the quad with correct CCW winding
+          // sorted_vertices[0] = (0,0), [1] = (0,1), [2] = (1,0), [3] = (1,1)
+          out_mesh.add_triangle(sorted_vertices[0], sorted_vertices[2], sorted_vertices[1]); // (0,0), (1,0), (0,1) - CCW
+          out_mesh.add_triangle(sorted_vertices[2], sorted_vertices[3], sorted_vertices[1]); // (1,0), (1,1), (0,1) - CCW
           triangles_created += 2;
         }
       }
@@ -624,12 +639,12 @@ static inline void triangulateRegionGrowing(const float* elevations,
       }
       std::sort(sorted_vertices.begin(), sorted_vertices.end());
       
-      // Create fan triangulation
+      // Create fan triangulation with correct CCW winding for upward normals
       for (size_t i = 1; i < sorted_vertices.size() - 1; ++i) {
         int v0 = sorted_vertices[0].second;
         int v1 = sorted_vertices[i].second;
         int v2 = sorted_vertices[i + 1].second;
-        out_mesh.add_triangle(v0, v1, v2);
+        out_mesh.add_triangle(v0, v2, v1); // Reversed winding for correct normals
         triangles_created++;
       }
     } else {
@@ -693,9 +708,15 @@ static inline void triangulateRegionGrowing(const float* elevations,
             double dy2 = out_mesh.vertices[v2][1] - out_mesh.vertices[v0][1];
             
             // Triangle area (cross product)
-            double area = std::abs(dx1 * dy2 - dx2 * dy1);
+            double cross_product = dx1 * dy2 - dx2 * dy1;
+            double area = std::abs(cross_product);
             if (area > 0.1) { // Avoid degenerate triangles
-              out_mesh.add_triangle(v0, v1, v2);
+              // Ensure counter-clockwise winding for upward-facing normals
+              if (cross_product > 0) {
+                out_mesh.add_triangle(v0, v1, v2); // CCW winding
+              } else {
+                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW winding
+              }
               triangles_created++;
             }
           }
