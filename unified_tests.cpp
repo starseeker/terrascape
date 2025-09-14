@@ -178,13 +178,7 @@ bool test_error_threshold_scaling() {
     return coarse.vertices.size() <= fine.vertices.size();
 }
 
-bool test_point_limit_enforcement() {
-    auto data = create_complex_surface(20, 20);
-    
-    MeshResult limited = grid_to_mesh(20, 20, data.data(), 0.1f, 50);
-    
-    return limited.vertices.size() <= 60; // Allow some overhead
-}
+
 
 bool test_mesh_validity() {
     auto data = create_gaussian_hill(8, 8);
@@ -234,7 +228,7 @@ bool test_large_grid_performance() {
     auto start = std::chrono::high_resolution_clock::now();
     
     auto data = create_complex_surface(50, 50);
-    MeshResult result = grid_to_mesh(50, 50, data.data(), 0.2f, 500);
+    MeshResult result = grid_to_mesh(50, 50, data.data(), 0.2f);
     
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -274,7 +268,7 @@ bool test_gdal_sample_terrain() {
                     }
                     
                     // Test mesh generation
-                    auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f, 500);
+                    auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f);
                     return !mesh.vertices.empty() && !mesh.triangles.empty();
                 }
             }
@@ -355,12 +349,6 @@ void run_basic_tests(TestSuite& suite) {
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
     suite.addTest(result, "Error Threshold Scaling", "", duration);
-    
-    start = std::chrono::high_resolution_clock::now();
-    result = test_point_limit_enforcement();
-    end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
-    suite.addTest(result, "Point Limit Enforcement", "", duration);
 }
 
 void run_volumetric_tests(TestSuite& suite) {

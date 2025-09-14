@@ -78,9 +78,6 @@ struct RegionGrowingOptions {
   int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
   bool use_precomputed_complexity = true;    // Use pre-computed terrain complexity
   double complexity_scale_factor = 1.0;      // Complexity scaling factor
-  
-  // Point limit enforcement (0 = no limit)
-  int max_vertices = 0;                       // Maximum number of vertices (0 = unlimited)
 };
 
 // Internal mesh structure for region-growing algorithm
@@ -399,13 +396,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
         bool meets_base_threshold = max_diff > opt.base_error_threshold * 0.5;
         
         if (meets_abs_tolerance || meets_rel_tolerance || meets_base_threshold) {
-          // Check point limit before adding vertex
-          if (opt.max_vertices <= 0 || static_cast<int>(out_mesh.vertices.size()) < opt.max_vertices) {
-            vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
-            out_mesh.add_vertex(static_cast<double>(x),
-                                static_cast<double>(y),
-                                static_cast<double>(elevations[idx]));
-          }
+          vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+          out_mesh.add_vertex(static_cast<double>(x),
+                              static_cast<double>(y),
+                              static_cast<double>(elevations[idx]));
         }
       }
     }
@@ -419,13 +413,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
       size_t idx = idx_row_major(x, y, W);
       if (mask && mask[idx] == 0) continue;
       if (vertex_map[idx] == -1) {
-        // Check point limit before adding boundary vertex
-        if (opt.max_vertices <= 0 || static_cast<int>(out_mesh.vertices.size()) < opt.max_vertices) {
-          vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
-          out_mesh.add_vertex(static_cast<double>(x),
-                              static_cast<double>(y),
-                              static_cast<double>(elevations[idx]));
-        }
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.add_vertex(static_cast<double>(x),
+                            static_cast<double>(y),
+                            static_cast<double>(elevations[idx]));
       }
     }
   }
@@ -435,13 +426,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
       size_t idx = idx_row_major(x, y, W);
       if (mask && mask[idx] == 0) continue;
       if (vertex_map[idx] == -1) {
-        // Check point limit before adding boundary vertex
-        if (opt.max_vertices <= 0 || static_cast<int>(out_mesh.vertices.size()) < opt.max_vertices) {
-          vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
-          out_mesh.add_vertex(static_cast<double>(x),
-                              static_cast<double>(y),
-                              static_cast<double>(elevations[idx]));
-        }
+        vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+        out_mesh.add_vertex(static_cast<double>(x),
+                            static_cast<double>(y),
+                            static_cast<double>(elevations[idx]));
       }
     }
   }
@@ -769,15 +757,11 @@ inline double calculate_mesh_volume(const MeshResult& mesh, float z_base = 0.0f)
  * grid_to_mesh_impl
  * - Uses the consolidated region-growing triangulation with BRL-CAD tolerance integration
  * - Provides adaptive error thresholding and mesh-quality constraints internally
- *
- * Note: point_limit controls maximum number of vertices in the output mesh.
- *       To reduce output size, adjust error_threshold (higher -> fewer triangles), use
- *       mesh_density parameter (lower -> coarser mesh), or set point_limit.
  */
 template<typename T>
 inline MeshResult grid_to_mesh_impl(
     int width, int height, const T* elevations,
-    float error_threshold, int point_limit) {
+    float error_threshold) {
 
     // Preprocess input for robustness
     auto preprocessing = preprocess_input_data(width, height, elevations, error_threshold);
@@ -822,9 +806,6 @@ inline MeshResult grid_to_mesh_impl(
     }
     
     rg_opt.base_error_threshold = adaptive_error_threshold;
-    
-    // Set point limit if specified
-    rg_opt.max_vertices = point_limit;
     
     // Enable volume convergence for better terrain detail
     rg_opt.use_volume_convergence = true;
@@ -1027,9 +1008,9 @@ template<typename T>
 inline MeshResult grid_to_mesh_volumetric(
     int width, int height, const T* elevations,
     float z_base = 0.0f,
-    float error_threshold = 1.0f, int point_limit = 10000) {
+    float error_threshold = 1.0f) {
 
-    MeshResult surface_mesh = grid_to_mesh_impl(width, height, elevations, error_threshold, point_limit);
+    MeshResult surface_mesh = grid_to_mesh_impl(width, height, elevations, error_threshold);
     return make_volumetric_mesh(surface_mesh, z_base);
 }
 
@@ -1037,9 +1018,9 @@ template<typename T>
 inline VolumetricMeshResult grid_to_mesh_volumetric_separated(
     int width, int height, const T* elevations,
     float z_base = 0.0f,
-    float error_threshold = 1.0f, int point_limit = 10000) {
+    float error_threshold = 1.0f) {
 
-    MeshResult surface_mesh = grid_to_mesh_impl(width, height, elevations, error_threshold, point_limit);
+    MeshResult surface_mesh = grid_to_mesh_impl(width, height, elevations, error_threshold);
     return make_volumetric_mesh_separated(surface_mesh, z_base);
 }
 
@@ -1053,10 +1034,10 @@ inline VolumetricMeshResult grid_to_mesh_volumetric_separated(
 template<typename T>
 inline MeshResult grid_to_mesh(
     int width, int height, const T* elevations,
-    float error_threshold = 1.0f, int point_limit = 10000)
+    float error_threshold = 1.0f)
 {
     // Delegate to Region-Growing implementation
-    return grid_to_mesh_impl(width, height, elevations, error_threshold, point_limit);
+    return grid_to_mesh_impl(width, height, elevations, error_threshold);
 }
 
 // ================================= Region-Growing API Function Implementations =================================
