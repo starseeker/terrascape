@@ -127,6 +127,14 @@ int main(int argc, char **argv)
     double norm_tolerance_deg = 15.0;
     double volume_delta_pct = 10.0;
     
+    // New feature detection and graph optimization options
+    bool enable_feature_detection = false;
+    bool enable_graph_optimization = false;
+    double feature_penalty_weight = 10.0;
+    double feature_threshold = 0.5;
+    bool use_mst_for_regions = false;
+    bool use_mincut_for_boundaries = false;
+    
     // Simple command line parsing
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         cout << "Usage: " << argv[0] << " [options] [input] [output.obj] [error_threshold]" << endl;
@@ -137,6 +145,12 @@ int main(int argc, char **argv)
         cout << "  --rel-tolerance <frac>: Relative tolerance as fraction (default: 0.01)" << endl;
         cout << "  --norm-tolerance <deg>: Normal angle tolerance in degrees (default: 15.0)" << endl;
         cout << "  --volume-delta <pct>: Max volume delta percentage (default: 10.0)" << endl;
+        cout << "  --enable-features: Enable terrain feature detection" << endl;
+        cout << "  --enable-graph-opt: Enable graph-based optimization" << endl;
+        cout << "  --feature-penalty <weight>: Edge weight penalty for crossing features (default: 10.0)" << endl;
+        cout << "  --feature-threshold <thresh>: Threshold for strong features (default: 0.5)" << endl;
+        cout << "  --use-mst: Use MST for region connectivity optimization" << endl;
+        cout << "  --use-mincut: Use min-cut for boundary placement optimization" << endl;
         cout << "  -h, --help: Show this help message" << endl;
         cout << "Arguments:" << endl;
         cout << "  input: Input heightfield file (.pgm format, default: auto-detect)" << endl;
@@ -166,6 +180,18 @@ int main(int argc, char **argv)
             norm_tolerance_deg = atof(argv[++arg_idx]);
         } else if (strcmp(argv[arg_idx], "--volume-delta") == 0 && arg_idx + 1 < argc) {
             volume_delta_pct = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--enable-features") == 0) {
+            enable_feature_detection = true;
+        } else if (strcmp(argv[arg_idx], "--enable-graph-opt") == 0) {
+            enable_graph_optimization = true;
+        } else if (strcmp(argv[arg_idx], "--feature-penalty") == 0 && arg_idx + 1 < argc) {
+            feature_penalty_weight = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--feature-threshold") == 0 && arg_idx + 1 < argc) {
+            feature_threshold = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--use-mst") == 0) {
+            use_mst_for_regions = true;
+        } else if (strcmp(argv[arg_idx], "--use-mincut") == 0) {
+            use_mincut_for_boundaries = true;
         } else {
             // Non-option argument - handle positionally
             static int pos_arg = 0;
@@ -222,12 +248,45 @@ int main(int argc, char **argv)
          << " mesh using adaptive greedy refinement with localized error metrics..." << endl;
     
     TerraScape::MeshResult mesh;
-    if (volumetric) {
-        mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(), 
-                                                  z_base, error_threshold);
+    
+    // Use advanced API if any of the new features are enabled
+    if (enable_feature_detection || enable_graph_optimization || use_mst_for_regions || use_mincut_for_boundaries) {
+        cout << "Using advanced TerraScape with feature detection and graph optimization..." << endl;
+        
+        // Configure options for advanced triangulation
+        TerraScape::RegionGrowingOptions opts;
+        opts.base_error_threshold = error_threshold;  // Set the error threshold
+        opts.abs_tolerance_mm = abs_tolerance_mm;
+        opts.rel_tolerance = rel_tolerance;
+        opts.norm_tolerance_deg = norm_tolerance_deg;
+        opts.volume_delta_pct = volume_delta_pct;
+        
+        // Set feature detection and graph optimization options
+        opts.enable_feature_detection = enable_feature_detection;
+        opts.enable_graph_optimization = enable_graph_optimization;
+        opts.feature_penalty_weight = feature_penalty_weight;
+        opts.feature_threshold = feature_threshold;
+        opts.use_mst_for_regions = use_mst_for_regions;
+        opts.use_mincut_for_boundaries = use_mincut_for_boundaries;
+        
+        // For now, use the advanced region growing function directly
+        // TODO: Need to integrate volumetric support with advanced options
+        mesh = TerraScape::region_growing_triangulation_advanced(
+            elevations.data(), width, height, nullptr, opts);
+        
+        if (volumetric) {
+            cout << "Note: Volumetric mesh generation with advanced features not yet fully integrated." << endl;
+            cout << "      Generating surface mesh with advanced features instead." << endl;
+        }
     } else {
-        mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
-                                       error_threshold);
+        // Use standard API for backward compatibility
+        if (volumetric) {
+            mesh = TerraScape::grid_to_mesh_volumetric(width, height, elevations.data(), 
+                                                      z_base, error_threshold);
+        } else {
+            mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 
+                                           error_threshold);
+        }
     }
     
     cout << "Mesh generation complete!" << endl;

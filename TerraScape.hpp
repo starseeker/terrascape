@@ -26,6 +26,10 @@
 #include <cstdint>
 #include <array>
 
+// Feature detection and graph optimization modules
+#include "FeatureDetection.hpp"
+#include "lemon.hpp"
+
 // BRL-CAD tolerance integration and region-growing triangulation now included directly
 
 #if defined(_WIN32)
@@ -86,6 +90,14 @@ struct RegionGrowingOptions {
   int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
   bool use_precomputed_complexity = true;    // Use pre-computed terrain complexity
   double complexity_scale_factor = 1.0;      // Complexity scaling factor
+  
+  // FEATURE DETECTION & GRAPH OPTIMIZATION: New advanced features
+  bool enable_feature_detection = false;      // Enable terrain feature detection
+  bool enable_graph_optimization = false;     // Enable graph-based segmentation optimization
+  double feature_penalty_weight = 10.0;       // Weight for penalizing cuts across strong features
+  double feature_threshold = 0.5;             // Threshold for identifying strong features
+  bool use_mst_for_regions = false;           // Use MST for region connectivity optimization
+  bool use_mincut_for_boundaries = false;     // Use min-cut for optimal boundary placement
 };
 
 // Internal mesh structure for region-growing algorithm
@@ -853,6 +865,58 @@ inline MeshResult grid_to_mesh_impl(
         rg_opt.max_refinement_passes = 4;
         rg_opt.max_initial_iterations = 5000000;
         std::cerr << "TerraScape: Using low-detail terrain parameters" << std::endl;
+    }
+
+    // FEATURE DETECTION & GRAPH OPTIMIZATION: Optional terrain feature analysis
+    std::vector<std::vector<double>> feature_map;
+    bool has_feature_map = false;
+    
+    if (rg_opt.enable_feature_detection) {
+        std::cerr << "TerraScape: Computing terrain feature map..." << std::endl;
+        
+        // Create elevation grid for feature detection
+        ElevationGrid grid(preprocessing.processed_elevations.data(), width, height);
+        
+        // Configure feature detection options
+        FeatureDetection::FeatureDetectionOptions feature_opts;
+        feature_opts.gradient_threshold = rg_opt.base_error_threshold * 0.5; // Scale with error threshold
+        feature_opts.curvature_threshold = rg_opt.base_error_threshold * 0.3;
+        
+        // Compute feature map
+        feature_map = FeatureDetection::compute_feature_map(grid, feature_opts);
+        has_feature_map = true;
+        
+        // Count strong features for user feedback
+        auto strong_features = FeatureDetection::find_strong_features(feature_map, rg_opt.feature_threshold);
+        std::cerr << "TerraScape: Found " << strong_features.size() << " strong terrain features" << std::endl;
+    }
+    
+    // GRAPH-BASED OPTIMIZATION: Modify triangulation parameters based on features
+    if (rg_opt.enable_graph_optimization && has_feature_map) {
+        std::cerr << "TerraScape: Applying graph-based segmentation optimization..." << std::endl;
+        
+        // Build terrain graph with feature-weighted edges
+        auto terrain_graph = Lemon::buildTerrainGraph(width, height, feature_map, rg_opt.feature_penalty_weight);
+        
+        if (rg_opt.use_mst_for_regions) {
+            // Use MST to guide region connectivity
+            auto mst_edges = Lemon::kruskalMST(terrain_graph);
+            std::cerr << "TerraScape: MST computed with " << mst_edges.size() << " edges" << std::endl;
+            
+            // Adjust region merging threshold based on MST structure
+            double total_mst_weight = 0.0;
+            for (auto edge_id : mst_edges) {
+                total_mst_weight += terrain_graph.edge(edge_id).weight;
+            }
+            double avg_mst_weight = total_mst_weight / mst_edges.size();
+            
+            // Scale region merge threshold by average MST edge weight
+            rg_opt.region_merge_threshold *= (avg_mst_weight / rg_opt.feature_penalty_weight);
+            std::cerr << "TerraScape: Adjusted region merge threshold to " << rg_opt.region_merge_threshold << std::endl;
+        }
+        
+        // Additional graph optimizations could be added here
+        // (min-cut for boundary placement, etc.)
     }
 
     // Volume validation sanity check - already performed by region-growing algorithm
