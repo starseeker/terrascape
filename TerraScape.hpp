@@ -1302,6 +1302,148 @@ inline std::vector<std::vector<int>> organize_boundary_vertices(
     return chains;
 }
 
+// Helper function to determine if a point is inside a zero-height region that needs interior walls
+inline bool is_zero_height_interior_point(const float* elevations, int width, int height, int x, int y, float z_base) {
+    if (x < 0 || x >= width || y < 0 || y >= height) return false;
+    
+    float elevation = elevations[y * width + x];
+    // Check if this point is at zero height (near z_base)
+    if (std::abs(elevation - z_base) > 0.1f) return false;
+    
+    // Check if it's surrounded by higher terrain (making it an interior hole)
+    bool has_elevated_neighbor = false;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx, ny = y + dy;
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                float neighbor_elevation = elevations[ny * width + nx];
+                if (neighbor_elevation > z_base + 0.1f) {
+                    has_elevated_neighbor = true;
+                    break;
+                }
+            }
+        }
+        if (has_elevated_neighbor) break;
+    }
+    
+    return has_elevated_neighbor;
+}
+
+// Create interior walls for zero-height regions to ensure closed manifolds
+inline void create_interior_walls_for_zero_regions(MeshResult& volumetric_result,
+                                                    const MeshResult& surface_mesh,
+                                                    const std::vector<int>& base_vertex_mapping,
+                                                    const float* elevations, int width, int height, float z_base) {
+    
+    // For each grid point, check if it's at zero elevation but surrounded by elevated terrain
+    // We need to add vertices for these zero-height interior points that aren't in the surface mesh
+    
+    std::vector<std::pair<int, int>> zero_interior_points;
+    
+    for (int y = 1; y < height - 1; ++y) {
+        for (int x = 1; x < width - 1; ++x) {
+            float center_elevation = elevations[y * width + x];
+            
+            // Check if this point is at zero/base elevation
+            if (std::abs(center_elevation - z_base) > 0.1f) continue;
+            
+            // Check if it's surrounded by elevated terrain
+            bool has_elevated_neighbor = false;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        float neighbor_elevation = elevations[ny * width + nx];
+                        if (neighbor_elevation > z_base + 0.1f) {
+                            has_elevated_neighbor = true;
+                            break;
+                        }
+                    }
+                }
+                if (has_elevated_neighbor) break;
+            }
+            
+            if (has_elevated_neighbor) {
+                zero_interior_points.push_back({x, y});
+            }
+        }
+    }
+    
+    if (zero_interior_points.empty()) return;
+    
+    // Add vertices for zero-height interior points (both surface and base)
+    std::map<std::pair<int, int>, int> zero_surface_vertex_map;
+    std::map<std::pair<int, int>, int> zero_base_vertex_map;
+    
+    for (const auto& point : zero_interior_points) {
+        int x = point.first, y = point.second;
+        
+        // Add surface vertex at zero height
+        int surface_idx = static_cast<int>(volumetric_result.vertices.size());
+        volumetric_result.vertices.push_back(Vertex{static_cast<float>(x), static_cast<float>(y), z_base});
+        zero_surface_vertex_map[point] = surface_idx;
+        
+        // Add base vertex
+        int base_idx = static_cast<int>(volumetric_result.vertices.size());
+        volumetric_result.vertices.push_back(Vertex{static_cast<float>(x), static_cast<float>(y), z_base});
+        zero_base_vertex_map[point] = base_idx;
+    }
+    
+    // Create walls connecting zero-height interior regions to nearby elevated surface vertices
+    for (const auto& point : zero_interior_points) {
+        int x = point.first, y = point.second;
+        int zero_surface_idx = zero_surface_vertex_map[point];
+        int zero_base_idx = zero_base_vertex_map[point];
+        
+        // Find nearby elevated vertices in the surface mesh to connect walls to
+        for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
+            const Vertex& surface_vert = surface_mesh.vertices[i];
+            
+            // Skip if not elevated
+            if (surface_vert.z <= z_base + 0.1f) continue;
+            
+            // Check if vertices are adjacent (within ~1.5 grid units)
+            float dist_x = std::abs(surface_vert.x - static_cast<float>(x));
+            float dist_y = std::abs(surface_vert.y - static_cast<float>(y));
+            
+            if (dist_x <= 1.5f && dist_y <= 1.5f && (dist_x + dist_y) > 0.1f) {
+                int surface_base_idx = base_vertex_mapping[i];
+                
+                // Create wall triangles connecting the zero-height region to the elevated terrain
+                // Ensure proper winding for outward-facing normals
+                volumetric_result.triangles.push_back(Triangle{zero_surface_idx, surface_base_idx, static_cast<int>(i)});
+                volumetric_result.triangles.push_back(Triangle{zero_surface_idx, zero_base_idx, surface_base_idx});
+            }
+        }
+    }
+    
+    // Create triangular floor patches for the zero-height interior regions
+    // This ensures the zero-height areas are properly enclosed
+    for (size_t i = 0; i < zero_interior_points.size(); ++i) {
+        for (size_t j = i + 1; j < zero_interior_points.size(); ++j) {
+            const auto& p1 = zero_interior_points[i];
+            const auto& p2 = zero_interior_points[j];
+            
+            // Check if points are adjacent
+            int dx = std::abs(p1.first - p2.first);
+            int dy = std::abs(p1.second - p2.second);
+            
+            if (dx <= 1 && dy <= 1 && (dx + dy) > 0) {
+                int surface_idx1 = zero_surface_vertex_map[p1];
+                int surface_idx2 = zero_surface_vertex_map[p2];
+                int base_idx1 = zero_base_vertex_map[p1];
+                int base_idx2 = zero_base_vertex_map[p2];
+                
+                // Create triangles for the zero-height floor area
+                volumetric_result.triangles.push_back(Triangle{surface_idx1, surface_idx2, base_idx1});
+                volumetric_result.triangles.push_back(Triangle{surface_idx2, base_idx2, base_idx1});
+            }
+        }
+    }
+}
+
 // Create uniform, planar walls from the geometric boundary of the terrain data
 inline void create_geometric_boundary_walls(MeshResult& volumetric_result, 
                                            const MeshResult& surface_mesh, 
@@ -1342,7 +1484,7 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
     std::vector<std::vector<int>> boundary_chains = organize_boundary_vertices(
         surface_mesh, boundary_vertices, min_x, max_x, min_y, max_y, boundary_tolerance);
     
-    // Create wall triangles for each boundary chain
+    // Create wall triangles for each boundary chain with correct winding for outward normals
     for (const auto& chain : boundary_chains) {
         for (size_t i = 0; i < chain.size() - 1; ++i) {
             int surface_v0 = chain[i];
@@ -1350,9 +1492,14 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
             int base_v0 = base_vertex_mapping[surface_v0];
             int base_v1 = base_vertex_mapping[surface_v1];
             
-            // Create two triangles for the wall segment (ensuring proper winding)
-            volumetric_result.triangles.push_back(Triangle{surface_v0, surface_v1, base_v1});
-            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v1, base_v0});
+            // Create two triangles for the wall segment
+            // Winding order is critical for correct outward-facing normals
+            // 
+            // For a wall going from surface_v0 to surface_v1 (counter-clockwise around boundary):
+            // First triangle: surface_v0 -> base_v0 -> surface_v1 (outward normal)
+            // Second triangle: base_v0 -> base_v1 -> surface_v1 (outward normal)
+            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+            volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
         }
     }
 }
@@ -1407,6 +1554,50 @@ inline MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_b
     // Create uniform, planar walls from the geometric boundary of the terrain data
     // This ensures walls represent the actual data boundaries, not triangulation artifacts
     create_geometric_boundary_walls(volumetric_result, surface_mesh, base_vertex_mapping, z_base);
+
+    return volumetric_result;
+}
+
+// Overload that accepts elevation data for interior wall generation
+template<typename T>
+inline MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_base, 
+                                      int width, int height, const T* elevations) {
+    MeshResult volumetric_result;
+    volumetric_result.is_volumetric = true;
+
+    // Copy surface vertices
+    volumetric_result.vertices = surface_mesh.vertices;
+
+    // Create base vertices (same x,y but z = z_base)
+    std::vector<int> base_vertex_mapping(surface_mesh.vertices.size());
+    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
+        const Vertex& v = surface_mesh.vertices[i];
+        base_vertex_mapping[i] = static_cast<int>(volumetric_result.vertices.size());
+        volumetric_result.vertices.push_back(Vertex{v.x, v.y, z_base});
+    }
+
+    // Copy surface triangles
+    volumetric_result.triangles = surface_mesh.triangles;
+
+    // Add base triangles (with flipped winding for inward-facing normals)
+    for (const Triangle& tri : surface_mesh.triangles) {
+        int base_v0 = base_vertex_mapping[tri.v0];
+        int base_v1 = base_vertex_mapping[tri.v1];
+        int base_v2 = base_vertex_mapping[tri.v2];
+        volumetric_result.triangles.push_back(Triangle{base_v0, base_v2, base_v1}); // Flipped winding
+    }
+
+    // Create uniform, planar walls from the geometric boundary of the terrain data
+    create_geometric_boundary_walls(volumetric_result, surface_mesh, base_vertex_mapping, z_base);
+
+    // Create interior walls for zero-height regions to ensure closed manifolds
+    // Convert template parameter to float for consistent processing
+    std::vector<float> float_elevations(width * height);
+    for (int i = 0; i < width * height; ++i) {
+        float_elevations[i] = static_cast<float>(elevations[i]);
+    }
+    create_interior_walls_for_zero_regions(volumetric_result, surface_mesh, base_vertex_mapping, 
+                                         float_elevations.data(), width, height, z_base);
 
     return volumetric_result;
 }
@@ -1480,7 +1671,7 @@ inline MeshResult grid_to_mesh_volumetric(
     float error_threshold = 1.0f) {
 
     MeshResult surface_mesh = grid_to_mesh_impl(width, height, elevations, error_threshold);
-    return make_volumetric_mesh(surface_mesh, z_base);
+    return make_volumetric_mesh(surface_mesh, z_base, width, height, elevations);
 }
 
 template<typename T>
