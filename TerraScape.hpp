@@ -197,6 +197,68 @@ static inline double calculate_cell_volume_simple(const float* elevations, int w
   return volume;
 }
 
+// Calculate theoretical terrain surface area using grid approximation
+static inline double calculate_terrain_surface_area(const float* elevations, int width, int height) {
+  double totalArea = 0.0;
+  
+  for (int y = 0; y < height - 1; ++y) {
+    for (int x = 0; x < width - 1; ++x) {
+      // Get heights of 4 corners of grid cell
+      float h00 = elevations[y * width + x];
+      float h10 = elevations[y * width + (x + 1)];
+      float h01 = elevations[(y + 1) * width + x];
+      float h11 = elevations[(y + 1) * width + (x + 1)];
+      
+      // Split quad into two triangles and calculate their areas
+      // Triangle 1: (0,0,h00), (1,0,h10), (0,1,h01)
+      float v1x = 1.0f, v1y = 0.0f, v1z = h10 - h00;
+      float v2x = 0.0f, v2y = 1.0f, v2z = h01 - h00;
+      
+      float cross1x = v1y * v2z - v1z * v2y;
+      float cross1y = v1z * v2x - v1x * v2z;
+      float cross1z = v1x * v2y - v1y * v2x;
+      float area1 = 0.5f * std::sqrt(cross1x*cross1x + cross1y*cross1y + cross1z*cross1z);
+      
+      // Triangle 2: (1,0,h10), (1,1,h11), (0,1,h01)
+      float v3x = 0.0f, v3y = 1.0f, v3z = h11 - h10;
+      float v4x = -1.0f, v4y = 1.0f, v4z = h01 - h10;
+      
+      float cross2x = v3y * v4z - v3z * v4y;
+      float cross2y = v3z * v4x - v3x * v4z;
+      float cross2z = v3x * v4y - v3y * v4x;
+      float area2 = 0.5f * std::sqrt(cross2x*cross2x + cross2y*cross2y + cross2z*cross2z);
+      
+      totalArea += area1 + area2;
+    }
+  }
+  
+  return totalArea;
+}
+
+// Calculate surface area of mesh
+static inline double calculate_mesh_surface_area(const InternalMesh& mesh) {
+  double totalArea = 0.0;
+  
+  for (const auto& tri : mesh.triangles) {
+    const auto& v0 = mesh.vertices[tri[0]];
+    const auto& v1 = mesh.vertices[tri[1]];
+    const auto& v2 = mesh.vertices[tri[2]];
+    
+    // Calculate triangle area using cross product
+    double v1x = v1[0] - v0[0], v1y = v1[1] - v0[1], v1z = v1[2] - v0[2];
+    double v2x = v2[0] - v0[0], v2y = v2[1] - v0[1], v2z = v2[2] - v0[2];
+    
+    double crossx = v1y * v2z - v1z * v2y;
+    double crossy = v1z * v2x - v1x * v2z;
+    double crossz = v1x * v2y - v1y * v2x;
+    double area = 0.5 * std::sqrt(crossx*crossx + crossy*crossy + crossz*crossz);
+    
+    totalArea += area;
+  }
+  
+  return totalArea;
+}
+
 // Calculate region-growing parameters from mesh_density
 static inline RegionGrowingOptions calculate_region_parameters(RegionGrowingOptions opt, int width, int height) {
   // Mesh density ranges from 0.0 (coarsest) to 1.0 (finest)
@@ -329,31 +391,51 @@ static inline void triangulateRegionGrowing(const float* elevations,
   };
   
   // Find local extrema (min/max within 3x3 neighborhood) with tolerance checking
-  for (int y = 1; y < H-1; ++y) {
-    for (int x = 1; x < W-1; ++x) {
+  // FIXED: Include ALL points as potential seeds, not just interior points
+  for (int y = 0; y < H; ++y) {
+    for (int x = 0; x < W; ++x) {
       if (mask && mask[idx_row_major(x, y, W)] == 0) continue;
       
       float center = get_elevation(x, y);
       bool is_min = true, is_max = true;
       bool has_significant_diff = false;
+      bool is_boundary = (x == 0 || x == W-1 || y == 0 || y == H-1);
       
-      for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-          if (dx == 0 && dy == 0) continue;
-          float neighbor = get_elevation(x+dx, y+dy);
-          if (neighbor <= center) is_max = false;
-          if (neighbor >= center) is_min = false;
-          
-          // BRL-CAD tolerance: require difference from neighbors >= tolerance
-          double height_diff = std::abs(neighbor - center);
-          if (meets_tolerance_threshold(height_diff, center, opt.abs_tolerance_mm, opt.rel_tolerance)) {
-            has_significant_diff = true;
+      // For boundary points, use a more lenient criteria since they have fewer neighbors
+      if (is_boundary) {
+        // Boundary points should be included as seeds to ensure coverage
+        has_significant_diff = true;
+        // Check if it's at least locally extreme among available neighbors
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+            float neighbor = get_elevation(nx, ny);
+            if (neighbor <= center) is_max = false;
+            if (neighbor >= center) is_min = false;
+          }
+        }
+      } else {
+        // Interior points use the original logic
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            float neighbor = get_elevation(x+dx, y+dy);
+            if (neighbor <= center) is_max = false;
+            if (neighbor >= center) is_min = false;
+            
+            // BRL-CAD tolerance: require difference from neighbors >= tolerance
+            double height_diff = std::abs(neighbor - center);
+            if (meets_tolerance_threshold(height_diff, center, opt.abs_tolerance_mm, opt.rel_tolerance)) {
+              has_significant_diff = true;
+            }
           }
         }
       }
       
-      // Only consider extrema that meet tolerance requirements
-      if ((is_min || is_max) && has_significant_diff) {
+      // Include extrema that meet tolerance requirements OR are boundary points
+      if ((is_min || is_max) && (has_significant_diff || is_boundary)) {
         local_extrema.push_back({x, y});
       }
     }
@@ -392,11 +474,12 @@ static inline void triangulateRegionGrowing(const float* elevations,
       float neighbor_elev = get_elevation(nx, ny);
       float height_diff = std::abs(neighbor_elev - center_elev);
       
-      // BRL-CAD tolerance: merge condition using min of thresholds
-      double tolerance_threshold = std::min({
+      // BRL-CAD tolerance: merge condition using more lenient thresholds for better coverage
+      // Use a more generous tolerance to ensure comprehensive terrain coverage
+      double tolerance_threshold = std::max({
         opt.region_merge_threshold,
-        opt.abs_tolerance_mm,
-        opt.rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev))
+        opt.abs_tolerance_mm * 2.0,  // Double absolute tolerance for better coverage
+        opt.rel_tolerance * std::max(std::abs(center_elev), std::abs(neighbor_elev)) * 2.0  // Double relative tolerance
       });
       
       // Assign to region if height difference is within tolerance
@@ -445,9 +528,10 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // Step 4: Triangulate each region selectively using representative points
-  // Instead of full grid triangulation, sample points based on region complexity
+  // Step 4: Ensure complete terrain coverage by adding vertices for uncovered areas
+  // This is crucial for terrain meshes - we cannot leave areas of the terrain uncovered
   
+  // First, add vertices from regions using selective sampling
   out_mesh.vertices.clear();
   out_mesh.triangles.clear();
   
@@ -507,6 +591,32 @@ static inline void triangulateRegionGrowing(const float* elevations,
       }
     }
   }
+  
+  // CRITICAL FIX: Add vertices for ALL uncovered terrain areas
+  // This ensures complete terrain coverage, which is essential for terrain meshes
+  int coverage_step = std::max(1, std::min({
+    opt.sampling_step / 2,  // Use finer sampling for coverage
+    std::max(W, H) / 100,   // Never exceed 1/100 of largest dimension
+    10                      // Cap at reasonable maximum
+  }));
+  
+  int uncovered_added = 0;
+  for (int y = 0; y < H; y += coverage_step) {
+    for (int x = 0; x < W; x += coverage_step) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (vertex_map[idx] != -1) continue; // Already has vertex
+      
+      // Add vertex for this uncovered area
+      vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+      out_mesh.add_vertex(static_cast<double>(x),
+                          static_cast<double>(y),
+                          static_cast<double>(elevations[idx]));
+      uncovered_added++;
+    }
+  }
+  
+  std::cerr << "TerraScape: Added " << uncovered_added << " vertices for previously uncovered terrain areas" << std::endl;
   
   // Add boundary points to ensure mesh covers the entire area
   // Improved boundary sampling for better terrain coverage
@@ -767,7 +877,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
     std::cerr << "TerraScape: Fallback triangulation created " << triangles_created << " triangles" << std::endl;
   }
   
-  // Terrain-specific validation instead of volume validation
+  // Comprehensive terrain mesh validation including surface area comparison
   if (opt.volume_delta_pct > 0.0) {
     if (out_mesh.triangles.size() == 0) {
       // CRITICAL ERROR: No triangles generated despite having vertices
@@ -781,39 +891,53 @@ static inline void triangulateRegionGrowing(const float* elevations,
         std::cout << "  Input may be too uniform or tolerance thresholds too strict" << std::endl;
       }
     } else {
-      // Terrain-specific mesh quality validation with basic volume check
+      // Terrain-specific mesh quality validation with surface area comparison
       double vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
       double triangle_density = static_cast<double>(out_mesh.triangles.size()) / (W * H);
       
       std::cout << "Terrain mesh validation:" << std::endl;
+      std::cout << "  Grid size: " << W << "x" << H << " = " << (W * H) << " cells" << std::endl;
       std::cout << "  Vertex density: " << vertex_density << " vertices per grid cell" << std::endl;
       std::cout << "  Triangle density: " << triangle_density << " triangles per grid cell" << std::endl;
+      std::cout << "  Coverage: " << (vertex_density * 100.0) << "% of terrain grid" << std::endl;
       
-      // Check for reasonable mesh density (terrain should have some detail but not be excessive)
-      if (vertex_density < 0.001) {
-        std::cout << "  WARNING: Very sparse mesh - may lose terrain detail" << std::endl;
+      // Surface area comparison (recommended sanity check)
+      double terrain_surface_area = calculate_terrain_surface_area(elevations, W, H);
+      double mesh_surface_area = calculate_mesh_surface_area(out_mesh);
+      double area_ratio = mesh_surface_area / terrain_surface_area;
+      
+      std::cout << "  Terrain surface area: " << terrain_surface_area << std::endl;
+      std::cout << "  Mesh surface area: " << mesh_surface_area << std::endl;
+      std::cout << "  Area ratio (mesh/terrain): " << area_ratio << " (" << (area_ratio * 100.0) << "%)" << std::endl;
+      
+      // Check coverage adequacy
+      if (vertex_density < 0.01) {
+        std::cout << "  ⚠ WARNING: Very sparse mesh - may lose significant terrain detail" << std::endl;
+      } else if (vertex_density < 0.05) {
+        std::cout << "  ⚠ CAUTION: Sparse mesh - some terrain detail may be lost" << std::endl;
       } else if (vertex_density > 0.5) {
-        std::cout << "  INFO: Dense mesh - high terrain detail preserved" << std::endl;
+        std::cout << "  ✓ Dense mesh - high terrain detail preserved" << std::endl;
       } else {
         std::cout << "  ✓ Good mesh density for terrain representation" << std::endl;
+      }
+      
+      // Surface area validation
+      if (area_ratio < 0.7) {
+        std::cout << "  ⚠ WARNING: Mesh surface area significantly less than terrain - incomplete coverage!" << std::endl;
+      } else if (area_ratio > 1.3) {
+        std::cout << "  ℹ INFO: Mesh surface area higher than terrain (may include fine detail or volumetric components)" << std::endl;
+      } else {
+        std::cout << "  ✓ PASS: Mesh surface area approximates terrain data well" << std::endl;
       }
       
       // Check triangle-to-vertex ratio (should be roughly 2:1 for good meshes)
       double tri_vertex_ratio = static_cast<double>(out_mesh.triangles.size()) / out_mesh.vertices.size();
       if (tri_vertex_ratio < 0.5) {
-        std::cout << "  WARNING: Very few triangles relative to vertices" << std::endl;
+        std::cout << "  ⚠ WARNING: Very few triangles relative to vertices" << std::endl;
       } else if (tri_vertex_ratio > 3.0) {
-        std::cout << "  WARNING: Excessive triangles - possible mesh quality issues" << std::endl;
+        std::cout << "  ⚠ WARNING: Excessive triangles - possible mesh quality issues" << std::endl;
       } else {
         std::cout << "  ✓ Good triangle-to-vertex ratio: " << tri_vertex_ratio << std::endl;
-      }
-      
-      // Simple volume delta check for test compatibility (only if tolerance is very strict)
-      if (opt.volume_delta_pct < 5.0) {
-        double simple_volume_ratio = triangle_density / vertex_density;
-        if (simple_volume_ratio < 0.9 || simple_volume_ratio > 1.1) {  // Stricter range for test compatibility
-          std::cout << "WARNING: Volume delta exceeds tolerance - mesh density ratio outside expected range" << std::endl;
-        }
       }
     }
   }
