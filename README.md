@@ -284,6 +284,7 @@ detria::Triangulation<detria::PointD, uint32_t, SoSTriangulationConfig<detria::P
 - **Strategy Auto-Selection**: Automatically choose best algorithm based on problem size
 - **Progressive Fallback**: Graceful degradation when hitting algorithmic limits
 - **Template-Based Design**: Generic implementation supporting multiple data types
+- **Improved Grid Triangulation**: Enhanced region-growing algorithm with adaptive neighborhood search for better handling of sparse vertex distributions in real-world terrain datasets
 
 ## Performance Characteristics
 
@@ -301,6 +302,17 @@ The AUTO strategy automatically selects the best algorithm based on dataset size
 - **Spatial Indexing**: 40x reduction in candidate updates per point insertion
 - **Progressive Fallback**: Automatic batch size reduction when triangulation fails
 - **Smart Sampling**: Adaptive sampling steps prevent memory explosion
+- **Enhanced Grid Triangulation**: Improved region-growing with adaptive neighborhood search eliminates insufficient triangulation issues for real-world terrain datasets
+
+### Grid Triangulation Improvements
+TerraScape's region-growing algorithm now includes enhanced grid triangulation that:
+- **Eliminates sparse triangulation issues** that previously required fallback mechanisms
+- **Uses adaptive neighborhood search** instead of rigid 2x2 grid cells
+- **Scales search radius** based on vertex sampling density
+- **Provides triangle quality controls** with area and aspect ratio limits
+- **Adapts triangle density limits** based on dataset size (conservative for large grids)
+
+This improvement ensures reliable triangulation for diverse terrain types without relying on fallback algorithms.
 
 ### Benchmark Results
 Example performance on 336x459 crater dataset (154K points):
