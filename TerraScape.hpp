@@ -1230,6 +1230,20 @@ inline MeshResult grid_to_mesh_impl(
 
 // --- Volumetric mesh implementations ---
 
+// VOLUMETRIC MESH WALL FIX:
+// This implementation fixes the issue where volume mesh "walls" and "floors" were not uniform and planar.
+// Previous approach used triangulation boundary edges, which could create walls from interior vertices
+// when the surface mesh triangulation didn't reach all the way to the terrain data edges.
+//
+// The fix ensures that:
+// 1. Walls are created only from the actual GEOMETRIC boundaries of the terrain data
+// 2. The base/floor is uniform and planar at z_base
+// 3. Walls are vertical and represent the terrain as if "sliced out of its surrounding matrix"
+//
+// This approach analyzes vertex positions to determine the bounding rectangle and creates walls
+// only from vertices that are actually on the geometric boundary (edges of the data grid),
+// not from triangulation artifacts.
+
 // Helper function to organize boundary vertices into chains for wall creation
 inline std::vector<std::vector<int>> organize_boundary_vertices(
     const MeshResult& surface_mesh,
