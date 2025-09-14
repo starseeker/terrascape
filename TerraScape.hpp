@@ -539,64 +539,103 @@ static inline void triangulateRegionGrowing(const float* elevations,
   }
   
   // Robust triangulation for irregularly sampled vertices
-  // First attempt: Simple grid-based triangulation for dense sampling
+  // Improved approach: Handle sparse vertex distributions better
   int triangles_created = 0;
-  for (int y = 0; y < H-1; ++y) {
-    for (int x = 0; x < W-1; ++x) {
-      // Look for available vertices in 2x2 grid cells
-      std::vector<std::pair<int, int>> vertex_grid_positions;
-      std::vector<int> vertex_indices;
+  
+  // First, try local grid-based triangulation in larger neighborhoods
+  std::vector<bool> triangle_created_map(total_cells, false); // Track which cells have been triangulated
+  
+  // Use larger search neighborhoods for sparse vertex distributions
+  int search_radius = std::max(1, std::min(opt.sampling_step, std::max(W, H) / 20));
+  
+  // Adaptive triangle density limit based on grid size
+  int adaptive_triangle_limit = static_cast<int>(total_cells > 10000 ? 
+    out_mesh.vertices.size() * 1.5 :  // Conservative for large grids
+    out_mesh.vertices.size() * 2.5);  // More permissive for smaller grids
+  
+  for (int y = 0; y < H; y += search_radius) {
+    for (int x = 0; x < W; x += search_radius) {
+      // Look for available vertices in larger neighborhoods
+      std::vector<std::pair<std::pair<int, int>, int>> vertex_data; // ((x,y), vertex_index)
       
-      for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,0}, {1,0}, {0,1}, {1,1}}) {
-        int nx = x + dx, ny = y + dy;
-        if (nx < W && ny < H) {
-          size_t idx = idx_row_major(nx, ny, W);
-          if (vertex_map[idx] != -1) {
-            vertex_grid_positions.push_back({nx, ny});
-            vertex_indices.push_back(vertex_map[idx]);
+      // Search in expanded neighborhood based on sampling step
+      int neighborhood_size = search_radius * 2;
+      for (int dy = -neighborhood_size; dy <= neighborhood_size; ++dy) {
+        for (int dx = -neighborhood_size; dx <= neighborhood_size; ++dx) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            size_t idx = idx_row_major(nx, ny, W);
+            if (vertex_map[idx] != -1) {
+              vertex_data.push_back({{nx, ny}, vertex_map[idx]});
+            }
           }
         }
       }
       
       // Create triangles if we have enough vertices
-      if (vertex_indices.size() >= 3) {
-        if (vertex_indices.size() == 3) {
-          // Ensure correct CCW winding for 3-vertex triangles
-          // Check the winding order using cross product of grid positions
-          auto& pos0 = vertex_grid_positions[0];
-          auto& pos1 = vertex_grid_positions[1]; 
-          auto& pos2 = vertex_grid_positions[2];
-          
-          // Cross product to determine winding
-          double cross = (pos1.first - pos0.first) * (pos2.second - pos0.second) - 
-                        (pos1.second - pos0.second) * (pos2.first - pos0.first);
-          
-          if (cross > 0) {
-            out_mesh.add_triangle(vertex_indices[0], vertex_indices[1], vertex_indices[2]); // CCW
-          } else {
-            out_mesh.add_triangle(vertex_indices[0], vertex_indices[2], vertex_indices[1]); // Flip to CCW
+      if (vertex_data.size() >= 3) {
+        // Sort vertices by distance from center for better triangulation
+        double center_x = x, center_y = y;
+        std::sort(vertex_data.begin(), vertex_data.end(), 
+          [center_x, center_y](const auto& a, const auto& b) {
+            double dist_a = (a.first.first - center_x) * (a.first.first - center_x) + 
+                           (a.first.second - center_y) * (a.first.second - center_y);
+            double dist_b = (b.first.first - center_x) * (b.first.first - center_x) + 
+                           (b.first.second - center_y) * (b.first.second - center_y);
+            return dist_a < dist_b;
+          });
+        
+        // Create triangles connecting nearby vertices with better limits
+        size_t max_vertices = std::min(vertex_data.size(), static_cast<size_t>(6)); // Limit to nearest 6 vertices
+        for (size_t i = 0; i < max_vertices; ++i) {
+          for (size_t j = i + 1; j < max_vertices; ++j) {
+            for (size_t k = j + 1; k < max_vertices; ++k) {
+              auto& v0_pos = vertex_data[i].first;
+              auto& v1_pos = vertex_data[j].first;
+              auto& v2_pos = vertex_data[k].first;
+              
+              int v0 = vertex_data[i].second;
+              int v1 = vertex_data[j].second;
+              int v2 = vertex_data[k].second;
+              
+              // Check if triangle has reasonable aspect ratio and area
+              double dx1 = v1_pos.first - v0_pos.first;
+              double dy1 = v1_pos.second - v0_pos.second;
+              double dx2 = v2_pos.first - v0_pos.first;
+              double dy2 = v2_pos.second - v0_pos.second;
+              
+              double cross_product = dx1 * dy2 - dx2 * dy1;
+              double area = std::abs(cross_product) * 0.5;
+              
+              // Check distances to avoid overly elongated triangles
+              double dist01 = dx1*dx1 + dy1*dy1;
+              double dist02 = dx2*dx2 + dy2*dy2;
+              double dist12 = (v2_pos.first - v1_pos.first) * (v2_pos.first - v1_pos.first) + 
+                             (v2_pos.second - v1_pos.second) * (v2_pos.second - v1_pos.second);
+              
+              double max_dist = std::max({dist01, dist02, dist12});
+              double min_dist = std::min({dist01, dist02, dist12});
+              
+              // Accept triangle if it has good area, aspect ratio, and doesn't create too many overlaps
+              if (area > 1.0 && max_dist < (neighborhood_size * neighborhood_size * 4) && 
+                  (min_dist > 1.0 || max_dist / std::max(min_dist, 1.0) < 50) && 
+                  triangles_created < adaptive_triangle_limit) { // Adaptive limit based on grid size
+                
+                // Ensure counter-clockwise winding
+                if (cross_product > 0) {
+                  out_mesh.add_triangle(v0, v1, v2); // CCW
+                } else {
+                  out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
+                }
+                triangles_created++;
+                
+                // Mark cells as triangulated to avoid creating overlapping triangles
+                triangle_created_map[idx_row_major(v0_pos.first, v0_pos.second, W)] = true;
+                triangle_created_map[idx_row_major(v1_pos.first, v1_pos.second, W)] = true;
+                triangle_created_map[idx_row_major(v2_pos.first, v2_pos.second, W)] = true;
+              }
+            }
           }
-          triangles_created++;
-        } else if (vertex_indices.size() == 4) {
-          // Create two triangles for a quad - be careful about ordering
-          // Sort vertices by grid position to ensure consistent winding
-          std::vector<std::pair<std::pair<int,int>, int>> pos_vertex_pairs;
-          for (size_t i = 0; i < vertex_grid_positions.size(); ++i) {
-            pos_vertex_pairs.push_back({vertex_grid_positions[i], vertex_indices[i]});
-          }
-          std::sort(pos_vertex_pairs.begin(), pos_vertex_pairs.end());
-          
-          // Extract sorted vertex indices
-          std::vector<int> sorted_vertices;
-          for (const auto& pair : pos_vertex_pairs) {
-            sorted_vertices.push_back(pair.second);
-          }
-          
-          // Create two triangles for the quad with correct CCW winding
-          // sorted_vertices[0] = (0,0), [1] = (0,1), [2] = (1,0), [3] = (1,1)
-          out_mesh.add_triangle(sorted_vertices[0], sorted_vertices[2], sorted_vertices[1]); // (0,0), (1,0), (0,1) - CCW
-          out_mesh.add_triangle(sorted_vertices[2], sorted_vertices[3], sorted_vertices[1]); // (1,0), (1,1), (0,1) - CCW
-          triangles_created += 2;
         }
       }
     }
