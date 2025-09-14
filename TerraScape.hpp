@@ -113,6 +113,43 @@ struct InternalMesh {
   void add_triangle(int v0, int v1, int v2) {
     triangles.emplace_back(std::array<int, 3>{v0, v1, v2});
   }
+  
+  // Add triangle with correct winding order for upward normals
+  void add_triangle_with_upward_normal(int v0, int v1, int v2) {
+    if (v0 >= vertices.size() || v1 >= vertices.size() || v2 >= vertices.size()) {
+      return; // Invalid vertex indices
+    }
+    
+    // Compute triangle normal to determine correct winding
+    const auto& p0 = vertices[v0];
+    const auto& p1 = vertices[v1]; 
+    const auto& p2 = vertices[v2];
+    
+    // Edge vectors
+    double edge1_x = p1[0] - p0[0];
+    double edge1_y = p1[1] - p0[1];
+    double edge1_z = p1[2] - p0[2];
+    
+    double edge2_x = p2[0] - p0[0];
+    double edge2_y = p2[1] - p0[1];
+    double edge2_z = p2[2] - p0[2];
+    
+    // Cross product: edge1 × edge2 (only need z component for 2D triangulation)
+    double normal_z = edge1_x * edge2_y - edge1_y * edge2_x;
+    
+    // Check triangle area to avoid degenerate triangles
+    double area = std::abs(normal_z) * 0.5;
+    if (area < 1e-6) {
+      return; // Degenerate triangle
+    }
+    
+    // Add triangle with correct winding for upward normal (normal_z > 0)
+    if (normal_z > 0) {
+      triangles.emplace_back(std::array<int, 3>{v0, v1, v2}); // CCW (upward normal)
+    } else {
+      triangles.emplace_back(std::array<int, 3>{v0, v2, v1}); // CW -> CCW (flip to upward normal)
+    }
+  }
 };
 
 // ================================= Helper Functions =================================
@@ -810,11 +847,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
                           (p2.first - p0.first) * (p1.second - p0.second);
             
             if (std::abs(cross) > 0.1) { // Non-degenerate
-              if (cross > 0) {
-                out_mesh.add_triangle(v0, v1, v2); // CCW
-              } else {
-                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
-              }
+              // Use the new function that ensures correct winding
+              out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
               triangles_created++;
             }
           } else if (cell_vertices.size() == 4) {
@@ -830,9 +864,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
             auto& p2 = cell_vertices[2].first;
             auto& p3 = cell_vertices[3].first;
             
-            // Create two triangles with consistent winding
-            out_mesh.add_triangle(v0, v1, v2); // First triangle
-            out_mesh.add_triangle(v0, v2, v3); // Second triangle
+            // Create two triangles with correct upward-facing normals
+            out_mesh.add_triangle_with_upward_normal(v0, v1, v2); // First triangle
+            out_mesh.add_triangle_with_upward_normal(v0, v2, v3); // Second triangle
             triangles_created += 2;
           }
         }
@@ -924,12 +958,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
                   (min_dist > 1.0 || max_dist / std::max(min_dist, 1.0) < 50) && 
                   triangles_created < adaptive_triangle_limit) { // Adaptive limit based on grid size
                 
-                // Ensure counter-clockwise winding
-                if (cross_product > 0) {
-                  out_mesh.add_triangle(v0, v1, v2); // CCW
-                } else {
-                  out_mesh.add_triangle(v0, v2, v1); // Flip to CCW
-                }
+                // Use the new function that ensures correct winding
+                out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
                 triangles_created++;
                 
                 // Mark cells as triangulated to avoid creating overlapping triangles
@@ -986,7 +1016,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
         int v0 = sorted_vertices[0].second;
         int v1 = sorted_vertices[i].second;
         int v2 = sorted_vertices[i + 1].second;
-        out_mesh.add_triangle(v0, v2, v1); // Reversed winding for correct normals
+        out_mesh.add_triangle_with_upward_normal(v0, v1, v2); // Correct winding ensured
         triangles_created++;
       }
     } else {
@@ -1053,12 +1083,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
             double cross_product = dx1 * dy2 - dx2 * dy1;
             double area = std::abs(cross_product);
             if (area > 0.1) { // Avoid degenerate triangles
-              // Ensure counter-clockwise winding for upward-facing normals
-              if (cross_product > 0) {
-                out_mesh.add_triangle(v0, v1, v2); // CCW winding
-              } else {
-                out_mesh.add_triangle(v0, v2, v1); // Flip to CCW winding
-              }
+              // Use the new function that ensures correct winding
+              out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
               triangles_created++;
             }
           }
