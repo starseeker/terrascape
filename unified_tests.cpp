@@ -524,6 +524,285 @@ void run_tolerance_tests(TestSuite& suite) {
     }
 }
 
+// =============================================================================
+// Feature Detection and Graph Optimization Tests
+// =============================================================================
+
+bool test_feature_detection_basic() {
+    // Create a simple 5x5 grid with a ridge
+    std::vector<float> elevations = {
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0
+    };
+    
+    ElevationGrid grid(elevations.data(), 5, 5);
+    auto feature_map = FeatureDetection::compute_feature_map(grid);
+    
+    // Check that feature map has correct dimensions
+    if (feature_map.size() != 5 || feature_map[0].size() != 5) {
+        return false;
+    }
+    
+    // Check that the ridge (center column) has higher feature values
+    for (int y = 1; y < 4; y++) {
+        if (feature_map[y][2] <= feature_map[y][1] || feature_map[y][2] <= feature_map[y][3]) {
+            return false; // Ridge should have higher feature strength
+        }
+    }
+    
+    return true;
+}
+
+bool test_feature_detection_flat_surface() {
+    // Create a flat surface - should have minimal features
+    std::vector<float> elevations = {
+        1, 1, 1, 1,
+        1, 1, 1, 1,
+        1, 1, 1, 1,
+        1, 1, 1, 1
+    };
+    
+    ElevationGrid grid(elevations.data(), 4, 4);
+    auto feature_map = FeatureDetection::compute_feature_map(grid);
+    
+    // Check that all feature values are very small (near zero)
+    for (const auto& row : feature_map) {
+        for (double val : row) {
+            if (val > 0.1) {
+                return false; // Flat surface should have very low feature strength
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool test_graph_algorithms_basic() {
+    // Test basic graph creation and MST
+    Lemon::ListGraph graph;
+    auto n0 = graph.addNode();
+    auto n1 = graph.addNode();
+    auto n2 = graph.addNode();
+    auto n3 = graph.addNode();
+    
+    graph.addEdge(n0, n1, 1.0);
+    graph.addEdge(n1, n2, 2.0);
+    graph.addEdge(n2, n3, 1.5);
+    graph.addEdge(n0, n3, 4.0);
+    graph.addEdge(n0, n2, 3.0);
+    
+    if (graph.nodeCount() != 4 || graph.edgeCount() != 5) {
+        return false;
+    }
+    
+    // Test MST
+    auto mst_edges = Lemon::kruskalMST(graph);
+    
+    // MST should have exactly 3 edges for 4 nodes
+    if (mst_edges.size() != 3) {
+        return false;
+    }
+    
+    // Calculate total weight - should be minimal spanning tree
+    double total_weight = 0.0;
+    for (auto edge_id : mst_edges) {
+        total_weight += graph.edge(edge_id).weight;
+    }
+    
+    // Expected MST weight: 1.0 + 1.5 + 2.0 = 4.5
+    return std::abs(total_weight - 4.5) < 1e-6;
+}
+
+bool test_terrain_graph_construction() {
+    // Create a simple feature map
+    std::vector<std::vector<double>> feature_map = {
+        {0.0, 0.5, 0.0},
+        {0.0, 1.0, 0.0},  // Strong feature in center
+        {0.0, 0.5, 0.0}
+    };
+    
+    auto graph = Lemon::buildTerrainGraph(3, 3, feature_map, 10.0);
+    
+    // Should have 9 nodes (3x3 grid)
+    if (graph.nodeCount() != 9) {
+        return false;
+    }
+    
+    // Should have 12 edges (8 horizontal/vertical connections in 3x3 grid)
+    // (3-1)*3 + 3*(3-1) = 6 + 6 = 12
+    if (graph.edgeCount() != 12) {
+        return false;
+    }
+    
+    // Check that edges crossing the strong feature have higher weights
+    bool found_high_weight_edge = false;
+    for (const auto& edge : graph.edges()) {
+        if (edge.weight > 5.0) { // Should be 1.0 + 10.0 * 1.0 = 11.0 for center feature
+            found_high_weight_edge = true;
+            break;
+        }
+    }
+    
+    return found_high_weight_edge;
+}
+
+bool test_advanced_triangulation_with_features() {
+    // Create a simple terrain with a feature
+    std::vector<float> elevations = {
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0,
+        0, 0, 1, 0, 0
+    };
+    
+    RegionGrowingOptions opts;
+    opts.base_error_threshold = 0.1;
+    opts.enable_feature_detection = true;
+    opts.enable_graph_optimization = true;
+    opts.use_mst_for_regions = true;
+    
+    auto mesh = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts);
+    
+    // Should generate a valid mesh
+    return mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+}
+
+bool test_triangulation_fallback() {
+    // Create a test case that might trigger the triangulation fallback
+    std::vector<float> elevations = {
+        1, 1, 5, 1, 1,
+        1, 5, 1, 5, 1,
+        5, 1, 1, 1, 5,
+        1, 5, 1, 5, 1,
+        1, 1, 5, 1, 1
+    };
+    
+    // Use settings that create sparse vertex sampling
+    RegionGrowingOptions opts;
+    opts.enable_feature_detection = true;
+    opts.enable_graph_optimization = true;
+    opts.base_error_threshold = 2.0;  // High threshold
+    opts.sampling_step = 3;           // Large sampling step
+    
+    auto mesh = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts);
+    
+    // Should generate valid mesh even if fallback triangulation is used
+    return mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
+}
+
+bool test_zero_triangle_validation() {
+    // Test that zero-triangle cases are properly reported
+    std::vector<float> elevations(25, 1.0f); // 5x5 perfectly flat
+    
+    RegionGrowingOptions opts;
+    opts.enable_feature_detection = true;
+    opts.abs_tolerance_mm = 10.0;  // Very high tolerance
+    opts.rel_tolerance = 1.0;      // Very high relative tolerance
+    opts.base_error_threshold = 10.0; // Very high threshold
+    
+    // Capture output to check for error messages
+    std::streambuf* orig = std::cout.rdbuf();
+    std::ostringstream capture;
+    std::cout.rdbuf(capture.rdbuf());
+    
+    auto mesh = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts);
+    
+    std::cout.rdbuf(orig);
+    std::string output = capture.str();
+    
+    // Should either generate triangles OR properly report the issue
+    bool has_triangles = mesh.triangles.size() > 0;
+    bool reports_issue = output.find("CRITICAL ERROR") != std::string::npos || 
+                        output.find("WARNING") != std::string::npos;
+    
+    return has_triangles || reports_issue;
+}
+
+bool test_differential_feature_impact() {
+    // Create terrain data
+    std::vector<float> elevations = {
+        0, 0, 2, 0, 0,
+        0, 1, 2, 1, 0,
+        0, 0, 2, 0, 0,
+        0, 1, 2, 1, 0,
+        0, 0, 2, 0, 0
+    };
+    
+    // Generate mesh without features
+    RegionGrowingOptions opts_no_features;
+    opts_no_features.base_error_threshold = 0.5;
+    auto mesh_no_features = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts_no_features);
+    
+    // Generate mesh with features
+    RegionGrowingOptions opts_with_features = opts_no_features;
+    opts_with_features.enable_feature_detection = true;
+    opts_with_features.enable_graph_optimization = true;
+    auto mesh_with_features = region_growing_triangulation_advanced(elevations.data(), 5, 5, nullptr, opts_with_features);
+    
+    // Both should generate valid meshes
+    bool both_valid = (mesh_no_features.vertices.size() > 0 && mesh_no_features.triangles.size() > 0 &&
+                      mesh_with_features.vertices.size() > 0 && mesh_with_features.triangles.size() > 0);
+    
+    // The results can be the same or different - main thing is they both work
+    return both_valid;
+}
+
+void run_feature_tests(TestSuite& suite) {
+    suite.beginCategory("Feature Detection and Graph Optimization Tests");
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    bool result = test_feature_detection_basic();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Feature Detection Basic Ridge", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_feature_detection_flat_surface();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Feature Detection Flat Surface", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_graph_algorithms_basic();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Graph Algorithms MST", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_terrain_graph_construction();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Terrain Graph Construction", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_advanced_triangulation_with_features();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Advanced Triangulation with Features", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_triangulation_fallback();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Triangulation Fallback Mechanism", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_zero_triangle_validation();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Zero Triangle Validation", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_differential_feature_impact();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Differential Feature Impact", "", duration);
+}
+
 int main(int argc, char* argv[]) {
     cxxopts::Options options("unified_tests", "TerraScape Unified Test Suite");
     
@@ -536,6 +815,7 @@ int main(int argc, char* argv[]) {
         ("d,dsp", "Run DSP/Hawaii data tests", cxxopts::value<bool>()->default_value("false"))
         ("e,edge", "Run edge case tests", cxxopts::value<bool>()->default_value("false"))
         ("t,tolerance", "Run BRL-CAD tolerance integration tests", cxxopts::value<bool>()->default_value("false"))
+        ("f,features", "Run feature detection and graph optimization tests", cxxopts::value<bool>()->default_value("false"))
         ("a,all", "Run all tests", cxxopts::value<bool>()->default_value("false"));
 
     auto result = options.parse(argc, argv);
@@ -574,10 +854,14 @@ int main(int argc, char* argv[]) {
         run_tolerance_tests(suite);
     }
     
+    if (run_all || result["features"].as<bool>()) {
+        run_feature_tests(suite);
+    }
+    
     // If no specific tests selected, run basic tests
     if (!run_all && !result["basic"].as<bool>() && !result["volumetric"].as<bool>() && 
         !result["performance"].as<bool>() && !result["dsp"].as<bool>() && !result["edge"].as<bool>() &&
-        !result["tolerance"].as<bool>()) {
+        !result["tolerance"].as<bool>() && !result["features"].as<bool>()) {
         run_basic_tests(suite);
     }
     

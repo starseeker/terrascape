@@ -26,6 +26,10 @@
 #include <cstdint>
 #include <array>
 
+// Feature detection and graph optimization modules
+#include "FeatureDetection.hpp"
+#include "lemon.hpp"
+
 // BRL-CAD tolerance integration and region-growing triangulation now included directly
 
 #if defined(_WIN32)
@@ -86,6 +90,14 @@ struct RegionGrowingOptions {
   int min_volume_passes = 2;                 // Minimum passes before checking volume convergence
   bool use_precomputed_complexity = true;    // Use pre-computed terrain complexity
   double complexity_scale_factor = 1.0;      // Complexity scaling factor
+  
+  // FEATURE DETECTION & GRAPH OPTIMIZATION: New advanced features
+  bool enable_feature_detection = false;      // Enable terrain feature detection
+  bool enable_graph_optimization = false;     // Enable graph-based segmentation optimization
+  double feature_penalty_weight = 10.0;       // Weight for penalizing cuts across strong features
+  double feature_threshold = 0.5;             // Threshold for identifying strong features
+  bool use_mst_for_regions = false;           // Use MST for region connectivity optimization
+  bool use_mincut_for_boundaries = false;     // Use min-cut for optimal boundary placement
 };
 
 // Internal mesh structure for region-growing algorithm
@@ -222,6 +234,58 @@ static inline void triangulateRegionGrowing(const float* elevations,
   
   // Calculate region-growing parameters from mesh_density
   opt = calculate_region_parameters(opt, width, height);
+  
+  // FEATURE DETECTION & GRAPH OPTIMIZATION: Apply terrain feature analysis
+  std::vector<std::vector<double>> feature_map;
+  bool has_feature_map = false;
+  
+  if (opt.enable_feature_detection) {
+    std::cerr << "TerraScape: Computing terrain feature map..." << std::endl;
+    
+    // Create elevation grid for feature detection
+    ElevationGrid grid(elevations, width, height);
+    
+    // Configure feature detection options
+    FeatureDetection::FeatureDetectionOptions feature_opts;
+    feature_opts.gradient_threshold = opt.base_error_threshold * 0.5; // Scale with error threshold
+    feature_opts.curvature_threshold = opt.base_error_threshold * 0.3;
+    
+    // Compute feature map
+    feature_map = FeatureDetection::compute_feature_map(grid, feature_opts);
+    has_feature_map = true;
+    
+    // Count strong features for user feedback
+    auto strong_features = FeatureDetection::find_strong_features(feature_map, opt.feature_threshold);
+    std::cerr << "TerraScape: Found " << strong_features.size() << " strong terrain features" << std::endl;
+  }
+  
+  // GRAPH-BASED OPTIMIZATION: Modify triangulation parameters based on features
+  if (opt.enable_graph_optimization && has_feature_map) {
+    std::cerr << "TerraScape: Applying graph-based segmentation optimization..." << std::endl;
+    
+    // Build terrain graph with feature-weighted edges
+    auto terrain_graph = Lemon::buildTerrainGraph(width, height, feature_map, opt.feature_penalty_weight);
+    
+    if (opt.use_mst_for_regions) {
+      // Use MST to guide region connectivity
+      auto mst_edges = Lemon::kruskalMST(terrain_graph);
+      std::cerr << "TerraScape: MST computed with " << mst_edges.size() << " edges" << std::endl;
+      
+      // Adjust region merging threshold based on MST structure
+      double total_mst_weight = 0.0;
+      for (auto edge_id : mst_edges) {
+        total_mst_weight += terrain_graph.edge(edge_id).weight;
+      }
+      double avg_mst_weight = total_mst_weight / mst_edges.size();
+      
+      // Scale region merge threshold by average MST edge weight
+      opt.region_merge_threshold *= (avg_mst_weight / opt.feature_penalty_weight);
+      std::cerr << "TerraScape: Adjusted region merge threshold to " << opt.region_merge_threshold << std::endl;
+    }
+    
+    // Additional graph optimizations could be added here
+    // (min-cut for boundary placement, etc.)
+  }
   
   // Step 1: Find local minima and maxima
   std::vector<std::pair<int, int>> local_extrema;
@@ -442,10 +506,13 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // Simple grid-based triangulation for the sampled vertices
+  // Robust triangulation for irregularly sampled vertices
+  // First attempt: Simple grid-based triangulation for dense sampling
+  int triangles_created = 0;
   for (int y = 0; y < H-1; ++y) {
     for (int x = 0; x < W-1; ++x) {
       // Look for available vertices in 2x2 grid cells
+      std::vector<std::pair<int, int>> vertex_grid_positions;
       std::vector<int> vertex_indices;
       
       for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,0}, {1,0}, {0,1}, {1,1}}) {
@@ -453,6 +520,7 @@ static inline void triangulateRegionGrowing(const float* elevations,
         if (nx < W && ny < H) {
           size_t idx = idx_row_major(nx, ny, W);
           if (vertex_map[idx] != -1) {
+            vertex_grid_positions.push_back({nx, ny});
             vertex_indices.push_back(vertex_map[idx]);
           }
         }
@@ -462,29 +530,88 @@ static inline void triangulateRegionGrowing(const float* elevations,
       if (vertex_indices.size() >= 3) {
         if (vertex_indices.size() == 3) {
           out_mesh.add_triangle(vertex_indices[0], vertex_indices[1], vertex_indices[2]);
+          triangles_created++;
         } else if (vertex_indices.size() == 4) {
-          // Create two triangles for a quad
-          out_mesh.add_triangle(vertex_indices[0], vertex_indices[1], vertex_indices[2]);
-          out_mesh.add_triangle(vertex_indices[1], vertex_indices[3], vertex_indices[2]);
+          // Create two triangles for a quad - be careful about ordering
+          // Sort vertices by grid position to ensure consistent winding
+          std::vector<std::pair<std::pair<int,int>, int>> pos_vertex_pairs;
+          for (size_t i = 0; i < vertex_grid_positions.size(); ++i) {
+            pos_vertex_pairs.push_back({vertex_grid_positions[i], vertex_indices[i]});
+          }
+          std::sort(pos_vertex_pairs.begin(), pos_vertex_pairs.end());
+          
+          // Extract sorted vertex indices
+          std::vector<int> sorted_vertices;
+          for (const auto& pair : pos_vertex_pairs) {
+            sorted_vertices.push_back(pair.second);
+          }
+          
+          // Create two triangles for the quad
+          out_mesh.add_triangle(sorted_vertices[0], sorted_vertices[1], sorted_vertices[2]);
+          out_mesh.add_triangle(sorted_vertices[1], sorted_vertices[3], sorted_vertices[2]);
+          triangles_created += 2;
         }
       }
     }
   }
   
-  // BRL-CAD Volume Sanity Check: Compare mesh volume vs theoretical cell volume
-  if (opt.volume_delta_pct > 0.0 && out_mesh.triangles.size() > 0) {
-    double mesh_volume = calculate_internal_mesh_volume_simple(out_mesh);
-    double cell_volume = calculate_cell_volume_simple(elevations, width, height, mask);
+  // If the grid-based approach didn't create enough triangles (sparse sampling), 
+  // fall back to a more flexible triangulation approach
+  if (triangles_created == 0 && out_mesh.vertices.size() >= 3) {
+    std::cerr << "TerraScape: Grid triangulation failed, using fallback triangulation for " 
+              << out_mesh.vertices.size() << " vertices" << std::endl;
     
-    if (cell_volume > 0.0) {
-      double volume_ratio = std::abs(mesh_volume - cell_volume) / cell_volume * 100.0;
+    // Create vertex position lookup for spatial triangulation
+    std::vector<std::tuple<double, double, int>> vertex_positions; // x, y, vertex_index
+    for (size_t i = 0; i < out_mesh.vertices.size(); ++i) {
+      vertex_positions.push_back({out_mesh.vertices[i][0], out_mesh.vertices[i][1], static_cast<int>(i)});
+    }
+    
+    // Sort by y, then by x for systematic triangulation
+    std::sort(vertex_positions.begin(), vertex_positions.end());
+    
+    // Simple fan triangulation from first vertex (works for convex-ish distributions)
+    if (vertex_positions.size() >= 3) {
+      int center_vertex = std::get<2>(vertex_positions[0]);
+      for (size_t i = 1; i < vertex_positions.size() - 1; ++i) {
+        int v1 = std::get<2>(vertex_positions[i]);
+        int v2 = std::get<2>(vertex_positions[i + 1]);
+        out_mesh.add_triangle(center_vertex, v1, v2);
+        triangles_created++;
+      }
+    }
+    
+    std::cerr << "TerraScape: Fallback triangulation created " << triangles_created << " triangles" << std::endl;
+  }
+  
+  // BRL-CAD Volume Sanity Check: Compare mesh volume vs theoretical cell volume
+  if (opt.volume_delta_pct > 0.0) {
+    if (out_mesh.triangles.size() == 0) {
+      // CRITICAL ERROR: No triangles generated despite having vertices
+      if (out_mesh.vertices.size() > 0) {
+        std::cout << "CRITICAL ERROR: Generated " << out_mesh.vertices.size() 
+                  << " vertices but 0 triangles!" << std::endl;
+        std::cout << "  This indicates a triangulation failure that should be investigated." << std::endl;
+        std::cout << "  Consider adjusting sampling parameters or error thresholds." << std::endl;
+      } else {
+        std::cout << "WARNING: No vertices or triangles generated" << std::endl;
+        std::cout << "  Input may be too uniform or tolerance thresholds too strict" << std::endl;
+      }
+    } else {
+      // Normal volume validation when triangles exist
+      double mesh_volume = calculate_internal_mesh_volume_simple(out_mesh);
+      double cell_volume = calculate_cell_volume_simple(elevations, width, height, mask);
       
-      if (volume_ratio > opt.volume_delta_pct) {
-        std::cout << "WARNING: Volume delta exceeds tolerance (" << volume_ratio 
-                  << "% > " << opt.volume_delta_pct << "%)" << std::endl;
-        std::cout << "  Mesh volume: " << mesh_volume 
-                  << ", Cell volume: " << cell_volume << std::endl;
-        std::cout << "  Consider lowering tolerance thresholds for better accuracy" << std::endl;
+      if (cell_volume > 0.0) {
+        double volume_ratio = std::abs(mesh_volume - cell_volume) / cell_volume * 100.0;
+        
+        if (volume_ratio > opt.volume_delta_pct) {
+          std::cout << "WARNING: Volume delta exceeds tolerance (" << volume_ratio 
+                    << "% > " << opt.volume_delta_pct << "%)" << std::endl;
+          std::cout << "  Mesh volume: " << mesh_volume 
+                    << ", Cell volume: " << cell_volume << std::endl;
+          std::cout << "  Consider lowering tolerance thresholds for better accuracy" << std::endl;
+        }
       }
     }
   }
@@ -853,6 +980,58 @@ inline MeshResult grid_to_mesh_impl(
         rg_opt.max_refinement_passes = 4;
         rg_opt.max_initial_iterations = 5000000;
         std::cerr << "TerraScape: Using low-detail terrain parameters" << std::endl;
+    }
+
+    // FEATURE DETECTION & GRAPH OPTIMIZATION: Optional terrain feature analysis
+    std::vector<std::vector<double>> feature_map;
+    bool has_feature_map = false;
+    
+    if (rg_opt.enable_feature_detection) {
+        std::cerr << "TerraScape: Computing terrain feature map..." << std::endl;
+        
+        // Create elevation grid for feature detection
+        ElevationGrid grid(preprocessing.processed_elevations.data(), width, height);
+        
+        // Configure feature detection options
+        FeatureDetection::FeatureDetectionOptions feature_opts;
+        feature_opts.gradient_threshold = rg_opt.base_error_threshold * 0.5; // Scale with error threshold
+        feature_opts.curvature_threshold = rg_opt.base_error_threshold * 0.3;
+        
+        // Compute feature map
+        feature_map = FeatureDetection::compute_feature_map(grid, feature_opts);
+        has_feature_map = true;
+        
+        // Count strong features for user feedback
+        auto strong_features = FeatureDetection::find_strong_features(feature_map, rg_opt.feature_threshold);
+        std::cerr << "TerraScape: Found " << strong_features.size() << " strong terrain features" << std::endl;
+    }
+    
+    // GRAPH-BASED OPTIMIZATION: Modify triangulation parameters based on features
+    if (rg_opt.enable_graph_optimization && has_feature_map) {
+        std::cerr << "TerraScape: Applying graph-based segmentation optimization..." << std::endl;
+        
+        // Build terrain graph with feature-weighted edges
+        auto terrain_graph = Lemon::buildTerrainGraph(width, height, feature_map, rg_opt.feature_penalty_weight);
+        
+        if (rg_opt.use_mst_for_regions) {
+            // Use MST to guide region connectivity
+            auto mst_edges = Lemon::kruskalMST(terrain_graph);
+            std::cerr << "TerraScape: MST computed with " << mst_edges.size() << " edges" << std::endl;
+            
+            // Adjust region merging threshold based on MST structure
+            double total_mst_weight = 0.0;
+            for (auto edge_id : mst_edges) {
+                total_mst_weight += terrain_graph.edge(edge_id).weight;
+            }
+            double avg_mst_weight = total_mst_weight / mst_edges.size();
+            
+            // Scale region merge threshold by average MST edge weight
+            rg_opt.region_merge_threshold *= (avg_mst_weight / rg_opt.feature_penalty_weight);
+            std::cerr << "TerraScape: Adjusted region merge threshold to " << rg_opt.region_merge_threshold << std::endl;
+        }
+        
+        // Additional graph optimizations could be added here
+        // (min-cut for boundary placement, etc.)
     }
 
     // Volume validation sanity check - already performed by region-growing algorithm
