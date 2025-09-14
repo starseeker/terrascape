@@ -41,8 +41,14 @@ Thumbs.db
 # Test artifacts
 /tmp/
 test_wall_issue
-test_wall_fix  
+test_wall_fix
 test_volumetric_walls
+test_wall_normals
+test_zero_height_holes
+test_debug_interior
+test_detailed_interior
+test_mixed_elevation
+test_wall_fixes
 
 # Old documentation and test files (removed during v0.8 cleanup)
 # SoS_README.md - consolidated into main README.md
