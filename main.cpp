@@ -122,12 +122,22 @@ int main(int argc, char **argv)
     bool volumetric = true;           // Generate volumetric mesh by default
     float z_base = 0.0f;             // Base level for volumetric mesh
     
+    // BRL-CAD tolerance parameters
+    double abs_tolerance_mm = 0.1;
+    double rel_tolerance = 0.01;
+    double norm_tolerance_deg = 15.0;
+    double volume_delta_pct = 10.0;
+    
     // Simple command line parsing
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         cout << "Usage: " << argv[0] << " [options] [input] [output.obj] [error_threshold] [point_limit]" << endl;
         cout << "Options:" << endl;
         cout << "  -s, --surface: Generate surface mesh instead of volumetric (closed manifold) mesh" << endl;
         cout << "  --base <z>: Set base level for volumetric mesh (default: 0.0)" << endl;
+        cout << "  --abs-tolerance <mm>: Absolute tolerance in millimeters (default: 0.1)" << endl;
+        cout << "  --rel-tolerance <frac>: Relative tolerance as fraction (default: 0.01)" << endl;
+        cout << "  --norm-tolerance <deg>: Normal angle tolerance in degrees (default: 15.0)" << endl;
+        cout << "  --volume-delta <pct>: Max volume delta percentage (default: 10.0)" << endl;
         cout << "  -h, --help: Show this help message" << endl;
         cout << "Arguments:" << endl;
         cout << "  input: Input heightfield file (.pgm format, default: auto-detect)" << endl;
@@ -150,6 +160,14 @@ int main(int argc, char **argv)
             }
         } else if (strcmp(argv[arg_idx], "--base") == 0 && arg_idx + 1 < argc) {
             z_base = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--abs-tolerance") == 0 && arg_idx + 1 < argc) {
+            abs_tolerance_mm = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--rel-tolerance") == 0 && arg_idx + 1 < argc) {
+            rel_tolerance = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--norm-tolerance") == 0 && arg_idx + 1 < argc) {
+            norm_tolerance_deg = atof(argv[++arg_idx]);
+        } else if (strcmp(argv[arg_idx], "--volume-delta") == 0 && arg_idx + 1 < argc) {
+            volume_delta_pct = atof(argv[++arg_idx]);
         } else {
             // Non-option argument - handle positionally
             static int pos_arg = 0;
@@ -186,6 +204,15 @@ int main(int argc, char **argv)
     if (volumetric) {
         cout << "Base level: " << z_base << endl;
     }
+    
+    // Display BRL-CAD tolerance settings (currently for reference - direct greedy_cuts API needed for full control)
+    cout << "\n=== BRL-CAD Tolerance Settings (Reference) ===" << endl;
+    cout << "Absolute tolerance: " << abs_tolerance_mm << " mm" << endl;
+    cout << "Relative tolerance: " << rel_tolerance << " (fraction)" << endl;
+    cout << "Normal tolerance: " << norm_tolerance_deg << " degrees" << endl;
+    cout << "Volume delta tolerance: " << volume_delta_pct << "%" << endl;
+    cout << "Note: For full tolerance control, use greedy_cuts.hpp API directly" << endl;
+    cout << "===============================================" << endl;
     cout << endl;
     
     // Read elevation file (supports PGM format)

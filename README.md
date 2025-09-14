@@ -10,6 +10,7 @@ TerraScape provides efficient grid-to-mesh conversion with robust geometric algo
 
 - **Advanced Delaunay Triangulation**: Uses robust geometric predicates and half-edge topology management
 - **Greedy Error-Driven Refinement**: Iteratively adds points where they reduce approximation error most
+- **BRL-CAD Tolerance Integration**: Precision control with absolute, relative, and volume tolerance parameters
 - **Multiple Refinement Strategies**: AUTO, HEAP, HYBRID, and SPARSE modes for different use cases
 - **Simulation of Simplicity (SoS)**: Robust handling of geometric degeneracies with production-ready implementation
 - **Template-Based API**: Works with float, double, or any numeric elevation type
@@ -106,6 +107,67 @@ The terrain data processor can:
 - Generate optimized meshes from real terrain data
 - Validate generated meshes against original elevation data
 - Create sample terrain data when real data is unavailable
+
+## BRL-CAD Tolerance Integration
+
+TerraScape includes advanced tolerance control parameters for precision mesh generation, compatible with BRL-CAD standards:
+
+### Tolerance Parameters
+
+- **Absolute Tolerance** (`abs_tolerance_mm`): Minimum geometric difference in millimeters (default: 0.1)
+- **Relative Tolerance** (`rel_tolerance`): Minimum relative difference as fraction (default: 0.01)  
+- **Normal Tolerance** (`norm_tolerance_deg`): Maximum normal angle variation in degrees (default: 15.0)
+- **Volume Delta** (`volume_delta_pct`): Maximum mesh/cell volume difference percentage (default: 10.0)
+
+### Direct API Usage
+
+```cpp
+#include "greedy_cuts.hpp"
+
+terrascape::GreedyCutsOptions opts;
+opts.abs_tolerance_mm = 0.1;      // 0.1mm absolute tolerance
+opts.rel_tolerance = 0.01;        // 1% relative tolerance  
+opts.norm_tolerance_deg = 15.0;   // 15° normal tolerance
+opts.volume_delta_pct = 10.0;     // 10% volume tolerance
+opts.use_region_growing = true;
+
+terrascape::Mesh mesh;
+terrascape::triangulateGreedyCuts(elevations.data(), width, height, nullptr, opts, mesh);
+```
+
+### Command-Line Usage
+
+```bash
+# Test program with tolerance control
+./test_region_growing --abs-tolerance 0.1 --rel-tolerance 0.01 --volume-delta 10.0
+
+# Main demo with tolerance settings (parsing only)
+./terrascape_demo --abs-tolerance 0.1 --rel-tolerance 0.01 --norm-tolerance 15.0 --volume-delta 10.0
+```
+
+### Testing Tolerance Integration
+
+```bash
+# Run tolerance-specific tests
+ctest -R ToleranceTests
+
+# Run automated tolerance test matrix
+./test_tolerance_matrix.sh
+
+# Individual test configurations
+./test_region_growing --abs-tolerance 0.01 --rel-tolerance 0.001 --volume-delta 5.0  # Strict
+./test_region_growing --abs-tolerance 1.0 --rel-tolerance 0.05 --volume-delta 50.0   # Relaxed
+```
+
+### Volume Validation
+
+The system automatically validates mesh volume against theoretical cell volume:
+
+```
+WARNING: Volume delta exceeds tolerance (25.3% > 10.0%)
+  Mesh volume: 1234.56, Cell volume: 1543.21
+  Consider lowering tolerance thresholds for better accuracy
+```
 
 ## API Reference
 
