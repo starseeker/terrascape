@@ -440,12 +440,10 @@ void run_tolerance_tests(TestSuite& suite) {
                                         2.0f, 3.0f, 4.0f, 5.0f,
                                         3.0f, 4.0f, 5.0f, 6.0f};
         
-        terrascape::GreedyCutsOptions opt;
-        opt.use_region_growing = true;
+        TerraScape::RegionGrowingOptions opt;
         // Use default tolerance values
         
-        terrascape::Mesh mesh;
-        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        TerraScape::MeshResult mesh = TerraScape::region_growing_triangulation_advanced(elevations.data(), 4, 4, nullptr, opt);
         
         bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
         
@@ -465,14 +463,12 @@ void run_tolerance_tests(TestSuite& suite) {
                                         0.2f, 0.3f, 0.4f, 0.5f,
                                         0.3f, 0.4f, 0.5f, 0.6f};
         
-        terrascape::GreedyCutsOptions opt;
-        opt.use_region_growing = true;
+        TerraScape::RegionGrowingOptions opt;
         opt.abs_tolerance_mm = 0.01;      // Very strict absolute tolerance
         opt.rel_tolerance = 0.001;        // Very strict relative tolerance
         opt.volume_delta_pct = 5.0;       // Strict volume tolerance
         
-        terrascape::Mesh mesh;
-        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        TerraScape::MeshResult mesh = TerraScape::region_growing_triangulation_advanced(elevations.data(), 4, 4, nullptr, opt);
         
         bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
         
@@ -491,14 +487,12 @@ void run_tolerance_tests(TestSuite& suite) {
                                         20.0f, 30.0f, 40.0f, 50.0f,
                                         30.0f, 40.0f, 50.0f, 60.0f};
         
-        terrascape::GreedyCutsOptions opt;
-        opt.use_region_growing = true;
+        TerraScape::RegionGrowingOptions opt;
         opt.abs_tolerance_mm = 5.0;       // Relaxed absolute tolerance
         opt.rel_tolerance = 0.1;          // Relaxed relative tolerance
         opt.volume_delta_pct = 50.0;      // Relaxed volume tolerance
         
-        terrascape::Mesh mesh;
-        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        TerraScape::MeshResult mesh = TerraScape::region_growing_triangulation_advanced(elevations.data(), 4, 4, nullptr, opt);
         
         bool passed = mesh.vertices.size() > 0 && mesh.triangles.size() > 0;
         
@@ -518,17 +512,16 @@ void run_tolerance_tests(TestSuite& suite) {
                                         1.0f, 1.0f, 1.0f, 1.0f,
                                         1.0f, 1.0f, 1.0f, 1.0f};
         
-        terrascape::GreedyCutsOptions opt;
-        opt.use_region_growing = true;
+        TerraScape::RegionGrowingOptions opt;
         opt.volume_delta_pct = 1.0;       // Very strict volume tolerance - expect warning
         
-        terrascape::Mesh mesh;
+        TerraScape::MeshResult mesh;
         // Capture cout to check for volume warning
         std::streambuf* orig = std::cout.rdbuf();
         std::ostringstream capture;
         std::cout.rdbuf(capture.rdbuf());
         
-        terrascape::triangulateGreedyCuts(elevations.data(), 4, 4, nullptr, opt, mesh);
+        mesh = TerraScape::region_growing_triangulation_advanced(elevations.data(), 4, 4, nullptr, opt);
         
         std::cout.rdbuf(orig);
         std::string output = capture.str();

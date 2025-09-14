@@ -3,7 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <cstring>
-#include "greedy_cuts.hpp"
+#include "TerraScape.hpp"
 
 // Simple PGM reader
 bool readPGM(const char* filename, int& width, int& height, std::vector<float>& elevations) {
@@ -41,9 +41,8 @@ void printUsage(const char* program_name) {
 
 int main(int argc, char* argv[]) {
     // Default tolerance values
-    terrascape::GreedyCutsOptions opt;
+    TerraScape::RegionGrowingOptions opt;
     opt.base_error_threshold = 0.2;
-    opt.use_region_growing = true;
     opt.region_merge_threshold = 10.0;
     // BRL-CAD tolerance defaults are already set in the struct
     
@@ -87,10 +86,10 @@ int main(int argc, char* argv[]) {
     std::cout << "Region merge threshold: " << opt.region_merge_threshold << std::endl;
     std::cout << "===============================" << std::endl;
     
-    terrascape::Mesh mesh;
+    TerraScape::MeshResult mesh;
     
     auto start = std::chrono::high_resolution_clock::now();
-    terrascape::triangulateGreedyCuts(elevations.data(), width, height, nullptr, opt, mesh);
+    mesh = TerraScape::region_growing_triangulation_advanced(elevations.data(), width, height, nullptr, opt);
     auto end = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
