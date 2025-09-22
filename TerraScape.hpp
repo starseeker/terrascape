@@ -2683,35 +2683,79 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
     // Tolerance for determining if a vertex is on the boundary
     const float boundary_tolerance = 0.01f;
     
-    // Find vertices that are actually on the geometric boundary
-    std::vector<int> boundary_vertices;
-    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
-        const Vertex& v = surface_mesh.vertices[i];
-        bool on_boundary = (std::abs(v.x - min_x) < boundary_tolerance) ||
-                          (std::abs(v.x - max_x) < boundary_tolerance) ||
-                          (std::abs(v.y - min_y) < boundary_tolerance) ||
-                          (std::abs(v.y - max_y) < boundary_tolerance);
-        if (on_boundary) {
-            boundary_vertices.push_back(static_cast<int>(i));
-        }
+    // FIXED: To create a proper manifold mesh, we need to avoid creating walls that would
+    // result in non-manifold edges. The issue is that boundary edge detection finds all edges
+    // that appear in only one triangle, but not all of these should have walls.
+    //
+    // New approach: Create walls only for edges that are actually on the outer perimeter
+    // AND ensure we don't create duplicate walls by checking existing edge usage.
+    
+    // First, count existing edge usage from surface and base triangles
+    std::map<std::pair<int, int>, int> existing_edge_count;
+    auto count_edge = [&](int v0, int v1) {
+        if (v0 > v1) std::swap(v0, v1);
+        existing_edge_count[{v0, v1}]++;
+    };
+    
+    // Count edges from all triangles already added (surface + base)
+    for (const Triangle& tri : volumetric_result.triangles) {
+        count_edge(tri.v0, tri.v1);
+        count_edge(tri.v1, tri.v2);
+        count_edge(tri.v2, tri.v0);
     }
     
-    // FIXED: Use proper boundary edge detection instead of geometric boundary approach
     // Find the actual boundary edges of the surface mesh triangulation
     std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
     
-    // Create wall triangles for each boundary edge
+    // Filter boundary edges to only include those on the geometric perimeter
+    // AND ensure they won't create non-manifold geometry
     for (const Edge& edge : boundary_edges) {
-        int surface_v0 = edge.v0;
-        int surface_v1 = edge.v1;
-        int base_v0 = base_vertex_mapping[surface_v0];
-        int base_v1 = base_vertex_mapping[surface_v1];
+        const Vertex& v0 = surface_mesh.vertices[edge.v0];
+        const Vertex& v1 = surface_mesh.vertices[edge.v1];
         
-        // Create two triangles for the wall segment
-        // Ensure proper winding for outward-facing normals
-        // The boundary edge defines the direction, we need to maintain consistency
-        volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
-        volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
+        // Check if both vertices are on the geometric boundary
+        bool v0_on_boundary = (std::abs(v0.x - min_x) < boundary_tolerance) ||
+                             (std::abs(v0.x - max_x) < boundary_tolerance) ||
+                             (std::abs(v0.y - min_y) < boundary_tolerance) ||
+                             (std::abs(v0.y - max_y) < boundary_tolerance);
+        
+        bool v1_on_boundary = (std::abs(v1.x - min_x) < boundary_tolerance) ||
+                             (std::abs(v1.x - max_x) < boundary_tolerance) ||
+                             (std::abs(v1.y - min_y) < boundary_tolerance) ||
+                             (std::abs(v1.y - max_y) < boundary_tolerance);
+        
+        // Only create walls for edges where both vertices are on the geometric perimeter
+        if (v0_on_boundary && v1_on_boundary) {
+            int surface_v0 = edge.v0;
+            int surface_v1 = edge.v1;
+            int base_v0 = base_vertex_mapping[surface_v0];
+            int base_v1 = base_vertex_mapping[surface_v1];
+            
+            // Check if the vertical edges would create non-manifold geometry
+            auto check_edge = [&](int a, int b) {
+                if (a > b) std::swap(a, b);
+                return existing_edge_count[{a, b}];
+            };
+            
+            // The wall will create two new triangles that share the vertical edges:
+            // Triangle 1: (surface_v0, base_v0, surface_v1) 
+            // Triangle 2: (base_v0, base_v1, surface_v1)
+            // These triangles share edge (base_v0, surface_v1) and create edges:
+            // (surface_v0, base_v0), (surface_v1, base_v1), (base_v0, base_v1)
+            
+            int edge1_count = check_edge(surface_v0, base_v0);
+            int edge2_count = check_edge(surface_v1, base_v1); 
+            int edge3_count = check_edge(base_v0, base_v1);
+            int shared_edge_count = check_edge(base_v0, surface_v1);
+            
+            // Only create wall if it won't result in any edge being used more than 2 times
+            if (edge1_count < 2 && edge2_count < 2 && edge3_count < 2 && shared_edge_count < 1) {
+                // Create two triangles for the wall segment
+                // Ensure proper winding for outward-facing normals
+                volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+                volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
+            }
+        }
     }
 }
 
