@@ -236,7 +236,33 @@ bool test_mesh_manifold_properties() {
         }
     }
     
-    return degenerate_count == 0;
+    // Enhanced manifold check: no non-manifold edges (edges used by more than 2 triangles)
+    std::map<std::pair<int, int>, int> edge_count;
+    for (const Triangle& tri : volumetric.triangles) {
+        auto make_edge = [](int a, int b) {
+            if (a > b) std::swap(a, b);
+            return std::make_pair(a, b);
+        };
+        
+        edge_count[make_edge(tri.v0, tri.v1)]++;
+        edge_count[make_edge(tri.v1, tri.v2)]++;
+        edge_count[make_edge(tri.v2, tri.v0)]++;
+    }
+    
+    int non_manifold_edges = 0;
+    for (const auto& [edge, count] : edge_count) {
+        if (count > 2) {
+            non_manifold_edges++;
+            std::cout << "  Non-manifold edge (" << edge.first << ", " << edge.second 
+                      << ") used " << count << " times" << std::endl;
+        }
+    }
+    
+    if (non_manifold_edges > 0) {
+        std::cout << "  ❌ Found " << non_manifold_edges << " non-manifold edges in volumetric mesh!" << std::endl;
+    }
+    
+    return degenerate_count == 0 && non_manifold_edges == 0;
 }
 
 // =============================================================================
