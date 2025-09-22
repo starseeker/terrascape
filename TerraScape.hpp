@@ -2655,112 +2655,23 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
                                            const MeshResult& surface_mesh, 
                                            const std::vector<int>& base_vertex_mapping, 
                                            float z_base) {
-    // Find the actual geometric boundaries of the terrain data
-    // by analyzing vertex positions to determine the bounding rectangle
     if (surface_mesh.vertices.empty()) return;
-    
-    float min_x = surface_mesh.vertices[0].x, max_x = surface_mesh.vertices[0].x;
-    float min_y = surface_mesh.vertices[0].y, max_y = surface_mesh.vertices[0].y;
-    
-    for (const auto& v : surface_mesh.vertices) {
-        min_x = std::min(min_x, v.x);
-        max_x = std::max(max_x, v.x);
-        min_y = std::min(min_y, v.y);
-        max_y = std::max(max_y, v.y);
-    }
-    
-    // Tolerance for determining if a vertex is on the boundary
-    const float boundary_tolerance = 0.01f;
-    
-    // FIXED: To create a proper manifold mesh, we need to identify corner vertices 
-    // and handle them specially to avoid non-manifold edges.
-    
-    // First, identify corner vertices (vertices that are on two geometric boundaries)
-    std::set<int> corner_vertices;
-    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
-        const Vertex& v = surface_mesh.vertices[i];
-        
-        bool on_left = std::abs(v.x - min_x) < boundary_tolerance;
-        bool on_right = std::abs(v.x - max_x) < boundary_tolerance;
-        bool on_bottom = std::abs(v.y - min_y) < boundary_tolerance;
-        bool on_top = std::abs(v.y - max_y) < boundary_tolerance;
-        
-        // A corner vertex is on exactly two boundaries
-        int boundary_count = (on_left ? 1 : 0) + (on_right ? 1 : 0) + (on_bottom ? 1 : 0) + (on_top ? 1 : 0);
-        if (boundary_count == 2) {
-            corner_vertices.insert(static_cast<int>(i));
-        }
-    }
-    
-    // Count existing edge usage from surface and base triangles
-    std::map<std::pair<int, int>, int> existing_edge_count;
-    auto count_edge = [&](int v0, int v1) {
-        if (v0 > v1) std::swap(v0, v1);
-        existing_edge_count[{v0, v1}]++;
-    };
-    
-    // Count edges from all triangles already added (surface + base)
-    for (const Triangle& tri : volumetric_result.triangles) {
-        count_edge(tri.v0, tri.v1);
-        count_edge(tri.v1, tri.v2);
-        count_edge(tri.v2, tri.v0);
-    }
     
     // Find the actual boundary edges of the surface mesh triangulation
     std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
     
-    // Filter boundary edges to only include those on the geometric perimeter
-    // AND ensure they won't create non-manifold geometry, especially at corners
+    // Create walls for ALL boundary edges to ensure closed manifold
+    // For volumetric meshes, every boundary edge needs a wall to close the volume
     for (const Edge& edge : boundary_edges) {
-        const Vertex& v0 = surface_mesh.vertices[edge.v0];
-        const Vertex& v1 = surface_mesh.vertices[edge.v1];
+        int surface_v0 = edge.v0;
+        int surface_v1 = edge.v1;
+        int base_v0 = base_vertex_mapping[surface_v0];
+        int base_v1 = base_vertex_mapping[surface_v1];
         
-        // Check if both vertices are on the geometric boundary
-        bool v0_on_boundary = (std::abs(v0.x - min_x) < boundary_tolerance) ||
-                             (std::abs(v0.x - max_x) < boundary_tolerance) ||
-                             (std::abs(v0.y - min_y) < boundary_tolerance) ||
-                             (std::abs(v0.y - max_y) < boundary_tolerance);
-        
-        bool v1_on_boundary = (std::abs(v1.x - min_x) < boundary_tolerance) ||
-                             (std::abs(v1.x - max_x) < boundary_tolerance) ||
-                             (std::abs(v1.y - min_y) < boundary_tolerance) ||
-                             (std::abs(v1.y - max_y) < boundary_tolerance);
-        
-        // Check if either vertex is a corner
-        bool has_corner = corner_vertices.count(edge.v0) || corner_vertices.count(edge.v1);
-        
-        // Only create walls for edges where both vertices are on the geometric perimeter
-        // For volumetric meshes, we NEED to include corner edges to close the volume
-        if (v0_on_boundary && v1_on_boundary) {
-            int surface_v0 = edge.v0;
-            int surface_v1 = edge.v1;
-            int base_v0 = base_vertex_mapping[surface_v0];
-            int base_v1 = base_vertex_mapping[surface_v1];
-            
-            // Check if the vertical edges would create non-manifold geometry
-            auto check_edge = [&](int a, int b) {
-                if (a > b) std::swap(a, b);
-                return existing_edge_count[{a, b}];
-            };
-            
-            // The wall will create two new triangles that share the vertical edges:
-            // Triangle 1: (surface_v0, base_v0, surface_v1) 
-            // Triangle 2: (base_v0, base_v1, surface_v1)
-            // These triangles share edge (base_v0, surface_v1) and create edges:
-            // (surface_v0, base_v0), (surface_v1, base_v1), (base_v0, base_v1)
-            
-            int edge1_count = check_edge(surface_v0, base_v0);
-            int edge2_count = check_edge(surface_v1, base_v1); 
-            int edge3_count = check_edge(base_v0, base_v1);
-            int shared_edge_count = check_edge(base_v0, surface_v1);
-            
-            // For volumetric meshes, create walls to close the volume
-            // We need all boundary walls regardless of edge counts to ensure closure
-            // Create two triangles for the wall segment
-            // Ensure proper winding for outward-facing normals
-            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
-            volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
-        }
+        // Create two triangles for the wall segment
+        // Ensure proper winding for outward-facing normals
+        volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+        volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
     }
 }
 
