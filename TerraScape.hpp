@@ -102,6 +102,7 @@ struct RegionGrowingOptions {
 struct InternalMesh {
   std::vector<std::array<double, 3>> vertices; // x,y,z (grid coords + elevation)
   std::vector<std::array<int, 3>> triangles;   // vertex indices
+  std::map<std::pair<int,int>, int> edge_count; // Track edge usage count to prevent non-manifold geometry
   
   // Helper functions to add vertices and triangles
   void add_vertex(double x, double y, double z) {
@@ -112,10 +113,41 @@ struct InternalMesh {
     triangles.emplace_back(std::array<int, 3>{v0, v1, v2});
   }
   
+  // Check if adding a triangle would create non-manifold geometry
+  bool would_create_non_manifold(int v0, int v1, int v2) {
+    // Create edges (always store with smaller vertex first)
+    auto make_edge = [](int a, int b) {
+      if (a > b) std::swap(a, b);
+      return std::make_pair(a, b);
+    };
+    
+    auto edge1 = make_edge(v0, v1);
+    auto edge2 = make_edge(v1, v2);
+    auto edge3 = make_edge(v2, v0);
+    
+    // Count how many times each edge is already used
+    for (const auto& edge : {edge1, edge2, edge3}) {
+      if (edge_count[edge] >= 2) {
+        return true; // Would be 3rd triangle sharing this edge
+      }
+    }
+    return false;
+  }
+  
   // Add triangle with correct winding order for upward normals
   void add_triangle_with_upward_normal(int v0, int v1, int v2) {
     if (v0 >= vertices.size() || v1 >= vertices.size() || v2 >= vertices.size()) {
       return; // Invalid vertex indices
+    }
+    
+    // Check for degenerate triangle
+    if (v0 == v1 || v1 == v2 || v0 == v2) {
+      return; // Degenerate triangle
+    }
+    
+    // Check if this would create non-manifold geometry
+    if (would_create_non_manifold(v0, v1, v2)) {
+      return; // Skip to maintain manifold property
     }
     
     // Compute triangle normal to determine correct winding
@@ -141,12 +173,25 @@ struct InternalMesh {
       return; // Degenerate triangle
     }
     
-    // Add triangle with correct winding for upward normal (normal_z > 0)
+    // Determine correct winding and add triangle
+    int final_v0, final_v1, final_v2;
     if (normal_z > 0) {
-      triangles.emplace_back(std::array<int, 3>{v0, v1, v2}); // CCW (upward normal)
+      final_v0 = v0; final_v1 = v1; final_v2 = v2; // CCW (upward normal)
     } else {
-      triangles.emplace_back(std::array<int, 3>{v0, v2, v1}); // CW -> CCW (flip to upward normal)
+      final_v0 = v0; final_v1 = v2; final_v2 = v1; // CW -> CCW (flip to upward normal)
     }
+    
+    triangles.emplace_back(std::array<int, 3>{final_v0, final_v1, final_v2});
+    
+    // Track edges to prevent future non-manifold issues
+    auto add_edge = [&](int a, int b) {
+      if (a > b) std::swap(a, b);
+      edge_count[std::make_pair(a, b)]++;
+    };
+    
+    add_edge(final_v0, final_v1);
+    add_edge(final_v1, final_v2);
+    add_edge(final_v2, final_v0);
   }
 };
 
@@ -1723,63 +1768,54 @@ static inline void triangulateRegionGrowing(const float* elevations,
   
   std::cerr << "TerraScape: Grid-based triangulation created " << triangles_created << " triangles" << std::endl;
   
-  // STEP 2: Fill any remaining gaps with extended triangulation
-  // Check for any grid cells that might not be covered and add triangles
+  // STEP 2: Improved gap-filling with manifold preservation
+  // Use systematic edge-to-triangle completion rather than overlapping triangle generation
   
   int additional_triangles = 0;
-  for (int y = 0; y < H - 2; y += 2) { // Check every other row/column to fill gaps
-    for (int x = 0; x < W - 2; x += 2) {
-      // Look for triangles that can cover larger areas
-      std::vector<std::pair<int, int>> area_vertices;
+  std::set<std::pair<int,int>> processed_cells; // Track processed cells to avoid overlaps
+  
+  // Process remaining uncovered cells systematically
+  for (int y = 0; y < H - 1; y++) {
+    for (int x = 0; x < W - 1; x++) {
+      if (processed_cells.count({x, y})) continue;
       
-      // Search 3x3 area for vertices
-      for (int dy = 0; dy <= 2; dy++) {
-        for (int dx = 0; dx <= 2; dx++) {
+      // Check 2x2 cell and look for valid triangle patterns that don't create non-manifold geometry
+      std::vector<std::pair<int, int>> cell_positions;
+      for (int dy = 0; dy <= 1; dy++) {
+        for (int dx = 0; dx <= 1; dx++) {
           int vx = x + dx, vy = y + dy;
           if (vx < W && vy < H) {
             size_t idx = idx_row_major(vx, vy, W);
             if (vertex_map[idx] != -1) {
-              area_vertices.push_back({vx, vy});
+              cell_positions.push_back({vx, vy});
             }
           }
         }
       }
       
-      // Create additional triangles to ensure coverage
-      if (area_vertices.size() >= 3) {
-        // Sort by position
-        std::sort(area_vertices.begin(), area_vertices.end());
+      // Only create triangles for uncovered 2x2 cells with exactly 3 vertices
+      // This creates minimal additional triangulation without overlaps
+      if (cell_positions.size() == 3) {
+        int v0 = vertex_map[idx_row_major(cell_positions[0].first, cell_positions[0].second, W)];
+        int v1 = vertex_map[idx_row_major(cell_positions[1].first, cell_positions[1].second, W)];
+        int v2 = vertex_map[idx_row_major(cell_positions[2].first, cell_positions[2].second, W)];
         
-        // Create a few triangles to span this area
-        for (size_t i = 0; i < area_vertices.size() && i < 3; i++) {
-          for (size_t j = i + 1; j < area_vertices.size() && j < 4; j++) {
-            for (size_t k = j + 1; k < area_vertices.size() && k < 5 && additional_triangles < 1000; k++) {
-              int v0 = vertex_map[idx_row_major(area_vertices[i].first, area_vertices[i].second, W)];
-              int v1 = vertex_map[idx_row_major(area_vertices[j].first, area_vertices[j].second, W)];
-              int v2 = vertex_map[idx_row_major(area_vertices[k].first, area_vertices[k].second, W)];
-              
-              // Check triangle spans a reasonable area
-              auto& p0 = area_vertices[i];
-              auto& p1 = area_vertices[j];
-              auto& p2 = area_vertices[k];
-              
-              double area = 0.5 * std::abs((p1.first - p0.first) * (p2.second - p0.second) - 
-                                          (p2.first - p0.first) * (p1.second - p0.second));
-              
-              if (area > 1.0 && area < 50.0) { // Reasonable size triangles
-                out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
-                additional_triangles++;
-                triangles_created++;
-              }
-            }
-          }
+        // Try to add triangle - the manifold check will prevent overlaps
+        size_t before_count = out_mesh.triangles.size();
+        out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+        
+        if (out_mesh.triangles.size() > before_count) {
+          additional_triangles++;
+          triangles_created++;
         }
+        
+        processed_cells.insert({x, y});
       }
     }
   }
   
   if (additional_triangles > 0) {
-    std::cerr << "TerraScape: Added " << additional_triangles << " gap-filling triangles" << std::endl;
+    std::cerr << "TerraScape: Added " << additional_triangles << " manifold-preserving gap-filling triangles" << std::endl;
   }
   
   // 2D PROJECTION VALIDATION: Check mesh 2D coverage against non-zero terrain cells
