@@ -103,6 +103,10 @@ struct InternalMesh {
   std::vector<std::array<double, 3>> vertices; // x,y,z (grid coords + elevation)
   std::vector<std::array<int, 3>> triangles;   // vertex indices
   std::map<std::pair<int,int>, int> edge_count; // Track edge usage count to prevent non-manifold geometry
+  bool enforce_manifold; // Whether to enforce manifold constraints (false for surface, true for volumetric)
+  
+  // Constructor to set manifold enforcement policy
+  InternalMesh(bool enforce_manifold_constraints = false) : enforce_manifold(enforce_manifold_constraints) {}
   
   // Helper functions to add vertices and triangles
   void add_vertex(double x, double y, double z) {
@@ -115,6 +119,12 @@ struct InternalMesh {
   
   // Check if adding a triangle would create non-manifold geometry
   bool would_create_non_manifold(int v0, int v1, int v2) {
+    // For surface meshes (heightfields), allow non-manifold edges
+    // Only enforce manifold constraints for volumetric meshes
+    if (!enforce_manifold) {
+      return false;
+    }
+    
     // Create edges (always store with smaller vertex first)
     auto make_edge = [](int a, int b) {
       if (a > b) std::swap(a, b);
@@ -145,9 +155,9 @@ struct InternalMesh {
       return; // Degenerate triangle
     }
     
-    // Check if this would create non-manifold geometry
+    // Check if this would create non-manifold geometry (only enforced for volumetric meshes)
     if (would_create_non_manifold(v0, v1, v2)) {
-      return; // Skip to maintain manifold property
+      return; // Skip to maintain manifold property for volumetric meshes
     }
     
     // Compute triangle normal to determine correct winding
@@ -183,7 +193,7 @@ struct InternalMesh {
     
     triangles.emplace_back(std::array<int, 3>{final_v0, final_v1, final_v2});
     
-    // Track edges to prevent future non-manifold issues
+    // Track edges for potential future use, but don't enforce limits for surface meshes
     auto add_edge = [&](int a, int b) {
       if (a > b) std::swap(a, b);
       edge_count[std::make_pair(a, b)]++;
@@ -2989,7 +2999,7 @@ inline MeshResult region_growing_triangulation(const float* elevations,
   opt.norm_tolerance_deg = 15.0;
   opt.volume_delta_pct = 10.0;
   
-  InternalMesh internal_mesh;
+  InternalMesh internal_mesh(false); // false = surface mesh, don't enforce manifold constraints
   triangulateRegionGrowing(elevations, width, height, mask, opt, internal_mesh);
   
   // Convert InternalMesh to MeshResult
@@ -3014,7 +3024,7 @@ inline MeshResult region_growing_triangulation_advanced(const float* elevations,
                                                         const uint8_t* mask, // optional, nullptr if none
                                                         const RegionGrowingOptions& opt)
 {
-  InternalMesh internal_mesh;
+  InternalMesh internal_mesh(false); // false = surface mesh, don't enforce manifold constraints
   triangulateRegionGrowing(elevations, width, height, mask, opt, internal_mesh);
   
   // Convert InternalMesh to MeshResult
