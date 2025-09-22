@@ -71,7 +71,7 @@ bool processTerrainFile(const std::string& bil_file, const std::string& output_d
     int point_limit = std::min(5000, terrain_info.width * terrain_info.height / 10); // At most 10% of original points
     
     auto mesh = TerraScape::grid_to_mesh(terrain_info.width, terrain_info.height, 
-                                        elevations.data(), error_threshold, point_limit);
+                                        elevations.data(), error_threshold);
     
     std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
               << mesh.triangles.size() << " triangles\n";
@@ -184,7 +184,7 @@ int main(int argc, char* argv[]) {
                 }
                 
                 std::cout << "Processing sample terrain (" << width << "x" << height << ")...\n";
-                auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f, 500);
+                auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f);
                 std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
                           << mesh.triangles.size() << " triangles\n";
                 
@@ -254,7 +254,7 @@ int main(int argc, char* argv[]) {
                 }
                 
                 std::cout << "Processing sample terrain (" << width << "x" << height << ")...\n";
-                auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f, 500);
+                auto mesh = TerraScape::grid_to_mesh(width, height, elevations.data(), 10.0f);
                 std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
                           << mesh.triangles.size() << " triangles\n";
             }
