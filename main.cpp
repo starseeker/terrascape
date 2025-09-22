@@ -257,7 +257,7 @@ int main(int argc, char **argv)
 
     // Calculate mesh density from relative tolerance if not explicitly set
     if (mesh_density < 0.0) {
-        // Map relative tolerance to mesh density
+        // Map relative tolerance to mesh density with terrain-appropriate defaults
         // rel_tolerance: 0.001 (very fine) -> 0.1 (very coarse)
         // mesh_density: 1.0 (finest) -> 0.0 (coarsest)
         
@@ -270,9 +270,16 @@ int main(int argc, char **argv)
         log_rel_tol = std::max(log_min, std::min(log_max, log_rel_tol));
         
         // Map to mesh density (inverted: lower tolerance = higher density)
-        mesh_density = 1.0 - (log_rel_tol - log_min) / (log_max - log_min);
+        double base_density = 1.0 - (log_rel_tol - log_min) / (log_max - log_min);
+        
+        // For terrain data, ensure minimum density for adequate coverage
+        // Boost density to ensure at least 70% terrain coverage
+        mesh_density = std::max(0.7, base_density);
         
         cout << "Calculated mesh density: " << mesh_density << " from rel_tolerance: " << rel_tolerance << endl;
+        if (mesh_density > base_density) {
+            cout << "  (boosted from " << base_density << " to ensure adequate terrain coverage)" << endl;
+        }
     } else {
         cout << "Using explicit mesh density: " << mesh_density << endl;
     }
