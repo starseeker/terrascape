@@ -2751,8 +2751,8 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
         bool has_corner = corner_vertices.count(edge.v0) || corner_vertices.count(edge.v1);
         
         // Only create walls for edges where both vertices are on the geometric perimeter
-        // BUT skip edges that involve corner vertices to avoid non-manifold issues
-        if (v0_on_boundary && v1_on_boundary && !has_corner) {
+        // For volumetric meshes, we NEED to include corner edges to close the volume
+        if (v0_on_boundary && v1_on_boundary) {
             int surface_v0 = edge.v0;
             int surface_v1 = edge.v1;
             int base_v0 = base_vertex_mapping[surface_v0];
@@ -2775,13 +2775,12 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
             int edge3_count = check_edge(base_v0, base_v1);
             int shared_edge_count = check_edge(base_v0, surface_v1);
             
-            // Only create wall if it won't result in any edge being used more than 2 times
-            if (edge1_count < 2 && edge2_count < 2 && edge3_count < 2 && shared_edge_count < 1) {
-                // Create two triangles for the wall segment
-                // Ensure proper winding for outward-facing normals
-                volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
-                volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
-            }
+            // For volumetric meshes, create walls to close the volume
+            // We need all boundary walls regardless of edge counts to ensure closure
+            // Create two triangles for the wall segment
+            // Ensure proper winding for outward-facing normals
+            volumetric_result.triangles.push_back(Triangle{surface_v0, base_v0, surface_v1});
+            volumetric_result.triangles.push_back(Triangle{base_v0, base_v1, surface_v1});
         }
     }
 }
