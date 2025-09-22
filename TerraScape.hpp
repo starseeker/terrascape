@@ -102,11 +102,10 @@ struct RegionGrowingOptions {
 struct InternalMesh {
   std::vector<std::array<double, 3>> vertices; // x,y,z (grid coords + elevation)
   std::vector<std::array<int, 3>> triangles;   // vertex indices
-  std::map<std::pair<int,int>, int> edge_count; // Track edge usage count to prevent non-manifold geometry
-  bool enforce_manifold; // Whether to enforce manifold constraints (false for surface, true for volumetric)
+  std::map<std::pair<int,int>, int> edge_count; // Track edge usage count for potential future use
   
-  // Constructor to set manifold enforcement policy
-  InternalMesh(bool enforce_manifold_constraints = false) : enforce_manifold(enforce_manifold_constraints) {}
+  // Constructor
+  InternalMesh() {}
   
   // Helper functions to add vertices and triangles
   void add_vertex(double x, double y, double z) {
@@ -119,28 +118,8 @@ struct InternalMesh {
   
   // Check if adding a triangle would create non-manifold geometry
   bool would_create_non_manifold(int v0, int v1, int v2) {
-    // For surface meshes (heightfields), allow non-manifold edges
-    // Only enforce manifold constraints for volumetric meshes
-    if (!enforce_manifold) {
-      return false;
-    }
-    
-    // Create edges (always store with smaller vertex first)
-    auto make_edge = [](int a, int b) {
-      if (a > b) std::swap(a, b);
-      return std::make_pair(a, b);
-    };
-    
-    auto edge1 = make_edge(v0, v1);
-    auto edge2 = make_edge(v1, v2);
-    auto edge3 = make_edge(v2, v0);
-    
-    // Count how many times each edge is already used
-    for (const auto& edge : {edge1, edge2, edge3}) {
-      if (edge_count[edge] >= 2) {
-        return true; // Would be 3rd triangle sharing this edge
-      }
-    }
+    // For surface meshes (heightfields), always allow non-manifold edges
+    // Surface terrain meshes don't need manifold constraints
     return false;
   }
   
@@ -155,9 +134,9 @@ struct InternalMesh {
       return; // Degenerate triangle
     }
     
-    // Check if this would create non-manifold geometry (only enforced for volumetric meshes)
+    // Check if this would create non-manifold geometry (always false for surface meshes)
     if (would_create_non_manifold(v0, v1, v2)) {
-      return; // Skip to maintain manifold property for volumetric meshes
+      return; // Skip to maintain manifold property (not applicable for surface meshes)
     }
     
     // Compute triangle normal to determine correct winding
@@ -193,7 +172,7 @@ struct InternalMesh {
     
     triangles.emplace_back(std::array<int, 3>{final_v0, final_v1, final_v2});
     
-    // Track edges for potential future use, but don't enforce limits for surface meshes
+    // Track edges for potential future use
     auto add_edge = [&](int a, int b) {
       if (a > b) std::swap(a, b);
       edge_count[std::make_pair(a, b)]++;
@@ -2836,6 +2815,12 @@ inline MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_b
     // This ensures walls represent the actual data boundaries, not triangulation artifacts
     create_geometric_boundary_walls(volumetric_result, surface_mesh, base_vertex_mapping, z_base);
 
+    // Validate volumetric mesh volume (debugging aid)
+    double actual_volume = calculate_mesh_volume(volumetric_result, z_base);
+    if (actual_volume > 0.0) {
+        std::cout << "Volumetric mesh volume: " << actual_volume << std::endl;
+    }
+
     return volumetric_result;
 }
 
@@ -2879,6 +2864,24 @@ inline MeshResult make_volumetric_mesh(const MeshResult& surface_mesh, float z_b
     }
     create_interior_walls_for_zero_regions(volumetric_result, surface_mesh, base_vertex_mapping, 
                                          float_elevations.data(), width, height, z_base);
+
+    // Volume validation: Check that volumetric mesh volume matches expected terrain volume
+    double expected_volume = calculate_heightfield_volume(width, height, elevations, z_base);
+    double actual_volume = calculate_mesh_volume(volumetric_result, z_base);
+    
+    if (expected_volume > 0.0 && actual_volume > 0.0) {
+        double volume_ratio = actual_volume / expected_volume;
+        std::cout << "Volume validation:" << std::endl;
+        std::cout << "  Expected terrain volume: " << expected_volume << std::endl;
+        std::cout << "  Actual mesh volume: " << actual_volume << std::endl;
+        std::cout << "  Volume ratio: " << volume_ratio << " (" << (volume_ratio * 100.0) << "%)" << std::endl;
+        
+        if (std::abs(volume_ratio - 1.0) < 0.2) { // Allow 20% tolerance
+            std::cout << "  ✓ PASS: Volumetric mesh volume is within 20% of expected terrain volume" << std::endl;
+        } else {
+            std::cout << "  ⚠ WARNING: Volumetric mesh volume differs significantly from expected terrain volume" << std::endl;
+        }
+    }
 
     return volumetric_result;
 }
@@ -2998,7 +3001,7 @@ inline MeshResult region_growing_triangulation(const float* elevations,
   opt.norm_tolerance_deg = 15.0;
   opt.volume_delta_pct = 10.0;
   
-  InternalMesh internal_mesh(false); // false = surface mesh, don't enforce manifold constraints
+  InternalMesh internal_mesh; // Surface mesh - always non-manifold for heightfields
   triangulateRegionGrowing(elevations, width, height, mask, opt, internal_mesh);
   
   // Convert InternalMesh to MeshResult
@@ -3023,7 +3026,7 @@ inline MeshResult region_growing_triangulation_advanced(const float* elevations,
                                                         const uint8_t* mask, // optional, nullptr if none
                                                         const RegionGrowingOptions& opt)
 {
-  InternalMesh internal_mesh(false); // false = surface mesh, don't enforce manifold constraints
+  InternalMesh internal_mesh; // Surface mesh - always non-manifold for heightfields
   triangulateRegionGrowing(elevations, width, height, mask, opt, internal_mesh);
   
   // Convert InternalMesh to MeshResult

@@ -317,7 +317,7 @@ int main(int argc, char **argv)
         
         if (volumetric) {
             cout << "Converting surface mesh to volumetric mesh with base level: " << z_base << endl;
-            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base);
+            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base, width, height, elevations.data());
         } else {
             mesh = surface_mesh;
         }
@@ -328,7 +328,7 @@ int main(int argc, char **argv)
         
         if (volumetric) {
             cout << "Converting surface mesh to volumetric mesh with base level: " << z_base << endl;
-            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base);
+            mesh = TerraScape::make_volumetric_mesh(surface_mesh, z_base, width, height, elevations.data());
         } else {
             mesh = surface_mesh;
         }
