@@ -240,6 +240,152 @@ bool test_mesh_manifold_properties() {
 }
 
 // =============================================================================
+// Bounding Box Validation Tests
+// =============================================================================
+
+bool test_bounding_box_validation() {
+    // Create terrain with known bounds
+    int width = 8, height = 6;
+    auto data = create_gradient_surface(width, height);
+    
+    // Modify data to have clear min/max values at specific locations
+    data[0] = -5.0f;  // Min at (0,0)
+    data[width * height - 1] = 10.0f;  // Max at (width-1, height-1)
+    
+    // Generate mesh with low density to stress-test boundary inclusion
+    MeshResult result = region_growing_triangulation(data.data(), width, height, 0.3);
+    
+    if (result.vertices.empty()) {
+        std::cout << "ERROR: No vertices generated" << std::endl;
+        return false;
+    }
+    
+    // Calculate bounds
+    float mesh_min_x = std::numeric_limits<float>::max();
+    float mesh_max_x = std::numeric_limits<float>::lowest();
+    float mesh_min_y = std::numeric_limits<float>::max();
+    float mesh_max_y = std::numeric_limits<float>::lowest();
+    float mesh_min_z = std::numeric_limits<float>::max();
+    float mesh_max_z = std::numeric_limits<float>::lowest();
+    
+    for (const auto& v : result.vertices) {
+        mesh_min_x = std::min(mesh_min_x, v.x);
+        mesh_max_x = std::max(mesh_max_x, v.x);
+        mesh_min_y = std::min(mesh_min_y, v.y);
+        mesh_max_y = std::max(mesh_max_y, v.y);
+        mesh_min_z = std::min(mesh_min_z, v.z);
+        mesh_max_z = std::max(mesh_max_z, v.z);
+    }
+    
+    // Expected terrain bounds
+    float terrain_min_x = 0.0f;
+    float terrain_max_x = static_cast<float>(width - 1);
+    float terrain_min_y = 0.0f;
+    float terrain_max_y = static_cast<float>(height - 1);
+    float terrain_min_z = -5.0f;
+    float terrain_max_z = 10.0f;
+    
+    // Validate X bounds
+    if (std::abs(mesh_min_x - terrain_min_x) > 1e-6 || std::abs(mesh_max_x - terrain_max_x) > 1e-6) {
+        std::cout << "ERROR: X bounds mismatch. Expected [" << terrain_min_x << ", " << terrain_max_x
+                  << "], got [" << mesh_min_x << ", " << mesh_max_x << "]" << std::endl;
+        return false;
+    }
+    
+    // Validate Y bounds
+    if (std::abs(mesh_min_y - terrain_min_y) > 1e-6 || std::abs(mesh_max_y - terrain_max_y) > 1e-6) {
+        std::cout << "ERROR: Y bounds mismatch. Expected [" << terrain_min_y << ", " << terrain_max_y
+                  << "], got [" << mesh_min_y << ", " << mesh_max_y << "]" << std::endl;
+        return false;
+    }
+    
+    // Validate Z bounds
+    if (std::abs(mesh_min_z - terrain_min_z) > 1e-6 || std::abs(mesh_max_z - terrain_max_z) > 1e-6) {
+        std::cout << "ERROR: Z bounds mismatch. Expected [" << terrain_min_z << ", " << terrain_max_z
+                  << "], got [" << mesh_min_z << ", " << mesh_max_z << "]" << std::endl;
+        return false;
+    }
+    
+    std::cout << "✓ Bounding box validation passed - mesh covers exact terrain bounds" << std::endl;
+    return true;
+}
+
+bool test_corner_vertices_inclusion() {
+    // Test that corner vertices are always included regardless of sampling density
+    int width = 10, height = 8;
+    auto data = create_flat_surface(width, height, 1.0f);
+    
+    // Make corners distinctive
+    data[0] = 0.0f;  // (0,0)
+    data[width - 1] = 2.0f;  // (width-1, 0)
+    data[width * (height - 1)] = 3.0f;  // (0, height-1)
+    data[width * height - 1] = 4.0f;  // (width-1, height-1)
+    
+    // Generate mesh with very low density
+    MeshResult result = region_growing_triangulation(data.data(), width, height, 0.1);
+    
+    // Check that all corner positions are present in the mesh
+    bool corner_00 = false, corner_10 = false, corner_01 = false, corner_11 = false;
+    
+    for (const auto& v : result.vertices) {
+        if (std::abs(v.x - 0.0f) < 1e-6 && std::abs(v.y - 0.0f) < 1e-6) corner_00 = true;
+        if (std::abs(v.x - (width-1)) < 1e-6 && std::abs(v.y - 0.0f) < 1e-6) corner_10 = true;
+        if (std::abs(v.x - 0.0f) < 1e-6 && std::abs(v.y - (height-1)) < 1e-6) corner_01 = true;
+        if (std::abs(v.x - (width-1)) < 1e-6 && std::abs(v.y - (height-1)) < 1e-6) corner_11 = true;
+    }
+    
+    if (!corner_00 || !corner_10 || !corner_01 || !corner_11) {
+        std::cout << "ERROR: Missing corner vertices. Found: (0,0)=" << corner_00 
+                  << " (" << (width-1) << ",0)=" << corner_10
+                  << " (0," << (height-1) << ")=" << corner_01
+                  << " (" << (width-1) << "," << (height-1) << ")=" << corner_11 << std::endl;
+        return false;
+    }
+    
+    std::cout << "✓ All corner vertices included in mesh" << std::endl;
+    return true;
+}
+
+bool test_extremal_elevation_inclusion() {
+    // Test that min/max elevation points are always included
+    int width = 12, height = 10;
+    auto data = create_gradient_surface(width, height);
+    
+    // Set extreme elevations at specific locations (not corners)
+    int min_idx = width * 3 + 5;  // Middle-ish location
+    int max_idx = width * 7 + 8;  // Different middle-ish location
+    data[min_idx] = -100.0f;
+    data[max_idx] = 200.0f;
+    
+    // Generate mesh with moderate density
+    MeshResult result = region_growing_triangulation(data.data(), width, height, 0.4);
+    
+    // Find mesh vertices closest to the extreme elevation positions
+    int min_x = min_idx % width, min_y = min_idx / width;
+    int max_x = max_idx % width, max_y = max_idx / width;
+    
+    bool found_min = false, found_max = false;
+    
+    for (const auto& v : result.vertices) {
+        if (std::abs(v.x - min_x) < 1e-6 && std::abs(v.y - min_y) < 1e-6) {
+            if (std::abs(v.z - (-100.0f)) < 1e-6) found_min = true;
+        }
+        if (std::abs(v.x - max_x) < 1e-6 && std::abs(v.y - max_y) < 1e-6) {
+            if (std::abs(v.z - 200.0f) < 1e-6) found_max = true;
+        }
+    }
+    
+    if (!found_min || !found_max) {
+        std::cout << "ERROR: Missing extremal elevation vertices. Found min=" << found_min 
+                  << " max=" << found_max << std::endl;
+        return false;
+    }
+    
+    std::cout << "✓ Extremal elevation vertices included in mesh" << std::endl;
+    return true;
+}
+
+// =============================================================================
 // Performance Tests
 // =============================================================================
 
@@ -368,6 +514,24 @@ void run_basic_tests(TestSuite& suite) {
     end = std::chrono::high_resolution_clock::now();
     duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
     suite.addTest(result, "Error Threshold Scaling", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_bounding_box_validation();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Bounding Box Validation", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_corner_vertices_inclusion();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Corner Vertices Inclusion", "", duration);
+    
+    start = std::chrono::high_resolution_clock::now();
+    result = test_extremal_elevation_inclusion();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.0;
+    suite.addTest(result, "Extremal Elevation Inclusion", "", duration);
 }
 
 void run_volumetric_tests(TestSuite& suite) {
