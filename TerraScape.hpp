@@ -861,6 +861,114 @@ static inline double calculate_mesh_surface_area(const InternalMesh& mesh) {
   return totalArea;
 }
 
+// Structure to hold bounding box information
+struct BoundingBox {
+  double min_x, max_x, min_y, max_y, min_z, max_z;
+  
+  BoundingBox() : min_x(std::numeric_limits<double>::max()), 
+                  max_x(std::numeric_limits<double>::lowest()),
+                  min_y(std::numeric_limits<double>::max()), 
+                  max_y(std::numeric_limits<double>::lowest()),
+                  min_z(std::numeric_limits<double>::max()), 
+                  max_z(std::numeric_limits<double>::lowest()) {}
+                  
+  BoundingBox(double min_x, double max_x, double min_y, double max_y, double min_z, double max_z)
+    : min_x(min_x), max_x(max_x), min_y(min_y), max_y(max_y), min_z(min_z), max_z(max_z) {}
+};
+
+// Calculate bounding box of terrain data from grid dimensions and elevation data
+static inline BoundingBox calculate_terrain_bounds(const float* elevations, int width, int height) {
+  BoundingBox bounds;
+  
+  // X and Y bounds are determined by grid dimensions (0-based indexing)
+  bounds.min_x = 0.0;
+  bounds.max_x = static_cast<double>(width - 1);
+  bounds.min_y = 0.0; 
+  bounds.max_y = static_cast<double>(height - 1);
+  
+  // Z bounds are determined by elevation data
+  bounds.min_z = std::numeric_limits<double>::max();
+  bounds.max_z = std::numeric_limits<double>::lowest();
+  
+  for (int i = 0; i < width * height; i++) {
+    double elev = static_cast<double>(elevations[i]);
+    bounds.min_z = std::min(bounds.min_z, elev);
+    bounds.max_z = std::max(bounds.max_z, elev);
+  }
+  
+  return bounds;
+}
+
+// Calculate bounding box of generated mesh
+static inline BoundingBox calculate_mesh_bounds(const InternalMesh& mesh) {
+  BoundingBox bounds;
+  
+  if (mesh.vertices.empty()) {
+    return bounds;
+  }
+  
+  for (const auto& vertex : mesh.vertices) {
+    bounds.min_x = std::min(bounds.min_x, vertex[0]);
+    bounds.max_x = std::max(bounds.max_x, vertex[0]);
+    bounds.min_y = std::min(bounds.min_y, vertex[1]);
+    bounds.max_y = std::max(bounds.max_y, vertex[1]);
+    bounds.min_z = std::min(bounds.min_z, vertex[2]);
+    bounds.max_z = std::max(bounds.max_z, vertex[2]);
+  }
+  
+  return bounds;
+}
+
+// Validate that mesh bounding box adequately covers terrain bounding box
+static inline bool validate_mesh_bounds(const BoundingBox& terrain_bounds, 
+                                       const BoundingBox& mesh_bounds, 
+                                       double tolerance = 1e-6) {
+  bool valid = true;
+  
+  std::cerr << "Terrain Bounding Box Validation:" << std::endl;
+  std::cerr << "  Terrain bounds: X[" << terrain_bounds.min_x << ", " << terrain_bounds.max_x 
+            << "] Y[" << terrain_bounds.min_y << ", " << terrain_bounds.max_y 
+            << "] Z[" << terrain_bounds.min_z << ", " << terrain_bounds.max_z << "]" << std::endl;
+  std::cerr << "  Mesh bounds:    X[" << mesh_bounds.min_x << ", " << mesh_bounds.max_x 
+            << "] Y[" << mesh_bounds.min_y << ", " << mesh_bounds.max_y 
+            << "] Z[" << mesh_bounds.min_z << ", " << mesh_bounds.max_z << "]" << std::endl;
+  
+  // Check X bounds
+  if (mesh_bounds.min_x > terrain_bounds.min_x + tolerance || 
+      mesh_bounds.max_x < terrain_bounds.max_x - tolerance) {
+    std::cerr << "  ❌ FAIL: Mesh X bounds do not cover terrain X bounds" << std::endl;
+    valid = false;
+  } else {
+    std::cerr << "  ✓ PASS: Mesh X bounds cover terrain X bounds" << std::endl;
+  }
+  
+  // Check Y bounds
+  if (mesh_bounds.min_y > terrain_bounds.min_y + tolerance || 
+      mesh_bounds.max_y < terrain_bounds.max_y - tolerance) {
+    std::cerr << "  ❌ FAIL: Mesh Y bounds do not cover terrain Y bounds" << std::endl;
+    valid = false;
+  } else {
+    std::cerr << "  ✓ PASS: Mesh Y bounds cover terrain Y bounds" << std::endl;
+  }
+  
+  // Check Z bounds (elevation)
+  if (mesh_bounds.min_z > terrain_bounds.min_z + tolerance || 
+      mesh_bounds.max_z < terrain_bounds.max_z - tolerance) {
+    std::cerr << "  ❌ FAIL: Mesh Z bounds do not cover terrain Z bounds" << std::endl;
+    valid = false;
+  } else {
+    std::cerr << "  ✓ PASS: Mesh Z bounds cover terrain Z bounds" << std::endl;
+  }
+  
+  if (valid) {
+    std::cerr << "  ✓ OVERALL: Mesh adequately covers all terrain bounds" << std::endl;
+  } else {
+    std::cerr << "  ❌ OVERALL: Mesh does not adequately cover terrain bounds" << std::endl;
+  }
+  
+  return valid;
+}
+
 // Calculate region-growing parameters from mesh_density
 static inline RegionGrowingOptions calculate_region_parameters(RegionGrowingOptions opt, int width, int height) {
   // Mesh density ranges from 0.0 (coarsest) to 1.0 (finest)
@@ -1417,6 +1525,62 @@ static inline void triangulateRegionGrowing(const float* elevations,
               << " vertices to boost terrain coverage" << std::endl;
   }
   
+  // CRITICAL: Ensure the four corner vertices are ALWAYS included to guarantee full area coverage
+  // This ensures the mesh bounding box always matches the terrain bounding box regardless of sampling density
+  std::vector<std::pair<int, int>> corners = {{0, 0}, {W-1, 0}, {0, H-1}, {W-1, H-1}};
+  for (const auto& corner : corners) {
+    int x = corner.first, y = corner.second;
+    size_t idx = idx_row_major(x, y, W);
+    if (mask && mask[idx] == 0) continue;
+    if (vertex_map[idx] == -1) {
+      vertex_map[idx] = static_cast<int>(out_mesh.vertices.size());
+      out_mesh.add_vertex(static_cast<double>(x),
+                          static_cast<double>(y),
+                          static_cast<double>(elevations[idx]));
+      std::cerr << "TerraScape: Added critical corner vertex at (" << x << ", " << y << ")" << std::endl;
+    }
+  }
+  
+  // CRITICAL: Ensure min/max elevation points are always included to preserve Z bounds
+  float min_elev = std::numeric_limits<float>::max();
+  float max_elev = std::numeric_limits<float>::lowest();
+  int min_elev_idx = -1, max_elev_idx = -1;
+  
+  for (int i = 0; i < W * H; i++) {
+    if (mask && mask[i] == 0) continue;
+    if (elevations[i] < min_elev) {
+      min_elev = elevations[i];
+      min_elev_idx = i;
+    }
+    if (elevations[i] > max_elev) {
+      max_elev = elevations[i];
+      max_elev_idx = i;
+    }
+  }
+  
+  // Add min/max elevation vertices if not already present
+  if (min_elev_idx != -1 && vertex_map[min_elev_idx] == -1) {
+    int x = min_elev_idx % W;
+    int y = min_elev_idx / W;
+    vertex_map[min_elev_idx] = static_cast<int>(out_mesh.vertices.size());
+    out_mesh.add_vertex(static_cast<double>(x),
+                        static_cast<double>(y),
+                        static_cast<double>(elevations[min_elev_idx]));
+    std::cerr << "TerraScape: Added critical min elevation vertex at (" << x << ", " << y 
+              << ") with elevation " << min_elev << std::endl;
+  }
+  
+  if (max_elev_idx != -1 && max_elev_idx != min_elev_idx && vertex_map[max_elev_idx] == -1) {
+    int x = max_elev_idx % W;
+    int y = max_elev_idx / W;
+    vertex_map[max_elev_idx] = static_cast<int>(out_mesh.vertices.size());
+    out_mesh.add_vertex(static_cast<double>(x),
+                        static_cast<double>(y),
+                        static_cast<double>(elevations[max_elev_idx]));
+    std::cerr << "TerraScape: Added critical max elevation vertex at (" << x << ", " << y 
+              << ") with elevation " << max_elev << std::endl;
+  }
+  
   // Add boundary points to ensure mesh covers the entire area
   // Improved boundary sampling for better terrain coverage
   int boundary_step = std::max(1, std::min(opt.sampling_step, std::max(W, H) / 50)); // Even denser boundary sampling
@@ -1812,6 +1976,16 @@ static inline void triangulateRegionGrowing(const float* elevations,
         std::cout << "  ⚠ WARNING: Excessive triangles - possible mesh quality issues" << std::endl;
       } else {
         std::cout << "  ✓ Good triangle-to-vertex ratio: " << tri_vertex_ratio << std::endl;
+      }
+      
+      // BOUNDING BOX VALIDATION: Ensure mesh covers the exact same area as terrain data
+      BoundingBox terrain_bounds = calculate_terrain_bounds(elevations, W, H);
+      BoundingBox mesh_bounds = calculate_mesh_bounds(out_mesh);
+      bool bounds_valid = validate_mesh_bounds(terrain_bounds, mesh_bounds);
+      
+      if (!bounds_valid) {
+        std::cout << "  ❌ CRITICAL: Mesh does not cover the complete terrain area!" << std::endl;
+        std::cout << "  The mesh should always represent the entire input terrain regardless of density settings." << std::endl;
       }
     }
   }
