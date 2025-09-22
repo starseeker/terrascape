@@ -1847,6 +1847,79 @@ static inline void triangulateRegionGrowing(const float* elevations,
   std::cerr << "TerraScape: Total triangulation complete - " << triangles_created 
             << " triangles generated covering all non-zero terrain cells" << std::endl;
   
+  // 2D PROJECTION VALIDATION: Check mesh 2D coverage against non-zero terrain cells
+  // This validates that the algorithm is correctly covering the terrain area
+  std::cerr << "TerraScape: Validating 2D projection coverage..." << std::endl;
+  
+  // Calculate total non-zero cell area in 2D
+  double total_nonzero_cells = 0;
+  double interior_edge_cells = 0;
+  
+  for (int y = 0; y < H; y++) {
+    for (int x = 0; x < W; x++) {
+      size_t idx = idx_row_major(x, y, W);
+      if (mask && mask[idx] == 0) continue;
+      if (elevations[idx] != 0.0f) {
+        total_nonzero_cells += 1.0; // Each cell has area 1.0 in grid units
+        
+        // Check if this is an interior edge cell (borders a zero-height cell)
+        bool is_interior_edge = false;
+        for (auto [dx, dy] : std::vector<std::pair<int,int>>{{0,1}, {1,0}, {0,-1}, {-1,0}}) {
+          int nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
+            size_t nidx = idx_row_major(nx, ny, W);
+            if (elevations[nidx] == 0.0f || (mask && mask[nidx] == 0)) {
+              is_interior_edge = true;
+              break;
+            }
+          }
+        }
+        if (is_interior_edge) interior_edge_cells += 1.0;
+      }
+    }
+  }
+  
+  // Calculate 2D projected area of all triangles
+  double mesh_2d_projected_area = 0.0;
+  for (const auto& triangle : out_mesh.triangles) {
+    // Get the 2D coordinates of triangle vertices (ignore Z)
+    double x0 = out_mesh.vertices[triangle[0]][0];
+    double y0 = out_mesh.vertices[triangle[0]][1];
+    double x1 = out_mesh.vertices[triangle[1]][0];
+    double y1 = out_mesh.vertices[triangle[1]][1];
+    double x2 = out_mesh.vertices[triangle[2]][0];
+    double y2 = out_mesh.vertices[triangle[2]][1];
+    
+    // Calculate 2D triangle area using cross product
+    double area_2d = 0.5 * std::abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+    mesh_2d_projected_area += area_2d;
+  }
+  
+  // Validation check
+  double coverage_ratio_2d = mesh_2d_projected_area / total_nonzero_cells;
+  double allowed_delta = 0.5 * interior_edge_cells; // 50% of interior edge cells as tolerance
+  double area_difference = std::abs(mesh_2d_projected_area - total_nonzero_cells);
+  
+  std::cerr << "TerraScape: 2D Projection Validation Results:" << std::endl;
+  std::cerr << "  Total non-zero cells: " << total_nonzero_cells << " (area units)" << std::endl;
+  std::cerr << "  Interior edge cells: " << interior_edge_cells << std::endl;
+  std::cerr << "  Mesh 2D projected area: " << mesh_2d_projected_area << std::endl;
+  std::cerr << "  Coverage ratio (2D): " << coverage_ratio_2d << " (" << (coverage_ratio_2d * 100.0) << "%)" << std::endl;
+  std::cerr << "  Area difference: " << area_difference << std::endl;
+  std::cerr << "  Allowed delta (50% of edge cells): " << allowed_delta << std::endl;
+  
+  if (area_difference <= allowed_delta) {
+    std::cerr << "  ✓ PASS: 2D projection matches terrain area within tolerance" << std::endl;
+  } else {
+    std::cerr << "  ❌ FAIL: 2D projection area mismatch - algorithm may have coverage gaps!" << std::endl;
+    std::cerr << "  This suggests the triangulation is not properly covering all non-zero cells." << std::endl;
+  }
+  
+  if (coverage_ratio_2d < 0.8) {
+    std::cerr << "  ⚠ WARNING: 2D coverage ratio is suspiciously low (" << (coverage_ratio_2d * 100.0) << "%)" << std::endl;
+    std::cerr << "  Expected close to 100% for proper terrain coverage algorithm." << std::endl;
+  }
+  
   // Comprehensive terrain mesh validation including surface area comparison
   if (opt.volume_delta_pct > 0.0) {
     if (out_mesh.triangles.size() == 0) {
