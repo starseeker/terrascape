@@ -9,18 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 enable_testing()
 
 # Find GDAL as optional dependency
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(GDAL gdal)
-    if(GDAL_FOUND)
-        message(STATUS "GDAL found: ${GDAL_VERSION}")
-        add_definitions(-DHAVE_GDAL)
-    else()
-        message(STATUS "GDAL not found - terrain data download and validation features disabled")
-    endif()
-else()
-    message(STATUS "PkgConfig not found - GDAL detection disabled")
-endif()
+find_package(GDAL CONFIG)
 
 # Add compile definitions
 add_definitions(-DSAFETY)
@@ -46,9 +35,9 @@ if(GDAL_FOUND)
     target_compile_options(unified_tests PRIVATE ${GDAL_CFLAGS_OTHER})
     
     # Also need curl for downloading
-    find_package(CURL REQUIRED)
-    target_link_libraries(terrascape_demo ${CURL_LIBRARIES})
-    target_link_libraries(unified_tests ${CURL_LIBRARIES})
+    #find_package(CURL REQUIRED)
+    #target_link_libraries(terrascape_demo ${CURL_LIBRARIES})
+    #target_link_libraries(unified_tests ${CURL_LIBRARIES})
 endif()
 
 # Set output directory
