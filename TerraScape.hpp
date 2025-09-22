@@ -2683,14 +2683,27 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
     // Tolerance for determining if a vertex is on the boundary
     const float boundary_tolerance = 0.01f;
     
-    // FIXED: To create a proper manifold mesh, we need to avoid creating walls that would
-    // result in non-manifold edges. The issue is that boundary edge detection finds all edges
-    // that appear in only one triangle, but not all of these should have walls.
-    //
-    // New approach: Create walls only for edges that are actually on the outer perimeter
-    // AND ensure we don't create duplicate walls by checking existing edge usage.
+    // FIXED: To create a proper manifold mesh, we need to identify corner vertices 
+    // and handle them specially to avoid non-manifold edges.
     
-    // First, count existing edge usage from surface and base triangles
+    // First, identify corner vertices (vertices that are on two geometric boundaries)
+    std::set<int> corner_vertices;
+    for (size_t i = 0; i < surface_mesh.vertices.size(); ++i) {
+        const Vertex& v = surface_mesh.vertices[i];
+        
+        bool on_left = std::abs(v.x - min_x) < boundary_tolerance;
+        bool on_right = std::abs(v.x - max_x) < boundary_tolerance;
+        bool on_bottom = std::abs(v.y - min_y) < boundary_tolerance;
+        bool on_top = std::abs(v.y - max_y) < boundary_tolerance;
+        
+        // A corner vertex is on exactly two boundaries
+        int boundary_count = (on_left ? 1 : 0) + (on_right ? 1 : 0) + (on_bottom ? 1 : 0) + (on_top ? 1 : 0);
+        if (boundary_count == 2) {
+            corner_vertices.insert(static_cast<int>(i));
+        }
+    }
+    
+    // Count existing edge usage from surface and base triangles
     std::map<std::pair<int, int>, int> existing_edge_count;
     auto count_edge = [&](int v0, int v1) {
         if (v0 > v1) std::swap(v0, v1);
@@ -2708,7 +2721,7 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
     std::vector<Edge> boundary_edges = find_boundary_edges(surface_mesh.triangles);
     
     // Filter boundary edges to only include those on the geometric perimeter
-    // AND ensure they won't create non-manifold geometry
+    // AND ensure they won't create non-manifold geometry, especially at corners
     for (const Edge& edge : boundary_edges) {
         const Vertex& v0 = surface_mesh.vertices[edge.v0];
         const Vertex& v1 = surface_mesh.vertices[edge.v1];
@@ -2724,8 +2737,12 @@ inline void create_geometric_boundary_walls(MeshResult& volumetric_result,
                              (std::abs(v1.y - min_y) < boundary_tolerance) ||
                              (std::abs(v1.y - max_y) < boundary_tolerance);
         
+        // Check if either vertex is a corner
+        bool has_corner = corner_vertices.count(edge.v0) || corner_vertices.count(edge.v1);
+        
         // Only create walls for edges where both vertices are on the geometric perimeter
-        if (v0_on_boundary && v1_on_boundary) {
+        // BUT skip edges that involve corner vertices to avoid non-manifold issues
+        if (v0_on_boundary && v1_on_boundary && !has_corner) {
             int surface_v0 = edge.v0;
             int surface_v1 = edge.v1;
             int base_v0 = base_vertex_mapping[surface_v0];
