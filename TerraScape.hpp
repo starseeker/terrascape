@@ -1624,8 +1624,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
             << total_vertex_density << " vertices per cell)" << std::endl;
   
   // Determine the search radius based on density - larger radius for sparser meshes
-  int coverage_radius = std::max(1, static_cast<int>(2.0 / std::max(0.1, total_vertex_density)));
-  coverage_radius = std::min(coverage_radius, std::max(W, H) / 4); // Cap to reasonable size
+  int coverage_radius = std::max(2, static_cast<int>(4.0 / std::max(0.1, total_vertex_density)));
+  coverage_radius = std::min(coverage_radius, std::max(W, H) / 3); // More generous cap
   
   // Track which cells are covered by triangles
   std::vector<bool> cell_covered(W * H, false);
@@ -1698,8 +1698,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
                          (v0_pos.first - v2_pos.first) * (y - v2_pos.second)) / denom;
               double c = 1 - a - b;
               
-              // Check if point is inside triangle (with small tolerance for edge coverage)
-              const double tolerance = 0.1;
+              // Check if point is inside triangle (with generous tolerance for coverage)
+              const double tolerance = 0.5; // More generous tolerance for coverage
               if (a >= -tolerance && b >= -tolerance && c >= -tolerance) {
                 // This triangle covers the cell - create it
                 out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
@@ -1767,8 +1767,8 @@ static inline void triangulateRegionGrowing(const float* elevations,
         // Find the 3 closest vertices to create a triangle that covers this cell
         std::vector<std::pair<double, std::pair<std::pair<int, int>, int>>> dist_vertices;
         
-        for (int dy = -coverage_radius*2; dy <= coverage_radius*2; dy++) {
-          for (int dx = -coverage_radius*2; dx <= coverage_radius*2; dx++) {
+        for (int dy = -coverage_radius*3; dy <= coverage_radius*3; dy++) {
+          for (int dx = -coverage_radius*3; dx <= coverage_radius*3; dx++) {
             int nx = x + dx, ny = y + dy;
             if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
               size_t nidx = idx_row_major(nx, ny, W);
@@ -1781,43 +1781,60 @@ static inline void triangulateRegionGrowing(const float* elevations,
         }
         
         if (dist_vertices.size() >= 3) {
-          // Sort by distance and take closest 3
+          // Sort by distance
           std::sort(dist_vertices.begin(), dist_vertices.end());
           
-          auto& v0_pos = dist_vertices[0].second.first;
-          auto& v1_pos = dist_vertices[1].second.first;
-          auto& v2_pos = dist_vertices[2].second.first;
-          
-          int v0 = dist_vertices[0].second.second;
-          int v1 = dist_vertices[1].second.second;
-          int v2 = dist_vertices[2].second.second;
-          
-          // Create triangle if it's non-degenerate
-          double denom = (v1_pos.second - v2_pos.second) * (v0_pos.first - v2_pos.first) + 
-                        (v2_pos.first - v1_pos.first) * (v0_pos.second - v2_pos.second);
-          
-          if (std::abs(denom) > 1e-6) {
-            out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
-            triangles_created++;
-            
-            // Mark covered cells
-            int min_x = std::max(0, std::min({v0_pos.first, v1_pos.first, v2_pos.first}) - 1);
-            int max_x = std::min(W-1, std::max({v0_pos.first, v1_pos.first, v2_pos.first}) + 1);
-            int min_y = std::max(0, std::min({v0_pos.second, v1_pos.second, v2_pos.second}) - 1);
-            int max_y = std::min(H-1, std::max({v0_pos.second, v1_pos.second, v2_pos.second}) + 1);
-            
-            for (int cy = min_y; cy <= max_y; cy++) {
-              for (int cx = min_x; cx <= max_x; cx++) {
-                const double tolerance = 0.1;
-                double a = ((v1_pos.second - v2_pos.second) * (cx - v2_pos.first) + 
-                           (v2_pos.first - v1_pos.first) * (cy - v2_pos.second)) / denom;
-                double b = ((v2_pos.second - v0_pos.second) * (cx - v2_pos.first) + 
-                           (v0_pos.first - v2_pos.first) * (cy - v2_pos.second)) / denom;
-                double c = 1 - a - b;
+          // Try multiple combinations of vertices to ensure coverage
+          bool cell_finally_covered = false;
+          for (size_t i = 0; i < dist_vertices.size() && i < 6 && !cell_finally_covered; i++) {
+            for (size_t j = i + 1; j < dist_vertices.size() && j < 8 && !cell_finally_covered; j++) {
+              for (size_t k = j + 1; k < dist_vertices.size() && k < 10 && !cell_finally_covered; k++) {
+                auto& v0_pos = dist_vertices[i].second.first;
+                auto& v1_pos = dist_vertices[j].second.first;
+                auto& v2_pos = dist_vertices[k].second.first;
                 
-                if (a >= -tolerance && b >= -tolerance && c >= -tolerance) {
-                  size_t cidx = idx_row_major(cx, cy, W);
-                  cell_covered[cidx] = true;
+                int v0 = dist_vertices[i].second.second;
+                int v1 = dist_vertices[j].second.second;
+                int v2 = dist_vertices[k].second.second;
+                
+                // Check if this triangle covers the current cell
+                double denom = (v1_pos.second - v2_pos.second) * (v0_pos.first - v2_pos.first) + 
+                              (v2_pos.first - v1_pos.first) * (v0_pos.second - v2_pos.second);
+                
+                if (std::abs(denom) > 1e-6) {
+                  double a = ((v1_pos.second - v2_pos.second) * (x - v2_pos.first) + 
+                             (v2_pos.first - v1_pos.first) * (y - v2_pos.second)) / denom;
+                  double b = ((v2_pos.second - v0_pos.second) * (x - v2_pos.first) + 
+                             (v0_pos.first - v2_pos.first) * (y - v2_pos.second)) / denom;
+                  double c = 1 - a - b;
+                  
+                  const double tolerance = 0.5;
+                  if (a >= -tolerance && b >= -tolerance && c >= -tolerance) {
+                    out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+                    triangles_created++;
+                    
+                    // Mark covered cells for this triangle
+                    int min_x = std::max(0, std::min({v0_pos.first, v1_pos.first, v2_pos.first}) - 1);
+                    int max_x = std::min(W-1, std::max({v0_pos.first, v1_pos.first, v2_pos.first}) + 1);
+                    int min_y = std::max(0, std::min({v0_pos.second, v1_pos.second, v2_pos.second}) - 1);
+                    int max_y = std::min(H-1, std::max({v0_pos.second, v1_pos.second, v2_pos.second}) + 1);
+                    
+                    for (int cy = min_y; cy <= max_y; cy++) {
+                      for (int cx = min_x; cx <= max_x; cx++) {
+                        double ca = ((v1_pos.second - v2_pos.second) * (cx - v2_pos.first) + 
+                                   (v2_pos.first - v1_pos.first) * (cy - v2_pos.second)) / denom;
+                        double cb = ((v2_pos.second - v0_pos.second) * (cx - v2_pos.first) + 
+                                   (v0_pos.first - v2_pos.first) * (cy - v2_pos.second)) / denom;
+                        double cc = 1 - ca - cb;
+                        
+                        if (ca >= -tolerance && cb >= -tolerance && cc >= -tolerance) {
+                          size_t cidx = idx_row_major(cx, cy, W);
+                          cell_covered[cidx] = true;
+                          if (cx == x && cy == y) cell_finally_covered = true;
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
