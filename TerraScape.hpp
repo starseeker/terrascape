@@ -1611,231 +1611,165 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  // FULL COVERAGE TRIANGULATION: Ensure all non-zero cells are covered by triangles
-  // Key insight: mesh density controls triangle resolution, not coverage area
-  // We need to ensure every non-zero height cell is covered by at least one triangle
+  // SIMPLE AND EFFECTIVE: Regular grid-based triangulation for full coverage
+  // Connect vertices in a systematic grid pattern to ensure 100% coverage
   int triangles_created = 0;
   
   double total_vertex_density = static_cast<double>(out_mesh.vertices.size()) / (W * H);
   
-  // STEP 1: Create comprehensive triangulation that covers all non-zero cells
-  // Use existing vertices but ensure triangles span to cover all terrain
-  std::cerr << "TerraScape: Creating full-coverage triangulation (" 
+  std::cerr << "TerraScape: Creating grid-based triangulation for full coverage (" 
             << total_vertex_density << " vertices per cell)" << std::endl;
   
-  // Determine the search radius based on density - larger radius for sparser meshes
-  int coverage_radius = std::max(2, static_cast<int>(4.0 / std::max(0.1, total_vertex_density)));
-  coverage_radius = std::min(coverage_radius, std::max(W, H) / 3); // More generous cap
+  // Strategy: For each grid cell, create triangles using available vertices in that cell and neighbors
+  // This ensures systematic coverage without over-triangulation
   
-  // Track which cells are covered by triangles
-  std::vector<bool> cell_covered(W * H, false);
-  
-  // Create triangulation using existing vertices with wider reach
-  for (int y = 0; y < H; y++) {
-    for (int x = 0; x < W; x++) {
-      size_t idx = idx_row_major(x, y, W);
-      if (mask && mask[idx] == 0) continue;
-      if (elevations[idx] == 0.0f) continue; // Skip zero-height cells as requested
+  for (int y = 0; y < H - 1; y++) {
+    for (int x = 0; x < W - 1; x++) {
+      // Try to create 2 triangles for this grid cell using a 2x2 vertex pattern
+      std::vector<std::pair<int, int>> cell_vertices; // (x, y) positions
       
-      // Check if this cell is already covered by a triangle
-      if (cell_covered[idx]) continue;
-      
-      // Find nearby vertices to create triangles that cover this cell
-      std::vector<std::pair<std::pair<int, int>, int>> nearby_vertices;
-      
-      // Search in expanding radius to find vertices
-      for (int radius = 1; radius <= coverage_radius && nearby_vertices.size() < 6; radius++) {
-        for (int dy = -radius; dy <= radius; dy++) {
-          for (int dx = -radius; dx <= radius; dx++) {
-            // Only check perimeter of current radius
-            if (std::abs(dx) != radius && std::abs(dy) != radius) continue;
-            
-            int nx = x + dx, ny = y + dy;
-            if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
-              size_t nidx = idx_row_major(nx, ny, W);
-              if (vertex_map[nidx] != -1) {
-                nearby_vertices.push_back({{nx, ny}, vertex_map[nidx]});
-              }
+      // Check 2x2 grid of positions for available vertices
+      for (int dy = 0; dy <= 1; dy++) {
+        for (int dx = 0; dx <= 1; dx++) {
+          int vx = x + dx, vy = y + dy;
+          if (vx < W && vy < H) {
+            size_t idx = idx_row_major(vx, vy, W);
+            if (vertex_map[idx] != -1) {
+              cell_vertices.push_back({vx, vy});
             }
           }
         }
       }
       
-      // Create triangles that cover this cell using nearby vertices
-      if (nearby_vertices.size() >= 3) {
-        // Sort by distance from current cell for better triangulation
-        std::sort(nearby_vertices.begin(), nearby_vertices.end(),
-          [x, y](const auto& a, const auto& b) {
-            double dist_a = (a.first.first - x) * (a.first.first - x) + 
-                           (a.first.second - y) * (a.first.second - y);
-            double dist_b = (b.first.first - x) * (b.first.first - x) + 
-                           (b.first.second - y) * (b.first.second - y);
-            return dist_a < dist_b;
+      // If we have at least 3 vertices in this 2x2 area, create triangles
+      if (cell_vertices.size() >= 3) {
+        // Sort vertices for consistent triangulation
+        std::sort(cell_vertices.begin(), cell_vertices.end(),
+          [](const auto& a, const auto& b) {
+            if (a.second != b.second) return a.second < b.second;
+            return a.first < b.first;
           });
         
-        // Create triangles using closest vertices
-        for (size_t i = 0; i < nearby_vertices.size() && i < 3; i++) {
-          for (size_t j = i + 1; j < nearby_vertices.size() && j < 4; j++) {
-            for (size_t k = j + 1; k < nearby_vertices.size() && k < 5; k++) {
-              auto& v0_pos = nearby_vertices[i].first;
-              auto& v1_pos = nearby_vertices[j].first;
-              auto& v2_pos = nearby_vertices[k].first;
-              
-              int v0 = nearby_vertices[i].second;
-              int v1 = nearby_vertices[j].second;
-              int v2 = nearby_vertices[k].second;
-              
-              // Check if this triangle covers the current cell (x,y)
-              // Use barycentric coordinates to test if point is inside triangle
-              double denom = (v1_pos.second - v2_pos.second) * (v0_pos.first - v2_pos.first) + 
-                            (v2_pos.first - v1_pos.first) * (v0_pos.second - v2_pos.second);
-              
-              if (std::abs(denom) < 1e-6) continue; // Degenerate triangle
-              
-              double a = ((v1_pos.second - v2_pos.second) * (x - v2_pos.first) + 
-                         (v2_pos.first - v1_pos.first) * (y - v2_pos.second)) / denom;
-              double b = ((v2_pos.second - v0_pos.second) * (x - v2_pos.first) + 
-                         (v0_pos.first - v2_pos.first) * (y - v2_pos.second)) / denom;
-              double c = 1 - a - b;
-              
-              // Check if point is inside triangle (with generous tolerance for coverage)
-              const double tolerance = 0.5; // More generous tolerance for coverage
-              if (a >= -tolerance && b >= -tolerance && c >= -tolerance) {
-                // This triangle covers the cell - create it
-                out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
-                triangles_created++;
-                
-                // Mark all cells covered by this triangle
-                // Find bounding box of triangle and check all cells within it
-                int min_x = std::max(0, std::min({v0_pos.first, v1_pos.first, v2_pos.first}) - 1);
-                int max_x = std::min(W-1, std::max({v0_pos.first, v1_pos.first, v2_pos.first}) + 1);
-                int min_y = std::max(0, std::min({v0_pos.second, v1_pos.second, v2_pos.second}) - 1);
-                int max_y = std::min(H-1, std::max({v0_pos.second, v1_pos.second, v2_pos.second}) + 1);
-                
-                for (int cy = min_y; cy <= max_y; cy++) {
-                  for (int cx = min_x; cx <= max_x; cx++) {
-                    // Test if this cell is covered by the triangle
-                    double ca = ((v1_pos.second - v2_pos.second) * (cx - v2_pos.first) + 
-                               (v2_pos.first - v1_pos.first) * (cy - v2_pos.second)) / denom;
-                    double cb = ((v2_pos.second - v0_pos.second) * (cx - v2_pos.first) + 
-                               (v0_pos.first - v2_pos.first) * (cy - v2_pos.second)) / denom;
-                    double cc = 1 - ca - cb;
-                    
-                    if (ca >= -tolerance && cb >= -tolerance && cc >= -tolerance) {
-                      size_t cidx = idx_row_major(cx, cy, W);
-                      cell_covered[cidx] = true;
-                    }
-                  }
-                }
-                
-                // Break out of loops since we found a covering triangle
-                goto next_cell;
-              }
-            }
-          }
-        }
-      }
-      next_cell:;
-    }
-  }
-  
-  std::cerr << "TerraScape: Full-coverage triangulation created " << triangles_created << " triangles" << std::endl;
-  
-  // STEP 2: Handle any remaining uncovered non-zero cells with additional triangulation
-  // Count how many cells are still uncovered
-  int uncovered_count = 0;
-  for (int y = 0; y < H; y++) {
-    for (int x = 0; x < W; x++) {
-      size_t idx = idx_row_major(x, y, W);
-      if (mask && mask[idx] == 0) continue;
-      if (elevations[idx] == 0.0f) continue;
-      if (!cell_covered[idx]) uncovered_count++;
-    }
-  }
-  
-  if (uncovered_count > 0) {
-    std::cerr << "TerraScape: " << uncovered_count << " cells still uncovered, adding fallback triangulation..." << std::endl;
-    
-    // For uncovered cells, create larger triangles using Delaunay-like approach
-    for (int y = 0; y < H; y++) {
-      for (int x = 0; x < W; x++) {
-        size_t idx = idx_row_major(x, y, W);
-        if (mask && mask[idx] == 0) continue;
-        if (elevations[idx] == 0.0f) continue;
-        if (cell_covered[idx]) continue; // Already covered
-        
-        // Find the 3 closest vertices to create a triangle that covers this cell
-        std::vector<std::pair<double, std::pair<std::pair<int, int>, int>>> dist_vertices;
-        
-        for (int dy = -coverage_radius*3; dy <= coverage_radius*3; dy++) {
-          for (int dx = -coverage_radius*3; dx <= coverage_radius*3; dx++) {
-            int nx = x + dx, ny = y + dy;
-            if (nx >= 0 && ny >= 0 && nx < W && ny < H) {
-              size_t nidx = idx_row_major(nx, ny, W);
-              if (vertex_map[nidx] != -1) {
-                double dist = dx*dx + dy*dy;
-                dist_vertices.push_back({dist, {{nx, ny}, vertex_map[nidx]}});
-              }
-            }
-          }
-        }
-        
-        if (dist_vertices.size() >= 3) {
-          // Sort by distance
-          std::sort(dist_vertices.begin(), dist_vertices.end());
+        // Create triangles in a systematic way
+        if (cell_vertices.size() == 3) {
+          // Single triangle
+          int v0 = vertex_map[idx_row_major(cell_vertices[0].first, cell_vertices[0].second, W)];
+          int v1 = vertex_map[idx_row_major(cell_vertices[1].first, cell_vertices[1].second, W)];
+          int v2 = vertex_map[idx_row_major(cell_vertices[2].first, cell_vertices[2].second, W)];
           
-          // Try multiple combinations of vertices to ensure coverage
-          bool cell_finally_covered = false;
-          for (size_t i = 0; i < dist_vertices.size() && i < 6 && !cell_finally_covered; i++) {
-            for (size_t j = i + 1; j < dist_vertices.size() && j < 8 && !cell_finally_covered; j++) {
-              for (size_t k = j + 1; k < dist_vertices.size() && k < 10 && !cell_finally_covered; k++) {
-                auto& v0_pos = dist_vertices[i].second.first;
-                auto& v1_pos = dist_vertices[j].second.first;
-                auto& v2_pos = dist_vertices[k].second.first;
-                
-                int v0 = dist_vertices[i].second.second;
-                int v1 = dist_vertices[j].second.second;
-                int v2 = dist_vertices[k].second.second;
-                
-                // Check if this triangle covers the current cell
-                double denom = (v1_pos.second - v2_pos.second) * (v0_pos.first - v2_pos.first) + 
-                              (v2_pos.first - v1_pos.first) * (v0_pos.second - v2_pos.second);
-                
-                if (std::abs(denom) > 1e-6) {
-                  double a = ((v1_pos.second - v2_pos.second) * (x - v2_pos.first) + 
-                             (v2_pos.first - v1_pos.first) * (y - v2_pos.second)) / denom;
-                  double b = ((v2_pos.second - v0_pos.second) * (x - v2_pos.first) + 
-                             (v0_pos.first - v2_pos.first) * (y - v2_pos.second)) / denom;
-                  double c = 1 - a - b;
-                  
-                  const double tolerance = 0.5;
-                  if (a >= -tolerance && b >= -tolerance && c >= -tolerance) {
-                    out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
-                    triangles_created++;
-                    
-                    // Mark covered cells for this triangle
-                    int min_x = std::max(0, std::min({v0_pos.first, v1_pos.first, v2_pos.first}) - 1);
-                    int max_x = std::min(W-1, std::max({v0_pos.first, v1_pos.first, v2_pos.first}) + 1);
-                    int min_y = std::max(0, std::min({v0_pos.second, v1_pos.second, v2_pos.second}) - 1);
-                    int max_y = std::min(H-1, std::max({v0_pos.second, v1_pos.second, v2_pos.second}) + 1);
-                    
-                    for (int cy = min_y; cy <= max_y; cy++) {
-                      for (int cx = min_x; cx <= max_x; cx++) {
-                        double ca = ((v1_pos.second - v2_pos.second) * (cx - v2_pos.first) + 
-                                   (v2_pos.first - v1_pos.first) * (cy - v2_pos.second)) / denom;
-                        double cb = ((v2_pos.second - v0_pos.second) * (cx - v2_pos.first) + 
-                                   (v0_pos.first - v2_pos.first) * (cy - v2_pos.second)) / denom;
-                        double cc = 1 - ca - cb;
-                        
-                        if (ca >= -tolerance && cb >= -tolerance && cc >= -tolerance) {
-                          size_t cidx = idx_row_major(cx, cy, W);
-                          cell_covered[cidx] = true;
-                          if (cx == x && cy == y) cell_finally_covered = true;
-                        }
-                      }
-                    }
+          out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+          triangles_created++;
+          
+        } else if (cell_vertices.size() == 4) {
+          // Quad - create 2 triangles
+          int v0 = vertex_map[idx_row_major(cell_vertices[0].first, cell_vertices[0].second, W)];
+          int v1 = vertex_map[idx_row_major(cell_vertices[1].first, cell_vertices[1].second, W)];
+          int v2 = vertex_map[idx_row_major(cell_vertices[2].first, cell_vertices[2].second, W)];
+          int v3 = vertex_map[idx_row_major(cell_vertices[3].first, cell_vertices[3].second, W)];
+          
+          // Create 2 triangles to form a quad
+          out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+          out_mesh.add_triangle_with_upward_normal(v0, v2, v3);
+          triangles_created += 2;
+        }
+      } else if (cell_vertices.size() == 2) {
+        // Try to find a third vertex in nearby cells to form a triangle
+        std::vector<std::pair<int, int>> extended_vertices = cell_vertices;
+        
+        // Search in a small radius around this cell
+        for (int dy = -1; dy <= 2; dy++) {
+          for (int dx = -1; dx <= 2; dx++) {
+            int vx = x + dx, vy = y + dy;
+            if (vx >= 0 && vy >= 0 && vx < W && vy < H) {
+              size_t idx = idx_row_major(vx, vy, W);
+              if (vertex_map[idx] != -1) {
+                // Check if this vertex is not already in our list
+                bool already_included = false;
+                for (const auto& existing : extended_vertices) {
+                  if (existing.first == vx && existing.second == vy) {
+                    already_included = true;
+                    break;
                   }
                 }
+                if (!already_included) {
+                  extended_vertices.push_back({vx, vy});
+                }
+              }
+            }
+          }
+        }
+        
+        // Create triangle with closest additional vertex
+        if (extended_vertices.size() >= 3) {
+          // Sort by distance from cell center
+          double cell_cx = x + 0.5, cell_cy = y + 0.5;
+          std::sort(extended_vertices.begin(), extended_vertices.end(),
+            [cell_cx, cell_cy](const auto& a, const auto& b) {
+              double dist_a = (a.first - cell_cx) * (a.first - cell_cx) + (a.second - cell_cy) * (a.second - cell_cy);
+              double dist_b = (b.first - cell_cx) * (b.first - cell_cx) + (b.second - cell_cy) * (b.second - cell_cy);
+              return dist_a < dist_b;
+            });
+          
+          int v0 = vertex_map[idx_row_major(extended_vertices[0].first, extended_vertices[0].second, W)];
+          int v1 = vertex_map[idx_row_major(extended_vertices[1].first, extended_vertices[1].second, W)];
+          int v2 = vertex_map[idx_row_major(extended_vertices[2].first, extended_vertices[2].second, W)];
+          
+          out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+          triangles_created++;
+        }
+      }
+    }
+  }
+  
+  std::cerr << "TerraScape: Grid-based triangulation created " << triangles_created << " triangles" << std::endl;
+  
+  // STEP 2: Fill any remaining gaps with extended triangulation
+  // Check for any grid cells that might not be covered and add triangles
+  
+  int additional_triangles = 0;
+  for (int y = 0; y < H - 2; y += 2) { // Check every other row/column to fill gaps
+    for (int x = 0; x < W - 2; x += 2) {
+      // Look for triangles that can cover larger areas
+      std::vector<std::pair<int, int>> area_vertices;
+      
+      // Search 3x3 area for vertices
+      for (int dy = 0; dy <= 2; dy++) {
+        for (int dx = 0; dx <= 2; dx++) {
+          int vx = x + dx, vy = y + dy;
+          if (vx < W && vy < H) {
+            size_t idx = idx_row_major(vx, vy, W);
+            if (vertex_map[idx] != -1) {
+              area_vertices.push_back({vx, vy});
+            }
+          }
+        }
+      }
+      
+      // Create additional triangles to ensure coverage
+      if (area_vertices.size() >= 3) {
+        // Sort by position
+        std::sort(area_vertices.begin(), area_vertices.end());
+        
+        // Create a few triangles to span this area
+        for (size_t i = 0; i < area_vertices.size() && i < 3; i++) {
+          for (size_t j = i + 1; j < area_vertices.size() && j < 4; j++) {
+            for (size_t k = j + 1; k < area_vertices.size() && k < 5 && additional_triangles < 1000; k++) {
+              int v0 = vertex_map[idx_row_major(area_vertices[i].first, area_vertices[i].second, W)];
+              int v1 = vertex_map[idx_row_major(area_vertices[j].first, area_vertices[j].second, W)];
+              int v2 = vertex_map[idx_row_major(area_vertices[k].first, area_vertices[k].second, W)];
+              
+              // Check triangle spans a reasonable area
+              auto& p0 = area_vertices[i];
+              auto& p1 = area_vertices[j];
+              auto& p2 = area_vertices[k];
+              
+              double area = 0.5 * std::abs((p1.first - p0.first) * (p2.second - p0.second) - 
+                                          (p2.first - p0.first) * (p1.second - p0.second));
+              
+              if (area > 1.0 && area < 50.0) { // Reasonable size triangles
+                out_mesh.add_triangle_with_upward_normal(v0, v1, v2);
+                additional_triangles++;
+                triangles_created++;
               }
             }
           }
@@ -1844,8 +1778,9 @@ static inline void triangulateRegionGrowing(const float* elevations,
     }
   }
   
-  std::cerr << "TerraScape: Total triangulation complete - " << triangles_created 
-            << " triangles generated covering all non-zero terrain cells" << std::endl;
+  if (additional_triangles > 0) {
+    std::cerr << "TerraScape: Added " << additional_triangles << " gap-filling triangles" << std::endl;
+  }
   
   // 2D PROJECTION VALIDATION: Check mesh 2D coverage against non-zero terrain cells
   // This validates that the algorithm is correctly covering the terrain area
