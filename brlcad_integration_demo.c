@@ -5,7 +5,7 @@
  * into BRL-CAD's rt_dsp_tess function.
  */
 
-#include "TerraScape.hpp"
+#include "terrascape.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>

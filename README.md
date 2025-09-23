@@ -4,7 +4,7 @@ TerraScape is a pure C99 header-only library for converting height field data to
 
 ## Features
 
-- **Pure C99 header-only**: Single `TerraScape.hpp` file with no dependencies
+- **Pure C99 header-only**: Single `terrascape.h` file with no dependencies
 - **BRL-CAD DSP compatible**: Direct integration with BRL-CAD's displacement map primitive
 - **Optimized triangulation**: Adaptive sampling and simplification algorithms
 - **Memory efficient**: Dynamic allocation with proper cleanup
@@ -14,7 +14,7 @@ TerraScape is a pure C99 header-only library for converting height field data to
 ## Usage
 
 ```c
-#include "TerraScape.hpp"
+#include "terrascape.h"
 
 // Create DSP data structure from BRL-CAD format
 unsigned short *height_data = /* your height array */;
@@ -41,7 +41,7 @@ TerraScape is designed for direct integration into BRL-CAD's `rt_dsp_tess` funct
 
 ```c
 /* In BRL-CAD's dsp.c file */
-#include "TerraScape.hpp"
+#include "terrascape.h"
 
 int rt_dsp_tess(struct nmgregion **r, struct model *m, 
                 struct rt_db_internal *ip, const struct bg_tess_tol *ttol, 

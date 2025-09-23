@@ -5,7 +5,7 @@
  * for manifold and orientation properties.
  */
 
-#include "TerraScape.hpp"
+#include "terrascape.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
