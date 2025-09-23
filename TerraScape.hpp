@@ -268,6 +268,7 @@ namespace TerraScape {
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
+    void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
     void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
     TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
@@ -642,7 +643,7 @@ namespace TerraScape {
         // Create a set for quick lookup of component cells
         std::set<std::pair<int, int>> component_cells(component.cells.begin(), component.cells.end());
         
-        // Add top surface triangles for cells within the component
+        // Add top surface triangles for complete quads within the component
         for (int y = component.min_y; y < component.max_y; ++y) {
             for (int x = component.min_x; x < component.max_x; ++x) {
                 // Check if we can form a quad with all corners in the component
@@ -672,67 +673,70 @@ namespace TerraScape {
             }
         }
         
-        // Add vertical walls along the edges of the component
-        // We need to create walls for each grid edge that is on the boundary
-        
-        // Horizontal edges (top and bottom of cells)
-        for (int y = component.min_y; y <= component.max_y; ++y) {
-            for (int x = component.min_x; x < component.max_x; ++x) {
-                bool cell_above = (y > 0) && component_cells.count({x, y-1});
-                bool cell_below = (y < terrain.height) && component_cells.count({x, y});
-                
-                // If exactly one side has a cell, create a wall
-                if (cell_above != cell_below) {
-                    if (component_cells.count({x, y-1}) && component_cells.count({x+1, y-1})) {
-                        // Wall on bottom edge of row y-1
-                        size_t t1 = top_vertices[y-1][x];
-                        size_t t2 = top_vertices[y-1][x+1];
-                        size_t b1 = bottom_vertices[y-1][x];
-                        size_t b2 = bottom_vertices[y-1][x+1];
-                        
-                        mesh.addTriangle(t1, b1, t2);
-                        mesh.addTriangle(t2, b1, b2);
-                    } else if (component_cells.count({x, y}) && component_cells.count({x+1, y})) {
-                        // Wall on top edge of row y
-                        size_t t1 = top_vertices[y][x];
-                        size_t t2 = top_vertices[y][x+1];
-                        size_t b1 = bottom_vertices[y][x];
-                        size_t b2 = bottom_vertices[y][x+1];
-                        
-                        mesh.addTriangle(t1, t2, b1);
-                        mesh.addTriangle(t2, b2, b1);
-                    }
+        // Generate walls by examining each potential wall edge
+        // For each cell, check its 4 neighbors and create walls where needed
+        for (const auto& cell : component.cells) {
+            int x = cell.first;
+            int y = cell.second;
+            
+            // Check right edge: if there's no cell to the right, create a wall
+            if (!component_cells.count({x+1, y})) {
+                // Create wall on the right side of this cell
+                // We need to check if there's a cell below to form the wall
+                if (component_cells.count({x, y+1})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y+1][x];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y+1][x];
+                    
+                    // Right wall facing outward
+                    mesh.addTriangle(t1, t2, b1);
+                    mesh.addTriangle(t2, b2, b1);
                 }
             }
-        }
-        
-        // Vertical edges (left and right of cells)
-        for (int y = component.min_y; y < component.max_y; ++y) {
-            for (int x = component.min_x; x <= component.max_x; ++x) {
-                bool cell_left = (x > 0) && component_cells.count({x-1, y});
-                bool cell_right = (x < terrain.width) && component_cells.count({x, y});
-                
-                // If exactly one side has a cell, create a wall
-                if (cell_left != cell_right) {
-                    if (component_cells.count({x-1, y}) && component_cells.count({x-1, y+1})) {
-                        // Wall on right edge of column x-1
-                        size_t t1 = top_vertices[y][x-1];
-                        size_t t2 = top_vertices[y+1][x-1];
-                        size_t b1 = bottom_vertices[y][x-1];
-                        size_t b2 = bottom_vertices[y+1][x-1];
-                        
-                        mesh.addTriangle(t1, t2, b1);
-                        mesh.addTriangle(t2, b2, b1);
-                    } else if (component_cells.count({x, y}) && component_cells.count({x, y+1})) {
-                        // Wall on left edge of column x
-                        size_t t1 = top_vertices[y][x];
-                        size_t t2 = top_vertices[y+1][x];
-                        size_t b1 = bottom_vertices[y][x];
-                        size_t b2 = bottom_vertices[y+1][x];
-                        
-                        mesh.addTriangle(t1, b1, t2);
-                        mesh.addTriangle(t2, b1, b2);
-                    }
+            
+            // Check bottom edge: if there's no cell below, create a wall
+            if (!component_cells.count({x, y+1})) {
+                // Create wall on the bottom side of this cell
+                if (component_cells.count({x+1, y})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y][x+1];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y][x+1];
+                    
+                    // Bottom wall facing outward
+                    mesh.addTriangle(t1, b1, t2);
+                    mesh.addTriangle(t2, b1, b2);
+                }
+            }
+            
+            // Check left edge: if there's no cell to the left, create a wall
+            if (!component_cells.count({x-1, y})) {
+                // Create wall on the left side of this cell
+                if (component_cells.count({x, y+1})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y+1][x];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y+1][x];
+                    
+                    // Left wall facing outward
+                    mesh.addTriangle(t1, b1, t2);
+                    mesh.addTriangle(t2, b1, b2);
+                }
+            }
+            
+            // Check top edge: if there's no cell above, create a wall
+            if (!component_cells.count({x, y-1})) {
+                // Create wall on the top side of this cell
+                if (component_cells.count({x+1, y})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y][x+1];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y][x+1];
+                    
+                    // Top wall facing outward
+                    mesh.addTriangle(t1, t2, b1);
+                    mesh.addTriangle(t2, b2, b1);
                 }
             }
         }
@@ -759,8 +763,8 @@ namespace TerraScape {
         }
     }
 
-    // Generate a volumetric triangle mesh from terrain data
-    void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+    // Generate a volumetric triangle mesh from terrain data (legacy single-mesh approach)
+    void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
         mesh.clear();
         
         if (terrain.width <= 0 || terrain.height <= 0) {
@@ -865,6 +869,12 @@ namespace TerraScape {
             mesh.addTriangle(top_0, bot_0, top_1);
             mesh.addTriangle(top_1, bot_0, bot_1);
         }
+    }
+
+    // Generate a volumetric triangle mesh from terrain data
+    void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+        // Use component-based approach by default for better handling of disjoint islands
+        triangulateTerrainVolumeWithComponents(terrain, mesh);
     }
 
     // Generate a simplified volumetric triangle mesh using Terra/Scape concepts

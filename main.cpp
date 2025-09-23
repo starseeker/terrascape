@@ -20,7 +20,8 @@ int main(int argc, char* argv[])
         ("o,output", "Output OBJ file", cxxopts::value<std::string>()->default_value("terrain.obj"))
         ("s,simplified", "Use Terra/Scape simplified triangulation")
         ("surface-only", "Generate surface-only mesh (no volume)")
-        ("components", "Handle terrain islands and holes separately")
+        ("components", "Handle terrain islands and holes separately (default)")
+        ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
@@ -38,6 +39,7 @@ int main(int argc, char* argv[])
     bool use_simplified = result.count("simplified") > 0;
     bool surface_only = result.count("surface-only") > 0;
     bool use_components = result.count("components") > 0;
+    bool use_legacy = result.count("legacy") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
@@ -46,12 +48,14 @@ int main(int argc, char* argv[])
     std::cout << "Output: " << output_file << std::endl;
     if (use_components) {
         std::cout << "Mode: Components (separate islands and holes)" << std::endl;
+    } else if (use_legacy) {
+        std::cout << "Mode: Legacy (single connected mesh)" << std::endl;
     } else if (surface_only) {
         std::cout << "Mode: Surface-only (Terra/Scape)" << std::endl;
     } else if (use_simplified) {
         std::cout << "Mode: Simplified (Terra/Scape)" << std::endl;
     } else {
-        std::cout << "Mode: Dense" << std::endl;
+        std::cout << "Mode: Dense (with component analysis)" << std::endl;
     }
     if (use_simplified || surface_only) {
         std::cout << "Error threshold: " << error_threshold << std::endl;
@@ -77,6 +81,8 @@ int main(int argc, char* argv[])
         TerraScape::TerrainMesh mesh;
         if (use_components) {
             TerraScape::triangulateTerrainVolumeWithComponents(terrain, mesh);
+        } else if (use_legacy) {
+            TerraScape::triangulateTerrainVolumeLegacy(terrain, mesh);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
             params.error_threshold = error_threshold;
@@ -88,6 +94,7 @@ int main(int argc, char* argv[])
             params.min_triangle_reduction = reduction_percent;
             TerraScape::triangulateTerrainVolumeSimplified(terrain, mesh, params);
         } else {
+            // Default to component-based approach
             TerraScape::triangulateTerrainVolume(terrain, mesh);
         }
         
