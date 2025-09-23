@@ -277,9 +277,11 @@ static inline int terrascape_triangulate_surface_simple(const terrascape_dsp_t *
             size_t v01 = (y + 1) * dsp->width + x;   /* top-left */
             size_t v11 = (y + 1) * dsp->width + (x + 1); /* top-right */
             
-            /* Create two triangles per cell */
-            terrascape_mesh_add_triangle(mesh, v00, v01, v10);
-            terrascape_mesh_add_triangle(mesh, v10, v01, v11);
+            /* Create two triangles per cell with proper CCW winding */
+            /* Triangle 1: bottom-left, bottom-right, top-left */
+            terrascape_mesh_add_triangle(mesh, v00, v10, v01);
+            /* Triangle 2: bottom-right, top-right, top-left */
+            terrascape_mesh_add_triangle(mesh, v10, v11, v01);
         }
     }
     
