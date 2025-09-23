@@ -1,0 +1,29 @@
+We need a terrain triangulator that will produce a triangle mesh that is a
+volumentric, manifold representation of the volume defined by the terrain file.
+The walls and floor of the terrain volume should also be triangulated - we want
+not simply a surface mesh but an expression of the "block" of terrain defined
+by the data. It should use CCW orientation for the triangles, all normals
+should face outward, and interior holes (0 height cells) should
+define interior boundary edges for the mesh that also must be closed to the
+base.  All triangle edges should share two and only two triangles, and the
+output should be strictly manifold.  The mesh also cannot be self intersecting
+or degenerate.
+
+We will conduct a variety of validation checks - the terrain data cell cuboids
+can be summed to calculate a volume, and the output volumetric mesh should
+match that volume.  The triangles of the "surface" portion of the volume (the
+part of the mesh that expresses terrain variation) can be projected onto the
+plane and a surface area calculated - this should closely match the area of the
+non-zero cell heights.
+
+There are many refinements that can and should be made to this process, but as
+a first stage let's get a basic volumetric mesh written out.  We want a
+header-only implementation of the core triangulation logic - it should accept a
+grid of height values.  For these purposes the cell dimensions may assumed to
+be 1x1 for the core triangulation algorithm - it will be up to the application
+code to scale the results to physical dimensions.  The example application to
+exercise this header will read in the crater example file in this repository,
+prepare the appropriate input grid for the header, read back the mesh, and
+apply the appropriate scaling information from the GDAL terrain info to produce
+a final triangle mesh that represents the input terrain.  That mesh will be
+written out as an OBJ file.

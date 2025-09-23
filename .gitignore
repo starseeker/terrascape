@@ -1,0 +1,36 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Output files
+*.obj
+*.mesh
+core
+
+# Generated meshes
+*_mesh.obj
+crater_mesh.obj
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
+*test*
+
