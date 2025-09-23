@@ -23,8 +23,10 @@
 #include <unordered_map>
 #include <fstream>
 #include <iomanip>
+#ifdef HAVE_GDAL
 #include <gdal_priv.h>
 #include <gdal.h>
+#endif
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -230,7 +232,8 @@ namespace TerraScape {
         if (hasExtension(filename, ".pgm") || hasExtension(filename, ".PGM")) {
             return readPGMFile(filename, terrain);
         }
-        
+
+#ifdef HAVE_GDAL
         // Use GDAL for other formats
         GDALDataset* dataset = (GDALDataset*)GDALOpen(filename.c_str(), GA_ReadOnly);
         if (!dataset) {
@@ -284,6 +287,8 @@ namespace TerraScape {
 
         GDALClose(dataset);
         return true;
+#endif
+	return false;
     }
 
     // Simple PGM file reader

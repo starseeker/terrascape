@@ -6,8 +6,10 @@
 #include <iomanip>
 #include "TerraScape.hpp"
 #include "cxxopts.hpp"
+#ifdef HAVE_GDAL
 #include <gdal_priv.h>
 #include <gdal.h>
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -32,11 +34,12 @@ int main(int argc, char* argv[])
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
     std::cout << "Input: " << input_file << std::endl;
     std::cout << "Output: " << output_file << std::endl;
-    
+   
     try {
+#ifdef HAVE_GDAL 
         // Initialize GDAL
         GDALAllRegister();
-        
+#endif
         // Read terrain data
         TerraScape::TerrainData terrain;
         if (!TerraScape::readTerrainFile(input_file, terrain)) {
