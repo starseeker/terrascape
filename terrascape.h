@@ -19,6 +19,12 @@
 #include <string.h>
 #include <stdio.h>
 
+/* Include earcut for efficient planar triangulation when compiling as C++ */
+#ifdef __cplusplus
+#include <array>
+#include "earcut.hpp"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -66,6 +72,9 @@ typedef struct {
     int preserve_boundaries;      /* Boolean: preserve terrain boundaries */
     int adaptive_sampling;        /* Boolean: use adaptive sampling */
     double slope_threshold;       /* Slope threshold for feature preservation */
+    int generate_manifold;        /* Boolean: generate manifold mesh with bottom plane and walls */
+    double bottom_height;         /* Height for bottom plane (auto-calculated if <= min_height) */
+    int optimize_bottom_plane;    /* Boolean: use earcut for sparse bottom triangulation */
 } terrascape_params_t;
 
 /* Terrain feature analysis structure for Terra/Scape algorithms */
@@ -423,6 +432,21 @@ static inline int *terrascape_generate_adaptive_sample_mask(const terrascape_dsp
 /* TRIANGULATION ALGORITHMS */
 /* ========================================================================== */
 
+/* Forward declarations */
+static inline int terrascape_triangulate_dsp_manifold(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        const terrascape_params_t *params);
+static inline int terrascape_triangulate_bottom_plane_simple(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        double bottom_height,
+        size_t *bottom_vertex_indices);
+#ifdef __cplusplus
+static inline int terrascape_triangulate_bottom_plane_optimized(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        double bottom_height,
+        size_t *bottom_vertex_indices);
+#endif
+
 /* Simple surface triangulation - creates surface mesh only */
 static inline int terrascape_triangulate_surface_simple(const terrascape_dsp_t *dsp, terrascape_mesh_t *mesh) {
     if (!dsp || !mesh || !dsp->height_data || dsp->width < 2 || dsp->height < 2) {
@@ -641,11 +665,114 @@ static inline int terrascape_triangulate_surface_adaptive(const terrascape_dsp_t
     return 1;
 }
 
+/* Fallback bottom plane triangulation using simple quad division */
+static inline int terrascape_triangulate_bottom_plane_simple(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        double bottom_height,
+        size_t *bottom_vertex_indices) {
+    
+    /* Create vertices for bottom plane corners */
+    terrascape_point3d_t corners[4];
+    corners[0] = {0.0, 0.0, bottom_height};
+    corners[1] = {(double)(dsp->width-1), 0.0, bottom_height};
+    corners[2] = {(double)(dsp->width-1), (double)(dsp->height-1), bottom_height};
+    corners[3] = {0.0, (double)(dsp->height-1), bottom_height};
+    
+    /* Transform and add vertices */
+    for (int i = 0; i < 4; i++) {
+        corners[i] = terrascape_transform_point(dsp, corners[i]);
+        bottom_vertex_indices[i] = terrascape_mesh_add_vertex(mesh, corners[i]);
+    }
+    
+    /* Create two triangles for the bottom plane (CW winding for bottom face) */
+    terrascape_mesh_add_triangle(mesh, bottom_vertex_indices[0], bottom_vertex_indices[2], bottom_vertex_indices[1]);
+    terrascape_mesh_add_triangle(mesh, bottom_vertex_indices[0], bottom_vertex_indices[3], bottom_vertex_indices[2]);
+    
+    return 1;
+}
+
+/* Generate manifold mesh with surface, walls, and optimized bottom plane */
+static inline int terrascape_triangulate_dsp_manifold(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        const terrascape_params_t *params) {
+    if (!dsp || !mesh || !params) {
+        return 0;
+    }
+    
+    /* First generate the surface mesh */
+    int surface_result;
+    if (params->adaptive_sampling) {
+        surface_result = terrascape_triangulate_surface_adaptive(dsp, mesh, params);
+    } else {
+        surface_result = terrascape_triangulate_surface_simple(dsp, mesh);
+    }
+    
+    if (!surface_result) {
+        return 0;
+    }
+    
+    /* Calculate bottom height */
+    double bottom_height = params->bottom_height;
+    if (bottom_height <= dsp->min_height) {
+        bottom_height = dsp->min_height - (dsp->max_height - dsp->min_height) * 0.1;
+    }
+    
+    /* Store surface vertex count for wall generation */
+    size_t surface_vertex_count = mesh->vertex_count;
+    
+    /* Generate bottom plane with optimized triangulation */
+    size_t bottom_vertex_indices[4];
+    int bottom_result;
+    
+#ifdef __cplusplus
+    if (params->optimize_bottom_plane) {
+        bottom_result = terrascape_triangulate_bottom_plane_optimized(dsp, mesh, bottom_height, bottom_vertex_indices);
+    } else {
+        bottom_result = terrascape_triangulate_bottom_plane_simple(dsp, mesh, bottom_height, bottom_vertex_indices);
+    }
+#else
+    bottom_result = terrascape_triangulate_bottom_plane_simple(dsp, mesh, bottom_height, bottom_vertex_indices);
+#endif
+    
+    if (!bottom_result) {
+        return 0;
+    }
+    
+    /* Generate walls connecting surface boundary to bottom plane */
+    /* Get boundary vertices from surface mesh */
+    size_t surface_boundary_indices[4];
+    surface_boundary_indices[0] = 0;  /* Bottom-left */
+    surface_boundary_indices[1] = dsp->width - 1;  /* Bottom-right */
+    surface_boundary_indices[2] = surface_vertex_count - 1;  /* Top-right */
+    surface_boundary_indices[3] = surface_vertex_count - dsp->width;  /* Top-left */
+    
+    /* Create wall triangles with proper winding (outward-facing normals) */
+    /* Bottom wall (y=0) */
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[0], bottom_vertex_indices[0], surface_boundary_indices[1]);
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[1], bottom_vertex_indices[0], bottom_vertex_indices[1]);
+    
+    /* Right wall (x=max) */
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[1], bottom_vertex_indices[1], surface_boundary_indices[2]);
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[2], bottom_vertex_indices[1], bottom_vertex_indices[2]);
+    
+    /* Top wall (y=max) */
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[2], bottom_vertex_indices[2], surface_boundary_indices[3]);
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[3], bottom_vertex_indices[2], bottom_vertex_indices[3]);
+    
+    /* Left wall (x=0) */
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[3], bottom_vertex_indices[3], surface_boundary_indices[0]);
+    terrascape_mesh_add_triangle(mesh, surface_boundary_indices[0], bottom_vertex_indices[3], bottom_vertex_indices[0]);
+    
+    return 1;
+}
+
 /* Main entry point for surface triangulation */
 static inline int terrascape_triangulate_dsp_surface(const terrascape_dsp_t *dsp,
         terrascape_mesh_t *mesh,
         const terrascape_params_t *params) {
-    if (params && params->adaptive_sampling) {
+    if (params && params->generate_manifold) {
+        return terrascape_triangulate_dsp_manifold(dsp, mesh, params);
+    } else if (params && params->adaptive_sampling) {
         return terrascape_triangulate_surface_adaptive(dsp, mesh, params);
     } else {
         return terrascape_triangulate_surface_simple(dsp, mesh);
@@ -664,6 +791,9 @@ static inline terrascape_params_t terrascape_params_default(void) {
     params.preserve_boundaries = 1;
     params.adaptive_sampling = 0;
     params.slope_threshold = 0.2;
+    params.generate_manifold = 0;
+    params.bottom_height = -1.0;  /* Auto-calculate */
+    params.optimize_bottom_plane = 1;
     return params;
 }
 
@@ -786,6 +916,56 @@ static inline terrascape_params_t terrascape_params_from_brlcad_tolerances(
 }
 
 #ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+/* C++ only functions that use earcut.hpp */
+
+/* Optimized bottom plane triangulation using earcut for sparse triangle generation */
+static inline int terrascape_triangulate_bottom_plane_optimized(const terrascape_dsp_t *dsp,
+        terrascape_mesh_t *mesh,
+        double bottom_height,
+        size_t *bottom_vertex_indices) {
+    
+    /* Create boundary polygon for earcut */
+    std::vector<std::vector<std::array<double, 2>>> polygon;
+    std::vector<std::array<double, 2>> boundary;
+    
+    /* Add boundary vertices in counter-clockwise order for bottom face */
+    boundary.push_back({{0.0, 0.0}});
+    boundary.push_back({{(double)(dsp->width-1), 0.0}});
+    boundary.push_back({{(double)(dsp->width-1), (double)(dsp->height-1)}});
+    boundary.push_back({{0.0, (double)(dsp->height-1)}});
+    
+    polygon.push_back(boundary);
+    
+    /* Run earcut triangulation */
+    std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon);
+    
+    /* Create vertices for bottom plane corners */
+    terrascape_point3d_t corners[4];
+    corners[0] = {0.0, 0.0, bottom_height};
+    corners[1] = {(double)(dsp->width-1), 0.0, bottom_height};
+    corners[2] = {(double)(dsp->width-1), (double)(dsp->height-1), bottom_height};
+    corners[3] = {0.0, (double)(dsp->height-1), bottom_height};
+    
+    /* Transform and add vertices */
+    for (int i = 0; i < 4; i++) {
+        corners[i] = terrascape_transform_point(dsp, corners[i]);
+        bottom_vertex_indices[i] = terrascape_mesh_add_vertex(mesh, corners[i]);
+    }
+    
+    /* Add triangles from earcut (note: earcut gives CCW for top view, we need CW for bottom) */
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        /* Reverse winding order for bottom face to maintain proper orientation */
+        terrascape_mesh_add_triangle(mesh, 
+                                    bottom_vertex_indices[indices[i]], 
+                                    bottom_vertex_indices[indices[i+2]], 
+                                    bottom_vertex_indices[indices[i+1]]);
+    }
+    
+    return 1;
 }
 #endif
 
