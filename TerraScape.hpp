@@ -702,6 +702,85 @@ static inline terrascape_feature_t terrascape_debug_analyze_point(const terrasca
     return terrascape_analyze_terrain_point(dsp, x, y);
 }
 
+/* ========================================================================== */
+/* BRL-CAD TOLERANCE INTEGRATION */
+/* ========================================================================== */
+
+/* BRL-CAD tolerance structures for integration */
+typedef struct {
+    double dist;                  /* General tolerance distance */
+} bn_tol_sim;
+
+typedef struct {
+    double abs;                   /* Absolute tolerance in model units */
+    double rel;                   /* Relative tolerance (0.0 to 1.0) */
+    double norm;                  /* Normal tolerance in radians */
+} bg_tess_tol_sim;
+
+/**
+ * Convert BRL-CAD tessellation tolerances to TerraScape parameters
+ * 
+ * This function translates BRL-CAD's standard tessellation tolerances
+ * (absolute, relative, normal) into appropriate TerraScape parameters.
+ * 
+ * @param ttol BRL-CAD tessellation tolerance structure
+ * @param tol General BRL-CAD tolerance structure  
+ * @param dsp DSP data for terrain-specific scaling
+ * @return TerraScape parameters configured from BRL-CAD tolerances
+ */
+static inline terrascape_params_t terrascape_params_from_brlcad_tolerances(
+    const bg_tess_tol_sim *ttol, 
+    const bn_tol_sim *tol,
+    const terrascape_dsp_t *dsp) {
+    
+    terrascape_params_t params = terrascape_params_default();
+    
+    if (!ttol || !tol || !dsp) {
+        return params;  /* Return defaults if NULL parameters */
+    }
+    
+    /* Calculate terrain-specific metrics for tolerance mapping */
+    double terrain_height_range = dsp->max_height - dsp->min_height;
+    double terrain_scale = (terrain_height_range > 1.0) ? terrain_height_range : 1.0;
+    
+    /* Map absolute tolerance to error threshold */
+    if (ttol->abs > 0.0) {
+        params.error_threshold = ttol->abs;
+    } else {
+        /* Fall back to general tolerance distance */
+        params.error_threshold = tol->dist;
+    }
+    
+    /* Map relative tolerance to triangle reduction */
+    if (ttol->rel > 0.0 && ttol->rel <= 1.0) {
+        /* Convert relative tolerance to triangle reduction percentage */
+        /* Higher relative tolerance allows more triangle reduction */
+        params.min_triangle_reduction = (int)(ttol->rel * 50.0);  /* Max 50% reduction */
+    } else {
+        params.min_triangle_reduction = 10;  /* Conservative default */
+    }
+    
+    /* Map normal tolerance to slope threshold */
+    if (ttol->norm > 0.0) {
+        /* Normal tolerance in radians maps to slope threshold */
+        params.slope_threshold = tan(ttol->norm);
+    } else {
+        params.slope_threshold = 0.1;  /* Default slope threshold */
+    }
+    
+    /* Enable adaptive sampling for better quality */
+    params.adaptive_sampling = 1;
+    params.preserve_boundaries = 1;  /* Always preserve boundaries for BRL-CAD */
+    
+    /* Ensure minimum error threshold relative to terrain scale */
+    double min_threshold = terrain_scale * 1e-6;
+    if (params.error_threshold < min_threshold) {
+        params.error_threshold = min_threshold;
+    }
+    
+    return params;
+}
+
 #ifdef __cplusplus
 }
 #endif

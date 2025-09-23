@@ -55,9 +55,11 @@ int rt_dsp_tess(struct nmgregion **r, struct model *m,
                                                     dsp_ip->dsp_ycnt, 
                                                     dsp_ip->dsp_stom);
     
+    /* Convert BRL-CAD tessellation tolerances to TerraScape parameters */
+    terrascape_params_t params = terrascape_params_from_brlcad_tolerances(ttol, tol, &ts_dsp);
+    
     /* Generate optimized triangle mesh */
     terrascape_mesh_t *mesh = terrascape_mesh_create();
-    terrascape_params_t params = terrascape_params_default();
     terrascape_triangulate_dsp_surface(&ts_dsp, mesh, &params);
     
     /* Convert to NMG format using existing BRL-CAD functions */
@@ -73,6 +75,34 @@ int rt_dsp_tess(struct nmgregion **r, struct model *m,
     return 0;
 }
 ```
+
+## Tessellation Tolerance Integration
+
+TerraScape fully supports BRL-CAD's standard tessellation tolerances (abs, rel, norm):
+
+```c
+/* The terrascape_params_from_brlcad_tolerances() function automatically
+ * converts BRL-CAD tolerance values to appropriate TerraScape parameters:
+ *
+ * - ttol->abs (absolute tolerance) → error_threshold
+ * - ttol->rel (relative tolerance) → min_triangle_reduction percentage  
+ * - ttol->norm (normal tolerance in radians) → slope_threshold
+ */
+
+terrascape_params_t params = terrascape_params_from_brlcad_tolerances(ttol, tol, &dsp);
+
+/* This ensures that TerraScape respects the same quality requirements
+ * as other BRL-CAD tessellation routines, providing consistent behavior
+ * across the entire system.
+ */
+```
+
+### Tolerance Mapping Details
+
+- **Absolute tolerance** (`ttol->abs`): Maps directly to TerraScape's `error_threshold`
+- **Relative tolerance** (`ttol->rel`): Controls triangle reduction percentage (0.0-1.0 → 0-50%)  
+- **Normal tolerance** (`ttol->norm`): Converts from radians to slope threshold using `tan()`
+- **Fallback**: When tessellation tolerances are zero/invalid, uses `bn_tol->dist`
 
 ## Building
 
@@ -99,9 +129,10 @@ make
 ### Key Functions
 
 - `terrascape_dsp_create()` - Create DSP structure from height data
-- `terrascape_mesh_create/free()` - Mesh memory management
+- `terrascape_mesh_create/free()` - Mesh memory management  
 - `terrascape_triangulate_dsp_surface()` - Main triangulation function
 - `terrascape_params_default()` - Get default parameters
+- `terrascape_params_from_brlcad_tolerances()` - Convert BRL-CAD tolerances to TerraScape parameters
 
 ### Utility Functions
 
