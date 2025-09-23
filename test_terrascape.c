@@ -311,22 +311,26 @@ mesh_validation_t validate_mesh_properties(const terrascape_mesh_t *mesh) {
 void test_triangulation_parameters(const terrascape_dsp_t *dsp) {
     printf("\n=== Testing Different Triangulation Parameters ===\n");
     
-    terrascape_params_t configs[] = {
-        {0.0, 0, 1, 0},    /* Simple, no reduction */
-        {0.1, 25, 1, 0},   /* 25% reduction */
-        {0.1, 50, 1, 0},   /* 50% reduction */
-        {0.1, 25, 1, 1},   /* 25% reduction with adaptive sampling */
+    typedef struct {
+        terrascape_params_t params;
+        const char *name;
+    } test_config_t;
+    
+    test_config_t configs[] = {
+        {{0.0, 0, 1, 0, 0.0}, "Simple (no reduction)"},
+        {{0.1, 25, 1, 0, 0.2}, "25% reduction (simple)"},
+        {{0.1, 50, 1, 0, 0.2}, "50% reduction (simple)"},
+        {{0.1, 25, 1, 1, 0.2}, "25% reduction + adaptive (Terra/Scape)"},
+        {{0.2, 50, 1, 1, 0.3}, "50% reduction + adaptive (Terra/Scape)"},
+        {{0.05, 70, 1, 1, 0.15}, "70% reduction + adaptive (aggressive)"}
     };
     
-    const char *config_names[] = {
-        "Simple (no reduction)",
-        "25% triangle reduction",
-        "50% triangle reduction", 
-        "25% reduction + adaptive"
-    };
+    int num_configs = sizeof(configs) / sizeof(configs[0]);
     
-    for (int i = 0; i < 4; i++) {
-        printf("\nConfiguration: %s\n", config_names[i]);
+    for (int i = 0; i < num_configs; i++) {
+        printf("\nConfiguration: %s\n", configs[i].name);
+        printf("  Error threshold: %.3f, Slope threshold: %.3f\n", 
+               configs[i].params.error_threshold, configs[i].params.slope_threshold);
         
         terrascape_mesh_t *mesh = terrascape_mesh_create();
         if (!mesh) {
@@ -334,7 +338,7 @@ void test_triangulation_parameters(const terrascape_dsp_t *dsp) {
             continue;
         }
         
-        int result = terrascape_triangulate_dsp_surface(dsp, mesh, &configs[i]);
+        int result = terrascape_triangulate_dsp_surface(dsp, mesh, &configs[i].params);
         if (!result) {
             printf("  ERROR: Triangulation failed\n");
             terrascape_mesh_free(mesh);
@@ -343,6 +347,12 @@ void test_triangulation_parameters(const terrascape_dsp_t *dsp) {
         
         printf("  Generated: %zu vertices, %zu triangles\n", 
                mesh->vertex_count, mesh->triangle_count);
+        
+        /* Calculate triangle reduction percentage */
+        size_t original_triangles = (dsp->width - 1) * (dsp->height - 1) * 2;
+        double reduction = 100.0 * (1.0 - (double)mesh->triangle_count / original_triangles);
+        printf("  Triangle reduction: %.1f%% (from %zu to %zu)\n", 
+               reduction, original_triangles, mesh->triangle_count);
         
         /* Validate this configuration */
         mesh_validation_t validation = validate_mesh_properties(mesh);
@@ -414,7 +424,29 @@ int main() {
     /* Test different parameter configurations */
     test_triangulation_parameters(&dsp);
     
-    /* Test coordinate transformations */
+    /* Test terrain feature analysis */
+    printf("\n=== Terrain Feature Analysis Test (Terra/Scape) ===\n");
+    printf("Analyzing terrain features using Terra/Scape algorithms...\n");
+    
+    /* Sample feature analysis at various points */
+    int sample_points[][2] = {
+        {dsp.width/4, dsp.height/4},     /* Quarter point */
+        {dsp.width/2, dsp.height/2},     /* Center point */
+        {3*dsp.width/4, 3*dsp.height/4}, /* Three-quarter point */
+        {10, 10},                        /* Near corner */
+        {dsp.width-10, dsp.height-10}    /* Near opposite corner */
+    };
+    
+    for (int i = 0; i < 5; i++) {
+        int x = sample_points[i][0];
+        int y = sample_points[i][1];
+        
+        terrascape_feature_t feature = terrascape_debug_analyze_point(&dsp, x, y);
+        printf("  Point (%d,%d): height=%.1f, slope=%.3f, curvature=%.3f, roughness=%.3f, importance=%.3f%s\n", 
+               x, y, terrascape_dsp_get_height(&dsp, x, y),
+               feature.slope, feature.curvature, feature.roughness, feature.importance_score,
+               feature.is_boundary ? " [BOUNDARY]" : "");
+    }
     printf("\n=== Coordinate Transformation Test ===\n");
     terrascape_point3d_t test_points[] = {
         {0, 0, 100},
