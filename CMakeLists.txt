@@ -9,7 +9,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 enable_testing()
 
 # Find GDAL as optional dependency
-find_package(GDAL CONFIG REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GDAL REQUIRED gdal)
 
 # Create the terrascape_demo executable (now header-only)
 add_executable(terrascape_demo main.cpp)
