@@ -180,6 +180,31 @@ namespace TerraScape {
                       is_manifold(true), is_ccw_oriented(true), non_manifold_edges(0) {}
     };
 
+    // Terrain simplification parameters based on Terra/Scape concepts
+    struct SimplificationParams {
+        double error_threshold;     // Maximum allowed geometric error
+        double slope_threshold;     // Slope threshold for feature preservation
+        int min_triangle_reduction; // Minimum percentage of triangles to remove
+        bool preserve_boundaries;   // Whether to preserve terrain boundaries
+        
+        SimplificationParams() : 
+            error_threshold(0.1), 
+            slope_threshold(0.2), 
+            min_triangle_reduction(50), 
+            preserve_boundaries(true) {}
+    };
+
+    // Local terrain analysis for adaptive simplification
+    struct TerrainFeature {
+        double curvature;          // Local surface curvature
+        double slope;              // Local slope magnitude
+        double roughness;          // Local height variation
+        bool is_boundary;          // Whether this is a boundary vertex
+        double importance_score;   // Combined importance metric
+        
+        TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance_score(0) {}
+    };
+
     // Edge structure for manifold checking
     struct Edge {
         size_t v0, v1;
@@ -213,6 +238,9 @@ namespace TerraScape {
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
+    void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
+    TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
+    std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
     MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
     bool writeObjFile(const std::string& filename, const TerrainMesh& mesh);
 
@@ -335,6 +363,132 @@ namespace TerraScape {
         return true;
     }
 
+    // Analyze terrain features at a specific point (Terra/Scape inspired)
+    TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y) {
+        TerrainFeature feature;
+        
+        if (!terrain.isValidCell(x, y)) {
+            return feature;
+        }
+        
+        // Calculate local slope using central differences
+        double dx = 0, dy = 0;
+        if (terrain.isValidCell(x-1, y) && terrain.isValidCell(x+1, y)) {
+            dx = (terrain.getHeight(x+1, y) - terrain.getHeight(x-1, y)) / (2.0 * terrain.cell_size);
+        }
+        if (terrain.isValidCell(x, y-1) && terrain.isValidCell(x, y+1)) {
+            dy = (terrain.getHeight(x, y+1) - terrain.getHeight(x, y-1)) / (2.0 * terrain.cell_size);
+        }
+        feature.slope = std::sqrt(dx*dx + dy*dy);
+        
+        // Calculate local curvature (second derivatives)
+        double dxx = 0, dyy = 0;
+        double h_center = terrain.getHeight(x, y);
+        if (terrain.isValidCell(x-1, y) && terrain.isValidCell(x+1, y)) {
+            dxx = (terrain.getHeight(x+1, y) - 2*h_center + terrain.getHeight(x-1, y)) / (terrain.cell_size * terrain.cell_size);
+        }
+        if (terrain.isValidCell(x, y-1) && terrain.isValidCell(x, y+1)) {
+            dyy = (terrain.getHeight(x, y+1) - 2*h_center + terrain.getHeight(x, y-1)) / (terrain.cell_size * terrain.cell_size);
+        }
+        feature.curvature = std::abs(dxx) + std::abs(dyy);
+        
+        // Calculate local roughness (height variation in neighborhood)
+        double height_sum = 0;
+        double height_variance = 0;
+        int neighbor_count = 0;
+        
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (terrain.isValidCell(x+dx, y+dy)) {
+                    double h = terrain.getHeight(x+dx, y+dy);
+                    height_sum += h;
+                    neighbor_count++;
+                }
+            }
+        }
+        
+        if (neighbor_count > 0) {
+            double mean_height = height_sum / neighbor_count;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    if (terrain.isValidCell(x+dx, y+dy)) {
+                        double h = terrain.getHeight(x+dx, y+dy);
+                        height_variance += (h - mean_height) * (h - mean_height);
+                    }
+                }
+            }
+            feature.roughness = std::sqrt(height_variance / neighbor_count);
+        }
+        
+        // Check if this is a boundary point
+        feature.is_boundary = (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1);
+        
+        // Calculate importance score (Terra/Scape style geometric importance)
+        feature.importance_score = feature.curvature + 0.5 * feature.slope + 0.3 * feature.roughness;
+        if (feature.is_boundary) feature.importance_score *= 2.0; // Preserve boundaries
+        
+        return feature;
+    }
+
+    // Generate adaptive sampling mask based on terrain features
+    std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params) {
+        std::vector<std::vector<bool>> mask(terrain.height, std::vector<bool>(terrain.width, false));
+        
+        // Always include boundary points
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1) {
+                    mask[y][x] = true;
+                }
+            }
+        }
+        
+        // Analyze terrain features and mark important points
+        std::vector<std::pair<double, std::pair<int, int>>> importance_points;
+        
+        for (int y = 1; y < terrain.height-1; ++y) {
+            for (int x = 1; x < terrain.width-1; ++x) {
+                TerrainFeature feature = analyzeTerrainPoint(terrain, x, y);
+                
+                // Include points with high importance or exceeding thresholds
+                if (feature.importance_score > params.error_threshold || 
+                    feature.slope > params.slope_threshold) {
+                    mask[y][x] = true;
+                } else {
+                    // Store for potential inclusion based on overall reduction target
+                    importance_points.push_back({feature.importance_score, {x, y}});
+                }
+            }
+        }
+        
+        // Sort by importance and include additional points to meet minimum density
+        std::sort(importance_points.rbegin(), importance_points.rend());
+        
+        int current_points = 0;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (mask[y][x]) current_points++;
+            }
+        }
+        
+        int total_points = terrain.width * terrain.height;
+        int min_required = total_points * (100 - params.min_triangle_reduction) / 100;
+        
+        // Add most important remaining points to reach minimum density
+        for (const auto& point : importance_points) {
+            if (current_points >= min_required) break;
+            
+            int x = point.second.first;
+            int y = point.second.second;
+            if (!mask[y][x]) {
+                mask[y][x] = true;
+                current_points++;
+            }
+        }
+        
+        return mask;
+    }
+
     // Generate a volumetric triangle mesh from terrain data
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
         mesh.clear();
@@ -440,6 +594,175 @@ namespace TerraScape {
 
             mesh.addTriangle(top_0, bot_0, top_1);
             mesh.addTriangle(top_1, bot_0, bot_1);
+        }
+    }
+
+    // Generate a simplified volumetric triangle mesh using Terra/Scape concepts
+    void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+        mesh.clear();
+        
+        if (terrain.width <= 0 || terrain.height <= 0) {
+            return;
+        }
+
+        // Generate adaptive sampling mask based on terrain features
+        auto sample_mask = generateAdaptiveSampleMask(terrain, params);
+        
+        // Create a new simplified grid by decimation
+        std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
+        std::vector<std::vector<size_t>> top_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+        std::vector<std::vector<size_t>> bottom_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+
+        // For manifold guarantee, ensure we keep vertices in a structured grid pattern
+        // Use regular subsampling combined with feature-based importance
+        int step_size = std::max(1, (int)std::sqrt(100.0 / (100.0 - params.min_triangle_reduction)));
+        
+        // First pass: structured subsampling to maintain topology
+        for (int y = 0; y < terrain.height; y += step_size) {
+            for (int x = 0; x < terrain.width; x += step_size) {
+                keep_vertex[y][x] = true;
+            }
+        }
+        
+        // Second pass: add important feature points
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (sample_mask[y][x] && !keep_vertex[y][x]) {
+                    keep_vertex[y][x] = true;
+                }
+            }
+        }
+        
+        // Third pass: ensure boundary completeness
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if ((x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1)) {
+                    keep_vertex[y][x] = true;
+                }
+            }
+        }
+
+        // Add vertices for kept points
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (keep_vertex[y][x]) {
+                    double world_x = terrain.origin.x + x * terrain.cell_size;
+                    double world_y = terrain.origin.y - y * terrain.cell_size;
+                    double height = terrain.getHeight(x, y);
+                    
+                    top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
+                    bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+                }
+            }
+        }
+
+        // Triangulate surface using a grid-walking approach to maintain manifold property
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            for (int x = 0; x < terrain.width - 1; ++x) {
+                // Find the next valid grid cell that can be triangulated
+                std::vector<std::pair<int, int>> quad_corners;
+                if (keep_vertex[y][x]) quad_corners.push_back({x, y});
+                if (keep_vertex[y][x+1]) quad_corners.push_back({x+1, y});
+                if (keep_vertex[y+1][x]) quad_corners.push_back({x, y+1});
+                if (keep_vertex[y+1][x+1]) quad_corners.push_back({x+1, y+1});
+                
+                // If we have all 4 corners, create the standard 2 triangles
+                if (quad_corners.size() == 4) {
+                    size_t v00_top = top_vertices[y][x];
+                    size_t v10_top = top_vertices[y][x+1];
+                    size_t v01_top = top_vertices[y+1][x];
+                    size_t v11_top = top_vertices[y+1][x+1];
+                    
+                    size_t v00_bot = bottom_vertices[y][x];
+                    size_t v10_bot = bottom_vertices[y][x+1];
+                    size_t v01_bot = bottom_vertices[y+1][x];
+                    size_t v11_bot = bottom_vertices[y+1][x+1];
+                    
+                    // Top surface triangles
+                    mesh.addSurfaceTriangle(v00_top, v01_top, v10_top);
+                    mesh.addSurfaceTriangle(v10_top, v01_top, v11_top);
+                    
+                    // Bottom surface triangles (reversed)
+                    mesh.addTriangle(v00_bot, v10_bot, v01_bot);
+                    mesh.addTriangle(v10_bot, v11_bot, v01_bot);
+                } 
+                // Handle cases where we have 3 vertices (create 1 triangle)
+                else if (quad_corners.size() == 3) {
+                    for (size_t i = 0; i < 3; ++i) {
+                        int px = quad_corners[i].first;
+                        int py = quad_corners[i].second;
+                        
+                        size_t v_top = top_vertices[py][px];
+                        size_t v_bot = bottom_vertices[py][px];
+                        
+                        if (i == 0) {
+                            size_t v1_top = top_vertices[quad_corners[1].second][quad_corners[1].first];
+                            size_t v2_top = top_vertices[quad_corners[2].second][quad_corners[2].first];
+                            size_t v1_bot = bottom_vertices[quad_corners[1].second][quad_corners[1].first];
+                            size_t v2_bot = bottom_vertices[quad_corners[2].second][quad_corners[2].first];
+                            
+                            mesh.addSurfaceTriangle(v_top, v1_top, v2_top);
+                            mesh.addTriangle(v_bot, v2_bot, v1_bot);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add side walls for boundary edges
+        // Left wall (x = 0)
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            if (keep_vertex[y][0] && keep_vertex[y + 1][0]) {
+                size_t top_0 = top_vertices[y][0];
+                size_t top_1 = top_vertices[y + 1][0];
+                size_t bot_0 = bottom_vertices[y][0];
+                size_t bot_1 = bottom_vertices[y + 1][0];
+
+                mesh.addTriangle(top_0, bot_0, top_1);
+                mesh.addTriangle(top_1, bot_0, bot_1);
+            }
+        }
+
+        // Right wall (x = width - 1)
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            int x = terrain.width - 1;
+            if (keep_vertex[y][x] && keep_vertex[y + 1][x]) {
+                size_t top_0 = top_vertices[y][x];
+                size_t top_1 = top_vertices[y + 1][x];
+                size_t bot_0 = bottom_vertices[y][x];
+                size_t bot_1 = bottom_vertices[y + 1][x];
+
+                mesh.addTriangle(top_0, top_1, bot_0);
+                mesh.addTriangle(top_1, bot_1, bot_0);
+            }
+        }
+
+        // Top wall (y = 0)
+        for (int x = 0; x < terrain.width - 1; ++x) {
+            if (keep_vertex[0][x] && keep_vertex[0][x + 1]) {
+                size_t top_0 = top_vertices[0][x];
+                size_t top_1 = top_vertices[0][x + 1];
+                size_t bot_0 = bottom_vertices[0][x];
+                size_t bot_1 = bottom_vertices[0][x + 1];
+
+                mesh.addTriangle(top_0, top_1, bot_0);
+                mesh.addTriangle(top_1, bot_1, bot_0);
+            }
+        }
+
+        // Bottom wall (y = height - 1)
+        for (int x = 0; x < terrain.width - 1; ++x) {
+            int y = terrain.height - 1;
+            if (keep_vertex[y][x] && keep_vertex[y][x + 1]) {
+                size_t top_0 = top_vertices[y][x];
+                size_t top_1 = top_vertices[y][x + 1];
+                size_t bot_0 = bottom_vertices[y][x];
+                size_t bot_1 = bottom_vertices[y][x + 1];
+
+                mesh.addTriangle(top_0, bot_0, top_1);
+                mesh.addTriangle(top_1, bot_0, bot_1);
+            }
         }
     }
 

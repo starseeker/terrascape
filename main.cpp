@@ -18,6 +18,9 @@ int main(int argc, char* argv[])
     options.add_options()
         ("i,input", "Input terrain file", cxxopts::value<std::string>()->default_value("crater.pgm"))
         ("o,output", "Output OBJ file", cxxopts::value<std::string>()->default_value("terrain.obj"))
+        ("s,simplified", "Use Terra/Scape simplified triangulation")
+        ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
+        ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
     
     auto result = options.parse(argc, argv);
@@ -30,10 +33,18 @@ int main(int argc, char* argv[])
     
     std::string input_file = result["input"].as<std::string>();
     std::string output_file = result["output"].as<std::string>();
+    bool use_simplified = result.count("simplified") > 0;
+    double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
+    int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
     std::cout << "Input: " << input_file << std::endl;
     std::cout << "Output: " << output_file << std::endl;
+    std::cout << "Mode: " << (use_simplified ? "Simplified (Terra/Scape)" : "Dense") << std::endl;
+    if (use_simplified) {
+        std::cout << "Error threshold: " << error_threshold << std::endl;
+        std::cout << "Target reduction: " << reduction_percent << "%" << std::endl;
+    }
    
     try {
 #ifdef HAVE_GDAL 
@@ -52,7 +63,14 @@ int main(int argc, char* argv[])
         
         // Generate triangle mesh
         TerraScape::TerrainMesh mesh;
-        TerraScape::triangulateTerrainVolume(terrain, mesh);
+        if (use_simplified) {
+            TerraScape::SimplificationParams params;
+            params.error_threshold = error_threshold;
+            params.min_triangle_reduction = reduction_percent;
+            TerraScape::triangulateTerrainVolumeSimplified(terrain, mesh, params);
+        } else {
+            TerraScape::triangulateTerrainVolume(terrain, mesh);
+        }
         
         std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
                   << mesh.triangles.size() << " triangles" << std::endl;
