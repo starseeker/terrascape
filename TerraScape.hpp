@@ -139,10 +139,12 @@ namespace TerraScape {
     struct TerrainMesh {
         std::vector<Point3D> vertices;
         std::vector<Triangle> triangles;
+        size_t surface_triangle_count = 0; // Number of terrain surface triangles
         
         void clear() {
             vertices.clear();
             triangles.clear();
+            surface_triangle_count = 0;
         }
         
         size_t addVertex(const Point3D& vertex) {
@@ -154,6 +156,11 @@ namespace TerraScape {
             Triangle tri(v0, v1, v2);
             tri.computeNormal(vertices);
             triangles.push_back(tri);
+        }
+        
+        void addSurfaceTriangle(size_t v0, size_t v1, size_t v2) {
+            addTriangle(v0, v1, v2);
+            surface_triangle_count++;
         }
     };
 
@@ -363,9 +370,9 @@ namespace TerraScape {
 
                 // Add two triangles with CCW orientation (viewed from above)
                 // Triangle 1: v00, v01, v10
-                mesh.addTriangle(v00, v01, v10);
+                mesh.addSurfaceTriangle(v00, v01, v10);
                 // Triangle 2: v10, v01, v11
-                mesh.addTriangle(v10, v01, v11);
+                mesh.addSurfaceTriangle(v10, v01, v11);
             }
         }
 
@@ -506,9 +513,10 @@ namespace TerraScape {
             }
         }
         
-        // Calculate surface area
+        // Calculate surface area (only terrain surface triangles)
         stats.surface_area = 0.0;
-        for (const auto& triangle : mesh.triangles) {
+        for (size_t i = 0; i < mesh.surface_triangle_count && i < mesh.triangles.size(); ++i) {
+            const Triangle& triangle = mesh.triangles[i];
             const Point3D& p0 = mesh.vertices[triangle.vertices[0]];
             const Point3D& p1 = mesh.vertices[triangle.vertices[1]];
             const Point3D& p2 = mesh.vertices[triangle.vertices[2]];
