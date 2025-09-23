@@ -1016,6 +1016,210 @@ namespace TerraScape {
 
 } // namespace TerraScape
 
+/*
+ * C99-Compatible Interface for BRL-CAD Integration
+ * 
+ * This section provides C99-compatible functions for interfacing with
+ * BRL-CAD's DSP (Displacement Map) primitive. The functions can be called
+ * from C code and work with the typical DSP data structures used in BRL-CAD.
+ */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Forward declarations for C compatibility */
+typedef struct terrascape_mesh terrascape_mesh_t;
+
+/* Simple C-compatible 3D point structure */
+typedef struct {
+    double x, y, z;
+} terrascape_point3d_t;
+
+/* Simple C-compatible triangle structure with vertex indices */
+typedef struct {
+    size_t v0, v1, v2;
+    terrascape_point3d_t normal;
+} terrascape_triangle_t;
+
+/* C-compatible mesh structure for output */
+struct terrascape_mesh {
+    terrascape_point3d_t *vertices;
+    terrascape_triangle_t *triangles;
+    size_t vertex_count;
+    size_t triangle_count;
+    size_t vertex_capacity;
+    size_t triangle_capacity;
+};
+
+/* DSP data interface structure - matches BRL-CAD DSP internal format */
+typedef struct {
+    unsigned short *height_data;  /* 2D height array as 1D, row-major */
+    int width;                    /* Number of points in X direction (dsp_xcnt) */
+    int height;                   /* Number of points in Y direction (dsp_ycnt) */
+    double transform[16];         /* 4x4 transformation matrix (solid to model space) */
+    double cell_size;             /* Size of each cell */
+    double min_height;            /* Minimum height value */
+    double max_height;            /* Maximum height value */
+} terrascape_dsp_data_t;
+
+/* Simplification parameters for C interface */
+typedef struct {
+    double error_threshold;       /* Maximum allowed geometric error */
+    int min_triangle_reduction;   /* Minimum percentage of triangles to remove */
+    int preserve_boundaries;      /* Boolean: preserve terrain boundaries */
+} terrascape_params_t;
+
+/* Function prototypes for C interface */
+
+/**
+ * Create a new mesh structure
+ * Returns: pointer to allocated mesh, or NULL on failure
+ */
+terrascape_mesh_t *terrascape_mesh_create(void);
+
+/**
+ * Free a mesh structure and all its data
+ */
+void terrascape_mesh_free(terrascape_mesh_t *mesh);
+
+/**
+ * Generate a triangle mesh from DSP height data
+ * 
+ * @param dsp_data - DSP height data and metadata
+ * @param mesh - output mesh structure (must be pre-allocated)
+ * @param params - triangulation parameters (can be NULL for defaults)
+ * @return 0 on success, non-zero on error
+ */
+int terrascape_triangulate_dsp(const terrascape_dsp_data_t *dsp_data,
+                               terrascape_mesh_t *mesh,
+                               const terrascape_params_t *params);
+
+/**
+ * Generate surface-only triangle mesh (no volume) from DSP data
+ * This is optimized for BRL-CAD's rt_dsp_tess function
+ * 
+ * @param dsp_data - DSP height data and metadata  
+ * @param mesh - output mesh structure (must be pre-allocated)
+ * @param params - triangulation parameters (can be NULL for defaults)
+ * @return 0 on success, non-zero on error
+ */
+int terrascape_triangulate_dsp_surface(const terrascape_dsp_data_t *dsp_data,
+                                       terrascape_mesh_t *mesh,
+                                       const terrascape_params_t *params);
+
+/**
+ * Helper function to get height value from DSP data
+ * Handles bounds checking and coordinate mapping
+ * 
+ * @param dsp_data - DSP data structure
+ * @param x - X coordinate (0 to width-1)
+ * @param y - Y coordinate (0 to height-1) 
+ * @return height value, or 0.0 if out of bounds
+ */
+double terrascape_dsp_get_height(const terrascape_dsp_data_t *dsp_data, int x, int y);
+
+/**
+ * Transform a point from DSP coordinate space to model space using the transform matrix
+ * 
+ * @param dsp_data - DSP data structure containing transform
+ * @param dsp_point - input point in DSP coordinates
+ * @param model_point - output point in model coordinates
+ */
+void terrascape_transform_point(const terrascape_dsp_data_t *dsp_data,
+                               const terrascape_point3d_t *dsp_point,
+                               terrascape_point3d_t *model_point);
+
+#ifdef __cplusplus
+} /* extern "C" */
+
+/*
+ * C++ Implementation of C Interface Functions
+ * These functions provide the bridge between the C API and the C++ implementation
+ */
+
+namespace TerraScape {
+
+/**
+ * Convert DSP data to TerraScape TerrainData format
+ */
+inline bool convertDSPToTerrain(const terrascape_dsp_data_t *dsp_data, TerrainData &terrain) {
+    if (!dsp_data || !dsp_data->height_data || dsp_data->width <= 0 || dsp_data->height <= 0) {
+        return false;
+    }
+    
+    terrain.width = dsp_data->width;
+    terrain.height = dsp_data->height;
+    terrain.cell_size = dsp_data->cell_size;
+    terrain.min_height = dsp_data->min_height;
+    terrain.max_height = dsp_data->max_height;
+    terrain.origin = Point3D(0, 0, 0);
+    
+    // Resize the heights array
+    terrain.heights.resize(terrain.height);
+    for (int y = 0; y < terrain.height; ++y) {
+        terrain.heights[y].resize(terrain.width);
+        for (int x = 0; x < terrain.width; ++x) {
+            // Convert from unsigned short to double
+            terrain.heights[y][x] = static_cast<double>(dsp_data->height_data[y * terrain.width + x]);
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Convert TerraScape mesh to C-compatible mesh format
+ */
+inline bool convertMeshToC(const TerrainMesh &src_mesh, terrascape_mesh_t *dst_mesh) {
+    if (!dst_mesh) return false;
+    
+    // Allocate or reallocate arrays if needed
+    size_t vertex_count = src_mesh.vertices.size();
+    size_t triangle_count = src_mesh.triangles.size();
+    
+    if (dst_mesh->vertex_capacity < vertex_count) {
+        free(dst_mesh->vertices);
+        dst_mesh->vertices = (terrascape_point3d_t*)malloc(sizeof(terrascape_point3d_t) * vertex_count);
+        if (!dst_mesh->vertices) return false;
+        dst_mesh->vertex_capacity = vertex_count;
+    }
+    
+    if (dst_mesh->triangle_capacity < triangle_count) {
+        free(dst_mesh->triangles);
+        dst_mesh->triangles = (terrascape_triangle_t*)malloc(sizeof(terrascape_triangle_t) * triangle_count);
+        if (!dst_mesh->triangles) return false;
+        dst_mesh->triangle_capacity = triangle_count;
+    }
+    
+    // Copy vertices
+    dst_mesh->vertex_count = vertex_count;
+    for (size_t i = 0; i < vertex_count; ++i) {
+        const Point3D &v = src_mesh.vertices[i];
+        dst_mesh->vertices[i].x = v.x;
+        dst_mesh->vertices[i].y = v.y;
+        dst_mesh->vertices[i].z = v.z;
+    }
+    
+    // Copy triangles
+    dst_mesh->triangle_count = triangle_count;
+    for (size_t i = 0; i < triangle_count; ++i) {
+        const Triangle &t = src_mesh.triangles[i];
+        dst_mesh->triangles[i].v0 = t.vertices[0];
+        dst_mesh->triangles[i].v1 = t.vertices[1];
+        dst_mesh->triangles[i].v2 = t.vertices[2];
+        dst_mesh->triangles[i].normal.x = t.normal.x;
+        dst_mesh->triangles[i].normal.y = t.normal.y;
+        dst_mesh->triangles[i].normal.z = t.normal.z;
+    }
+    
+    return true;
+}
+
+} // namespace TerraScape
+
+#endif /* __cplusplus */
+
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic pop /* end ignoring warnings */
 #elif defined(__clang__)
