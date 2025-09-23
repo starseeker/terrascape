@@ -32,5 +32,6 @@ Thumbs.db
 
 # Test artifacts
 /tmp/
-*test*
+*_test_*
+test_output*
 
