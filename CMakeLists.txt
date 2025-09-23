@@ -60,6 +60,22 @@ set_target_properties(test_crater_manifold PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# Create earcut demonstration (C++ version)
+add_executable(test_earcut_demo test_earcut_demo.c)
+set_source_files_properties(test_earcut_demo.c PROPERTIES LANGUAGE CXX)
+target_link_libraries(test_earcut_demo m) # Link math library
+set_target_properties(test_earcut_demo PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# Create zero-height cell test (C++ version)
+add_executable(test_zero_height test_zero_height.c)
+set_source_files_properties(test_zero_height.c PROPERTIES LANGUAGE CXX)
+target_link_libraries(test_zero_height m) # Link math library
+set_target_properties(test_zero_height PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # Old demo (keep for comparison, but requires C++ now)
 # This would need to be updated to use the C API
 # add_executable(terrascape_demo main.cpp)
