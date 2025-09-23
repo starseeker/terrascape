@@ -239,6 +239,7 @@ namespace TerraScape {
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
+    void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
     TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
     std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
     MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
@@ -710,58 +711,179 @@ namespace TerraScape {
             }
         }
 
-        // Add side walls for boundary edges
+        // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
-        for (int y = 0; y < terrain.height - 1; ++y) {
-            if (keep_vertex[y][0] && keep_vertex[y + 1][0]) {
-                size_t top_0 = top_vertices[y][0];
-                size_t top_1 = top_vertices[y + 1][0];
-                size_t bot_0 = bottom_vertices[y][0];
-                size_t bot_1 = bottom_vertices[y + 1][0];
-
-                mesh.addTriangle(top_0, bot_0, top_1);
-                mesh.addTriangle(top_1, bot_0, bot_1);
+        std::vector<int> left_wall_vertices;
+        for (int y = 0; y < terrain.height; ++y) {
+            if (keep_vertex[y][0]) {
+                left_wall_vertices.push_back(y);
             }
+        }
+        for (size_t i = 0; i < left_wall_vertices.size() - 1; ++i) {
+            int y0 = left_wall_vertices[i];
+            int y1 = left_wall_vertices[i + 1];
+            
+            size_t top_0 = top_vertices[y0][0];
+            size_t top_1 = top_vertices[y1][0];
+            size_t bot_0 = bottom_vertices[y0][0];
+            size_t bot_1 = bottom_vertices[y1][0];
+
+            mesh.addTriangle(top_0, bot_0, top_1);
+            mesh.addTriangle(top_1, bot_0, bot_1);
         }
 
         // Right wall (x = width - 1)
-        for (int y = 0; y < terrain.height - 1; ++y) {
-            int x = terrain.width - 1;
-            if (keep_vertex[y][x] && keep_vertex[y + 1][x]) {
-                size_t top_0 = top_vertices[y][x];
-                size_t top_1 = top_vertices[y + 1][x];
-                size_t bot_0 = bottom_vertices[y][x];
-                size_t bot_1 = bottom_vertices[y + 1][x];
-
-                mesh.addTriangle(top_0, top_1, bot_0);
-                mesh.addTriangle(top_1, bot_1, bot_0);
+        std::vector<int> right_wall_vertices;
+        int x = terrain.width - 1;
+        for (int y = 0; y < terrain.height; ++y) {
+            if (keep_vertex[y][x]) {
+                right_wall_vertices.push_back(y);
             }
+        }
+        for (size_t i = 0; i < right_wall_vertices.size() - 1; ++i) {
+            int y0 = right_wall_vertices[i];
+            int y1 = right_wall_vertices[i + 1];
+            
+            size_t top_0 = top_vertices[y0][x];
+            size_t top_1 = top_vertices[y1][x];
+            size_t bot_0 = bottom_vertices[y0][x];
+            size_t bot_1 = bottom_vertices[y1][x];
+
+            mesh.addTriangle(top_0, top_1, bot_0);
+            mesh.addTriangle(top_1, bot_1, bot_0);
         }
 
         // Top wall (y = 0)
-        for (int x = 0; x < terrain.width - 1; ++x) {
-            if (keep_vertex[0][x] && keep_vertex[0][x + 1]) {
-                size_t top_0 = top_vertices[0][x];
-                size_t top_1 = top_vertices[0][x + 1];
-                size_t bot_0 = bottom_vertices[0][x];
-                size_t bot_1 = bottom_vertices[0][x + 1];
-
-                mesh.addTriangle(top_0, top_1, bot_0);
-                mesh.addTriangle(top_1, bot_1, bot_0);
+        std::vector<int> top_wall_vertices;
+        for (int x = 0; x < terrain.width; ++x) {
+            if (keep_vertex[0][x]) {
+                top_wall_vertices.push_back(x);
             }
+        }
+        for (size_t i = 0; i < top_wall_vertices.size() - 1; ++i) {
+            int x0 = top_wall_vertices[i];
+            int x1 = top_wall_vertices[i + 1];
+            
+            size_t top_0 = top_vertices[0][x0];
+            size_t top_1 = top_vertices[0][x1];
+            size_t bot_0 = bottom_vertices[0][x0];
+            size_t bot_1 = bottom_vertices[0][x1];
+
+            mesh.addTriangle(top_0, top_1, bot_0);
+            mesh.addTriangle(top_1, bot_1, bot_0);
         }
 
         // Bottom wall (y = height - 1)
-        for (int x = 0; x < terrain.width - 1; ++x) {
-            int y = terrain.height - 1;
-            if (keep_vertex[y][x] && keep_vertex[y][x + 1]) {
-                size_t top_0 = top_vertices[y][x];
-                size_t top_1 = top_vertices[y][x + 1];
-                size_t bot_0 = bottom_vertices[y][x];
-                size_t bot_1 = bottom_vertices[y][x + 1];
+        std::vector<int> bottom_wall_vertices;
+        int y = terrain.height - 1;
+        for (int x = 0; x < terrain.width; ++x) {
+            if (keep_vertex[y][x]) {
+                bottom_wall_vertices.push_back(x);
+            }
+        }
+        for (size_t i = 0; i < bottom_wall_vertices.size() - 1; ++i) {
+            int x0 = bottom_wall_vertices[i];
+            int x1 = bottom_wall_vertices[i + 1];
+            
+            size_t top_0 = top_vertices[y][x0];
+            size_t top_1 = top_vertices[y][x1];
+            size_t bot_0 = bottom_vertices[y][x0];
+            size_t bot_1 = bottom_vertices[y][x1];
 
-                mesh.addTriangle(top_0, bot_0, top_1);
-                mesh.addTriangle(top_1, bot_0, bot_1);
+            mesh.addTriangle(top_0, bot_0, top_1);
+            mesh.addTriangle(top_1, bot_0, bot_1);
+        }
+    }
+
+    // Generate terrain surface-only mesh with Terra/Scape simplification (no volume)
+    void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+        mesh.clear();
+        
+        if (terrain.width <= 0 || terrain.height <= 0) {
+            return;
+        }
+
+        // Generate adaptive sampling mask
+        auto sample_mask = generateAdaptiveSampleMask(terrain, params);
+        
+        // Use more aggressive decimation for surface-only mode
+        int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.min_triangle_reduction)));
+        
+        // Create simplified grid with structured subsampling
+        std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
+        std::vector<std::vector<size_t>> surface_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+
+        // Structured subsampling
+        for (int y = 0; y < terrain.height; y += step_size) {
+            for (int x = 0; x < terrain.width; x += step_size) {
+                keep_vertex[y][x] = true;
+            }
+        }
+        
+        // Add important features 
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (sample_mask[y][x]) {
+                    keep_vertex[y][x] = true;
+                }
+            }
+        }
+        
+        // Ensure boundaries are complete
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1) {
+                    keep_vertex[y][x] = true;
+                }
+            }
+        }
+
+        // Add surface vertices only
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (keep_vertex[y][x]) {
+                    double world_x = terrain.origin.x + x * terrain.cell_size;
+                    double world_y = terrain.origin.y - y * terrain.cell_size;
+                    double height = terrain.getHeight(x, y);
+                    
+                    surface_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
+                }
+            }
+        }
+
+        // Triangulate surface using grid approach
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            for (int x = 0; x < terrain.width - 1; ++x) {
+                // Find valid quad corners
+                std::vector<std::pair<int, int>> corners;
+                if (keep_vertex[y][x]) corners.push_back({x, y});
+                if (keep_vertex[y][x+1]) corners.push_back({x+1, y});
+                if (keep_vertex[y+1][x]) corners.push_back({x, y+1});
+                if (keep_vertex[y+1][x+1]) corners.push_back({x+1, y+1});
+                
+                // Triangulate complete quads
+                if (corners.size() == 4) {
+                    size_t v00 = surface_vertices[y][x];
+                    size_t v10 = surface_vertices[y][x+1];
+                    size_t v01 = surface_vertices[y+1][x];
+                    size_t v11 = surface_vertices[y+1][x+1];
+                    
+                    mesh.addSurfaceTriangle(v00, v01, v10);
+                    mesh.addSurfaceTriangle(v10, v01, v11);
+                }
+                // Handle partial quads
+                else if (corners.size() == 3) {
+                    // Create single triangle from 3 corners
+                    auto p0 = corners[0];
+                    auto p1 = corners[1]; 
+                    auto p2 = corners[2];
+                    
+                    size_t v0 = surface_vertices[p0.second][p0.first];
+                    size_t v1 = surface_vertices[p1.second][p1.first];
+                    size_t v2 = surface_vertices[p2.second][p2.first];
+                    
+                    mesh.addSurfaceTriangle(v0, v1, v2);
+                }
             }
         }
     }
