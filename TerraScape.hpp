@@ -48,6 +48,7 @@
 #include <gdal.h>
 #endif
 #include "earcut.hpp"
+#include "detria.hpp"
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -399,27 +400,13 @@ namespace TerraScape {
     // Point-in-polygon test
     bool pointInPolygon(double x, double y, const std::vector<std::pair<double, double>>& polygon);
 
-    // Enhanced triangulation with Steiner points
-    void triangulateWithSteinerPoints(TerrainMesh& mesh, 
-                                    const std::vector<std::pair<double, double>>& boundary,
-                                    const std::vector<std::vector<std::pair<double, double>>>& holes,
-                                    const std::vector<std::pair<double, double>>& steiner_points,
-                                    std::vector<size_t>& vertex_indices,
-                                    const std::vector<std::vector<size_t>>& bottom_vertices,
-                                    const TerrainData& terrain);
-
-    // Helper functions for Steiner point triangulation
-    void subdivideTrianglesWithSteinerPoints(TerrainMesh& mesh,
-                                           const std::vector<uint32_t>& triangle_indices,
-                                           const std::vector<size_t>& boundary_vertices,
-                                           const std::vector<size_t>& steiner_vertices,
-                                           const std::vector<std::pair<double, double>>& steiner_points,
-                                           const std::vector<std::pair<double, double>>& boundary);
-    
-    bool pointInTriangle(double px, double py, 
-                        const std::pair<double, double>& p0,
-                        const std::pair<double, double>& p1,
-                        const std::pair<double, double>& p2);
+    // Enhanced triangulation with detria (proper Steiner point support)
+    void triangulateWithDetria(TerrainMesh& mesh, 
+                              const std::vector<std::pair<double, double>>& boundary,
+                              const std::vector<std::vector<std::pair<double, double>>>& holes,
+                              const std::vector<std::pair<double, double>>& steiner_points,
+                              std::vector<size_t>& vertex_indices,
+                              const TerrainData& terrain);
 
     // Implementation
 
@@ -1384,6 +1371,116 @@ namespace TerraScape {
         return steiner_points;
     }
     
+    // Enhanced triangulation with detria (proper Steiner point support)
+    void triangulateWithDetria(TerrainMesh& mesh, 
+                              const std::vector<std::pair<double, double>>& boundary,
+                              const std::vector<std::vector<std::pair<double, double>>>& holes,
+                              const std::vector<std::pair<double, double>>& steiner_points,
+                              std::vector<size_t>& vertex_indices,
+                              const TerrainData& terrain) {
+        
+        // Create all points: boundary + steiner points
+        std::vector<detria::PointD> all_points;
+        std::vector<size_t> all_vertex_indices;
+        
+        // Add boundary points first
+        for (const auto& point : boundary) {
+            all_points.push_back({point.first, point.second});
+            // vertex_indices already contains boundary vertex indices
+        }
+        
+        // Add Steiner points as vertices and to the point list
+        for (const auto& point : steiner_points) {
+            double world_z = terrain.min_height - 1.0; // Slightly below terrain
+            size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
+            vertex_indices.push_back(vertex_index);
+            all_points.push_back({point.first, point.second});
+        }
+        
+        // Set up detria triangulation
+        detria::Triangulation tri;
+        tri.setPoints(all_points);
+        
+        // Add boundary outline (indices refer to all_points)
+        std::vector<uint32_t> outline_indices;
+        for (size_t i = 0; i < boundary.size(); ++i) {
+            outline_indices.push_back(static_cast<uint32_t>(i));
+        }
+        tri.addOutline(outline_indices);
+        
+        // Add holes (indices refer to all_points)  
+        size_t hole_start_idx = boundary.size() + steiner_points.size();
+        for (const auto& hole : holes) {
+            std::vector<uint32_t> hole_indices;
+            for (size_t i = 0; i < hole.size(); ++i) {
+                all_points.push_back({hole[i].first, hole[i].second});
+                hole_indices.push_back(static_cast<uint32_t>(hole_start_idx + i));
+            }
+            tri.addHole(hole_indices);
+            hole_start_idx += hole.size();
+        }
+        
+        // Update points after adding holes
+        tri.setPoints(all_points);
+        
+        // Perform constrained Delaunay triangulation with Steiner points
+        bool delaunay = true;
+        bool success = tri.triangulate(delaunay);
+        
+        if (success) {
+            // Extract triangles and add them to the mesh
+            bool cwTriangles = false; // We want counter-clockwise for bottom face
+            
+            tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+                // Map detria point indices back to our vertex indices
+                size_t v0, v1, v2;
+                
+                if (triangle.x < vertex_indices.size()) {
+                    v0 = vertex_indices[triangle.x];
+                } else return; // Skip if invalid index
+                
+                if (triangle.y < vertex_indices.size()) {
+                    v1 = vertex_indices[triangle.y];
+                } else return;
+                
+                if (triangle.z < vertex_indices.size()) {
+                    v2 = vertex_indices[triangle.z];
+                } else return;
+                
+                // Add triangle with correct bottom face orientation (reversed winding)
+                mesh.addTriangle(v0, v2, v1);
+                
+            }, cwTriangles);
+        } else {
+            // Fall back to earcut if detria fails
+            std::vector<std::vector<std::pair<double, double>>> rings;
+            rings.push_back(boundary);
+            for (const auto& hole : holes) {
+                rings.push_back(hole);
+            }
+            
+            try {
+                std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(rings);
+                
+                // Only use boundary vertex count for earcut fallback
+                size_t boundary_vertex_count = boundary.size();
+                for (size_t i = 0; i < indices.size(); i += 3) {
+                    if (i + 2 < indices.size() && indices[i] < boundary_vertex_count && 
+                        indices[i+1] < boundary_vertex_count && indices[i+2] < boundary_vertex_count) {
+                        
+                        size_t v0 = vertex_indices[indices[i]];
+                        size_t v1 = vertex_indices[indices[i + 1]];
+                        size_t v2 = vertex_indices[indices[i + 2]];
+                        
+                        mesh.addTriangle(v0, v2, v1);
+                    }
+                }
+            } catch (const std::exception&) {
+                // If both detria and earcut fail, use fallback
+            }
+        }
+    }
+    
     // Point-in-polygon test using ray casting algorithm
     bool pointInPolygon(double x, double y, const std::vector<std::pair<double, double>>& polygon) {
         int n = polygon.size();
@@ -1540,8 +1637,8 @@ namespace TerraScape {
             }
         }
         
-        // If we have a large area with few holes, use enhanced triangulation with Steiner points
-        if (polygon_rings.size() <= 2 && (max_x - min_x) * (max_y - min_y) > 10) {  // Very low threshold for testing
+        // Use detria for proper Steiner point support instead of earcut workaround
+        if (polygon_rings.size() <= 2 && (max_x - min_x) * (max_y - min_y) > 10) {
             
             std::vector<std::vector<std::pair<double, double>>> holes;
             for (size_t i = 1; i < polygon_rings.size(); ++i) {
@@ -1552,33 +1649,9 @@ namespace TerraScape {
                 generateSteinerPoints(outer_boundary, holes, active_cells, terrain, 
                                     min_x, max_x, min_y, max_y);
             
-            // Use a simpler approach: create additional small "holes" from Steiner points
-            // This forces earcut to create better triangulation around these points
             if (steiner_points.size() > 2) {
-                
-                // Add Steiner points as vertices first
-                for (const auto& point : steiner_points) {
-                    double world_z = terrain.min_height - 1.0;
-                    size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
-                    vertex_indices.push_back(vertex_index);
-                }
-                
-                // Create tiny triangular "holes" around each Steiner point to force triangulation
-                // This is a hack but works well with earcut
-                double hole_size = terrain.cell_size * 0.05; // Smaller holes to avoid manifold issues
-                
-                for (size_t i = 0; i < std::min(steiner_points.size(), static_cast<size_t>(6)); ++i) {
-                    const auto& sp = steiner_points[i];
-                    
-                    // Create a tiny square hole around the Steiner point (clockwise for earcut)
-                    std::vector<std::pair<double, double>> tiny_hole;
-                    tiny_hole.push_back({sp.first - hole_size, sp.second - hole_size}); // bottom-left
-                    tiny_hole.push_back({sp.first - hole_size, sp.second + hole_size}); // top-left  
-                    tiny_hole.push_back({sp.first + hole_size, sp.second + hole_size}); // top-right
-                    tiny_hole.push_back({sp.first + hole_size, sp.second - hole_size}); // bottom-right
-                    
-                    polygon_rings.push_back(tiny_hole);
-                }
+                triangulateWithDetria(mesh, outer_boundary, holes, steiner_points, vertex_indices, terrain);
+                return;
             }
         }
         
@@ -1601,160 +1674,6 @@ namespace TerraScape {
         } catch (const std::exception&) {
             fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
         }
-    }
-    
-    // Enhanced triangulation with Steiner points using a grid subdivision approach
-    void triangulateWithSteinerPoints(TerrainMesh& mesh, 
-                                    const std::vector<std::pair<double, double>>& boundary,
-                                    const std::vector<std::vector<std::pair<double, double>>>& holes,
-                                    const std::vector<std::pair<double, double>>& steiner_points,
-                                    std::vector<size_t>& vertex_indices,
-                                    const std::vector<std::vector<size_t>>& bottom_vertices,
-                                    const TerrainData& terrain) {
-        
-        // For areas without holes, use earcut with boundary only and rely on the Steiner points
-        // to be automatically handled by a subdivision approach
-        if (holes.empty() && steiner_points.size() > 4) {
-            
-            // First, create a regular earcut triangulation of the boundary
-            std::vector<std::vector<std::pair<double, double>>> boundary_only;
-            boundary_only.push_back(boundary);
-            
-            try {
-                std::vector<uint32_t> boundary_indices = mapbox::earcut<uint32_t>(boundary_only);
-                
-                // Add boundary triangulation with correct orientation
-                for (size_t i = 0; i < boundary_indices.size(); i += 3) {
-                    if (i + 2 < boundary_indices.size() && 
-                        boundary_indices[i] < vertex_indices.size() && 
-                        boundary_indices[i+1] < vertex_indices.size() && 
-                        boundary_indices[i+2] < vertex_indices.size()) {
-                        
-                        size_t v0 = vertex_indices[boundary_indices[i]];
-                        size_t v1 = vertex_indices[boundary_indices[i + 1]];
-                        size_t v2 = vertex_indices[boundary_indices[i + 2]];
-                        
-                        mesh.addTriangle(v0, v2, v1);
-                    }
-                }
-                
-                // Now add Steiner points and create additional triangles to improve quality
-                std::vector<size_t> steiner_vertex_indices;
-                for (const auto& point : steiner_points) {
-                    double world_z = terrain.min_height - 1.0;
-                    size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
-                    steiner_vertex_indices.push_back(vertex_index);
-                }
-                
-                // Create improved triangulation by subdividing large triangles
-                // This is a simplified approach - for a full solution, constrained Delaunay would be better
-                subdivideTrianglesWithSteinerPoints(mesh, boundary_indices, vertex_indices, 
-                                                  steiner_vertex_indices, steiner_points, boundary);
-                
-                return;
-            } catch (const std::exception&) {
-                // Fall through to default earcut
-            }
-        }
-        
-        // Default behavior: use regular earcut
-        std::vector<std::vector<std::pair<double, double>>> rings;
-        rings.push_back(boundary);
-        for (const auto& hole : holes) {
-            rings.push_back(hole);
-        }
-        
-        try {
-            std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(rings);
-            
-            for (size_t i = 0; i < indices.size(); i += 3) {
-                if (i + 2 < indices.size() && indices[i] < vertex_indices.size() && 
-                    indices[i+1] < vertex_indices.size() && indices[i+2] < vertex_indices.size()) {
-                    
-                    size_t v0 = vertex_indices[indices[i]];
-                    size_t v1 = vertex_indices[indices[i + 1]];
-                    size_t v2 = vertex_indices[indices[i + 2]];
-                    
-                    mesh.addTriangle(v0, v2, v1);
-                }
-            }
-        } catch (const std::exception&) {
-            // Fallback to grid-based approach if earcut fails
-        }
-    }
-    
-    // Subdivide large triangles by adding Steiner points
-    void subdivideTrianglesWithSteinerPoints(TerrainMesh& mesh,
-                                           const std::vector<uint32_t>& triangle_indices,
-                                           const std::vector<size_t>& boundary_vertices,
-                                           const std::vector<size_t>& steiner_vertices,
-                                           const std::vector<std::pair<double, double>>& steiner_points,
-                                           const std::vector<std::pair<double, double>>& boundary) {
-        
-        // Simple approach: for each large triangle in the boundary triangulation,
-        // if it contains Steiner points, subdivide it
-        
-        for (size_t i = 0; i < triangle_indices.size(); i += 3) {
-            if (i + 2 >= triangle_indices.size()) continue;
-            
-            // Get triangle vertices from boundary
-            if (triangle_indices[i] >= boundary.size() || 
-                triangle_indices[i+1] >= boundary.size() || 
-                triangle_indices[i+2] >= boundary.size()) continue;
-                
-            const auto& p0 = boundary[triangle_indices[i]];
-            const auto& p1 = boundary[triangle_indices[i+1]];
-            const auto& p2 = boundary[triangle_indices[i+2]];
-            
-            size_t v0 = boundary_vertices[triangle_indices[i]];
-            size_t v1 = boundary_vertices[triangle_indices[i+1]];
-            size_t v2 = boundary_vertices[triangle_indices[i+2]];
-            
-            // Calculate triangle area to detect large triangles
-            double area = 0.5 * std::abs((p1.first - p0.first) * (p2.second - p0.second) - 
-                                        (p2.first - p0.first) * (p1.second - p0.second));
-            
-            // Find Steiner points inside this triangle
-            std::vector<size_t> interior_steiner;
-            for (size_t j = 0; j < steiner_points.size(); ++j) {
-                if (pointInTriangle(steiner_points[j].first, steiner_points[j].second, p0, p1, p2)) {
-                    interior_steiner.push_back(j);
-                }
-            }
-            
-            // If triangle is large and contains Steiner points, subdivide
-            if (area > 10.0 && !interior_steiner.empty()) { // Lowered threshold for "large" triangle
-                
-                // Use the first interior Steiner point to subdivide
-                size_t steiner_idx = interior_steiner[0];
-                size_t steiner_vertex = steiner_vertices[steiner_idx];
-                
-                // Create three triangles: (v0,v1,steiner), (v1,v2,steiner), (v2,v0,steiner)
-                mesh.addTriangle(v0, steiner_vertex, v2);
-                mesh.addTriangle(steiner_vertex, v1, v2);
-                mesh.addTriangle(v0, v1, steiner_vertex);
-            }
-        }
-    }
-    
-    // Point in triangle test
-    bool pointInTriangle(double px, double py, 
-                        const std::pair<double, double>& p0,
-                        const std::pair<double, double>& p1,
-                        const std::pair<double, double>& p2) {
-        
-        double denom = (p1.second - p2.second) * (p0.first - p2.first) + 
-                      (p2.first - p1.first) * (p0.second - p2.second);
-        
-        if (std::abs(denom) < 1e-10) return false; // Degenerate triangle
-        
-        double a = ((p1.second - p2.second) * (px - p2.first) + 
-                   (p2.first - p1.first) * (py - p2.second)) / denom;
-        double b = ((p2.second - p0.second) * (px - p2.first) + 
-                   (p0.first - p2.first) * (py - p2.second)) / denom;
-        double c = 1 - a - b;
-        
-        return a >= 0 && b >= 0 && c >= 0;
     }
     
     // Extract hole boundary vertices (clockwise for earcut holes)
