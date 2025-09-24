@@ -1,0 +1,3 @@
+[submodule "third_party/manifold"]
+	path = third_party/manifold
+	url = https://github.com/elalish/manifold.git
