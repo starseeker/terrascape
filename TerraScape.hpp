@@ -1547,9 +1547,86 @@ namespace TerraScape {
             return;
         }
         
-        // Find interior holes using flood fill on inactive cells
+        // Add strategic interior points for large polygons to reduce long thin triangles
+        // This uses earcut's support for single-vertex holes as Steiner points
         std::vector<std::vector<std::pair<double, double>>> polygon_rings;
         polygon_rings.push_back(outer_boundary);
+        
+        // Calculate polygon area to decide if we need interior points  
+        double polygon_area = 0.0;
+        for (size_t i = 0, j = outer_boundary.size() - 1; i < outer_boundary.size(); j = i++) {
+            polygon_area += (outer_boundary[j].first + outer_boundary[i].first) * 
+                           (outer_boundary[j].second - outer_boundary[i].second);
+        }
+        polygon_area = std::abs(polygon_area) / 2.0;
+        
+        // For very large polygons, add interior Steiner points to improve triangulation quality
+        const double large_polygon_threshold = 25000.0; // Conservative threshold
+        if (polygon_area > large_polygon_threshold && outer_boundary.size() > 8) {
+            
+            // Calculate polygon centroid as a candidate Steiner point
+            double centroid_x = 0.0, centroid_y = 0.0;
+            for (const auto& point : outer_boundary) {
+                centroid_x += point.first;
+                centroid_y += point.second;
+            }
+            centroid_x /= outer_boundary.size();
+            centroid_y /= outer_boundary.size();
+            
+            // Test if centroid is well inside the polygon
+            bool centroid_inside = false;
+            double min_edge_distance = std::numeric_limits<double>::max();
+            
+            for (size_t i = 0, j = outer_boundary.size() - 1; i < outer_boundary.size(); j = i++) {
+                // Point-in-polygon test
+                if (((outer_boundary[i].second > centroid_y) != (outer_boundary[j].second > centroid_y)) &&
+                    (centroid_x < (outer_boundary[j].first - outer_boundary[i].first) * (centroid_y - outer_boundary[i].second) / 
+                                  (outer_boundary[j].second - outer_boundary[i].second) + outer_boundary[i].first)) {
+                    centroid_inside = !centroid_inside;
+                }
+                
+                // Calculate distance to edge for safety margin
+                double dx = outer_boundary[j].first - outer_boundary[i].first;
+                double dy = outer_boundary[j].second - outer_boundary[i].second;
+                double edge_length_sq = dx * dx + dy * dy;
+                if (edge_length_sq > 0) {
+                    double t = ((centroid_x - outer_boundary[i].first) * dx + 
+                               (centroid_y - outer_boundary[i].second) * dy) / edge_length_sq;
+                    t = std::max(0.0, std::min(1.0, t));
+                    double proj_x = outer_boundary[i].first + t * dx;
+                    double proj_y = outer_boundary[i].second + t * dy;
+                    double dist = std::sqrt((centroid_x - proj_x) * (centroid_x - proj_x) + 
+                                           (centroid_y - proj_y) * (centroid_y - proj_y));
+                    min_edge_distance = std::min(min_edge_distance, dist);
+                }
+            }
+            
+            // Only add Steiner point if it's well inside and over an active cell
+            if (centroid_inside && min_edge_distance > terrain.cell_size * 4.0) {
+                int grid_x = static_cast<int>((centroid_x - terrain.origin.x) / terrain.cell_size + 0.5);
+                int grid_y = static_cast<int>((terrain.origin.y - centroid_y) / terrain.cell_size + 0.5);
+                
+                if (grid_x >= 0 && grid_x < terrain.width && 
+                    grid_y >= 0 && grid_y < terrain.height &&
+                    active_cells.count({grid_x, grid_y})) {
+                    
+                    // Create Steiner point vertex and add to mesh
+                    size_t steiner_idx = mesh.addVertex(Point3D(centroid_x, centroid_y, 0.0));
+                    
+                    // Add as single-vertex hole (Steiner point)
+                    std::vector<std::pair<double, double>> steiner_hole;
+                    steiner_hole.push_back({centroid_x, centroid_y});
+                    polygon_rings.push_back(steiner_hole);
+                    
+                    // Add the steiner vertex index to our mapping
+                    vertex_indices.push_back(steiner_idx);
+                }
+            }
+        }
+        
+        // Find interior holes using flood fill on inactive cells
+        // std::vector<std::vector<std::pair<double, double>>> polygon_rings;
+        // polygon_rings.push_back(outer_boundary);  // Already added above
         
         std::set<std::pair<int, int>> processed_holes;
         
