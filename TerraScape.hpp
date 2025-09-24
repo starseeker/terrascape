@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <climits>
 #include <queue>
 #include <memory>
 #include <iostream>
@@ -234,16 +235,53 @@ namespace TerraScape {
         }
     };
 
+    // Connected component structure for handling terrain islands
+    struct ConnectedComponent {
+        int id;
+        std::vector<std::pair<int, int>> cells;  // List of (x, y) coordinates in this component
+        std::vector<std::pair<int, int>> boundary_cells;  // Boundary cells of this component
+        std::vector<std::pair<int, int>> holes;  // Interior holes within this component
+        int min_x, max_x, min_y, max_y;  // Bounding box
+        
+        ConnectedComponent() : id(-1), min_x(INT_MAX), max_x(INT_MIN), min_y(INT_MAX), max_y(INT_MIN) {}
+        
+        void addCell(int x, int y) {
+            cells.push_back({x, y});
+            min_x = std::min(min_x, x);
+            max_x = std::max(max_x, x);
+            min_y = std::min(min_y, y);
+            max_y = std::max(max_y, y);
+        }
+    };
+
+    // Terrain analysis result containing all connected components
+    struct TerrainComponents {
+        std::vector<ConnectedComponent> components;
+        std::vector<std::vector<int>> component_map;  // component_id for each cell (-1 for background)
+        
+        TerrainComponents(int width, int height) {
+            component_map.resize(height, std::vector<int>(width, -1));
+        }
+    };
+
     // Forward declarations
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
+    void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
     void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
     TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
     std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
     MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
     bool writeObjFile(const std::string& filename, const TerrainMesh& mesh);
+    
+    // Flood fill and connected component analysis
+    TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double height_threshold = 1e-6);
+    void floodFillComponent(const TerrainData& terrain, std::vector<std::vector<bool>>& visited, 
+                           ConnectedComponent& component, int start_x, int start_y, double height_threshold);
+    void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
+    void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
 
     // Implementation
 
@@ -490,8 +528,243 @@ namespace TerraScape {
         return mask;
     }
 
-    // Generate a volumetric triangle mesh from terrain data
-    void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+    // Flood fill to identify a connected component of non-zero height cells
+    void floodFillComponent(const TerrainData& terrain, std::vector<std::vector<bool>>& visited, 
+                           ConnectedComponent& component, int start_x, int start_y, double height_threshold) {
+        std::queue<std::pair<int, int>> to_visit;
+        to_visit.push({start_x, start_y});
+        visited[start_y][start_x] = true;
+        component.addCell(start_x, start_y);
+        
+        // 8-connected neighborhood (including diagonals)
+        int dx[] = {-1, -1, -1,  0,  0,  1,  1,  1};
+        int dy[] = {-1,  0,  1, -1,  1, -1,  0,  1};
+        
+        while (!to_visit.empty()) {
+            auto [x, y] = to_visit.front();
+            to_visit.pop();
+            
+            // Check all 8 neighbors
+            for (int i = 0; i < 8; ++i) {
+                int nx = x + dx[i];
+                int ny = y + dy[i];
+                
+                if (terrain.isValidCell(nx, ny) && 
+                    !visited[ny][nx] && 
+                    terrain.getHeight(nx, ny) > height_threshold) {
+                    
+                    visited[ny][nx] = true;
+                    to_visit.push({nx, ny});
+                    component.addCell(nx, ny);
+                }
+            }
+        }
+    }
+    
+    // Analyze terrain to identify connected components (islands)
+    TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double height_threshold) {
+        TerrainComponents result(terrain.width, terrain.height);
+        std::vector<std::vector<bool>> visited(terrain.height, std::vector<bool>(terrain.width, false));
+        
+        int component_id = 0;
+        
+        // Find all connected components of non-zero height cells
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (!visited[y][x] && terrain.getHeight(x, y) > height_threshold) {
+                    ConnectedComponent component;
+                    component.id = component_id;
+                    
+                    floodFillComponent(terrain, visited, component, x, y, height_threshold);
+                    
+                    // Mark cells in the component map
+                    for (const auto& cell : component.cells) {
+                        result.component_map[cell.second][cell.first] = component_id;
+                    }
+                    
+                    // Find boundary cells (cells adjacent to zero-height regions)
+                    for (const auto& cell : component.cells) {
+                        int cx = cell.first;
+                        int cy = cell.second;
+                        bool is_boundary = false;
+                        
+                        // Check 4-connected neighbors for boundary detection
+                        int dx[] = {-1, 1, 0, 0};
+                        int dy[] = {0, 0, -1, 1};
+                        
+                        for (int i = 0; i < 4; ++i) {
+                            int nx = cx + dx[i];
+                            int ny = cy + dy[i];
+                            
+                            // Boundary if neighbor is out of bounds or zero-height
+                            if (!terrain.isValidCell(nx, ny) || terrain.getHeight(nx, ny) <= height_threshold) {
+                                is_boundary = true;
+                                break;
+                            }
+                        }
+                        
+                        if (is_boundary) {
+                            component.boundary_cells.push_back(cell);
+                        }
+                    }
+                    
+                    result.components.push_back(component);
+                    component_id++;
+                }
+            }
+        }
+        
+        return result;
+    }
+
+    // Triangulate a single connected component as a separate volumetric mesh
+    void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh) {
+        if (component.cells.empty()) {
+            return;
+        }
+        
+        // Create mapping from terrain coordinates to mesh vertices
+        std::vector<std::vector<size_t>> top_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+        std::vector<std::vector<size_t>> bottom_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+        
+        // Add vertices only for cells in this component
+        for (const auto& cell : component.cells) {
+            int x = cell.first;
+            int y = cell.second;
+            
+            double world_x = terrain.origin.x + x * terrain.cell_size;
+            double world_y = terrain.origin.y - y * terrain.cell_size;
+            double height = terrain.getHeight(x, y);
+            
+            top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
+            bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+        }
+        
+        // Create a set for quick lookup of component cells
+        std::set<std::pair<int, int>> component_cells(component.cells.begin(), component.cells.end());
+        
+        // Add top surface triangles for complete quads within the component
+        for (int y = component.min_y; y < component.max_y; ++y) {
+            for (int x = component.min_x; x < component.max_x; ++x) {
+                // Check if we can form a quad with all corners in the component
+                if (component_cells.count({x, y}) && 
+                    component_cells.count({x+1, y}) && 
+                    component_cells.count({x, y+1}) && 
+                    component_cells.count({x+1, y+1})) {
+                    
+                    size_t v00 = top_vertices[y][x];
+                    size_t v10 = top_vertices[y][x+1];
+                    size_t v01 = top_vertices[y+1][x];
+                    size_t v11 = top_vertices[y+1][x+1];
+                    
+                    // Add two triangles with CCW orientation (viewed from above)
+                    mesh.addSurfaceTriangle(v00, v01, v10);
+                    mesh.addSurfaceTriangle(v10, v01, v11);
+                    
+                    // Add bottom surface triangles (opposite orientation)
+                    size_t b00 = bottom_vertices[y][x];
+                    size_t b10 = bottom_vertices[y][x+1];
+                    size_t b01 = bottom_vertices[y+1][x];
+                    size_t b11 = bottom_vertices[y+1][x+1];
+                    
+                    mesh.addTriangle(b00, b10, b01);
+                    mesh.addTriangle(b10, b11, b01);
+                }
+            }
+        }
+        
+        // Generate walls by examining each potential wall edge
+        // For each cell, check its 4 neighbors and create walls where needed
+        for (const auto& cell : component.cells) {
+            int x = cell.first;
+            int y = cell.second;
+            
+            // Check right edge: if there's no cell to the right, create a wall
+            if (!component_cells.count({x+1, y})) {
+                // Create wall on the right side of this cell
+                // We need to check if there's a cell below to form the wall
+                if (component_cells.count({x, y+1})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y+1][x];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y+1][x];
+                    
+                    // Right wall facing outward
+                    mesh.addTriangle(t1, t2, b1);
+                    mesh.addTriangle(t2, b2, b1);
+                }
+            }
+            
+            // Check bottom edge: if there's no cell below, create a wall
+            if (!component_cells.count({x, y+1})) {
+                // Create wall on the bottom side of this cell
+                if (component_cells.count({x+1, y})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y][x+1];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y][x+1];
+                    
+                    // Bottom wall facing outward
+                    mesh.addTriangle(t1, b1, t2);
+                    mesh.addTriangle(t2, b1, b2);
+                }
+            }
+            
+            // Check left edge: if there's no cell to the left, create a wall
+            if (!component_cells.count({x-1, y})) {
+                // Create wall on the left side of this cell
+                if (component_cells.count({x, y+1})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y+1][x];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y+1][x];
+                    
+                    // Left wall facing outward
+                    mesh.addTriangle(t1, b1, t2);
+                    mesh.addTriangle(t2, b1, b2);
+                }
+            }
+            
+            // Check top edge: if there's no cell above, create a wall
+            if (!component_cells.count({x, y-1})) {
+                // Create wall on the top side of this cell
+                if (component_cells.count({x+1, y})) {
+                    size_t t1 = top_vertices[y][x];
+                    size_t t2 = top_vertices[y][x+1];
+                    size_t b1 = bottom_vertices[y][x];
+                    size_t b2 = bottom_vertices[y][x+1];
+                    
+                    // Top wall facing outward
+                    mesh.addTriangle(t1, t2, b1);
+                    mesh.addTriangle(t2, b2, b1);
+                }
+            }
+        }
+    }
+    
+    // Triangulate terrain volume with proper handling of connected components
+    void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
+        mesh.clear();
+        
+        if (terrain.width <= 0 || terrain.height <= 0) {
+            return;
+        }
+        
+        // Analyze terrain to find connected components
+        TerrainComponents components = analyzeTerrainComponents(terrain);
+        
+        std::cout << "Found " << components.components.size() << " terrain component(s)" << std::endl;
+        
+        // Triangulate each component separately
+        for (const auto& component : components.components) {
+            std::cout << "Processing component " << component.id 
+                      << " with " << component.cells.size() << " cells" << std::endl;
+            triangulateComponentVolume(terrain, component, mesh);
+        }
+    }
+
+    // Generate a volumetric triangle mesh from terrain data (legacy single-mesh approach)
+    void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
         mesh.clear();
         
         if (terrain.width <= 0 || terrain.height <= 0) {
@@ -596,6 +869,12 @@ namespace TerraScape {
             mesh.addTriangle(top_0, bot_0, top_1);
             mesh.addTriangle(top_1, bot_0, bot_1);
         }
+    }
+
+    // Generate a volumetric triangle mesh from terrain data
+    void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+        // Use component-based approach by default for better handling of disjoint islands
+        triangulateTerrainVolumeWithComponents(terrain, mesh);
     }
 
     // Generate a simplified volumetric triangle mesh using Terra/Scape concepts
