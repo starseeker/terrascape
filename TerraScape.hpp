@@ -28,6 +28,7 @@
 #include <gdal_priv.h>
 #include <gdal.h>
 #endif
+#include "earcut.hpp"
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -282,6 +283,12 @@ namespace TerraScape {
                            ConnectedComponent& component, int start_x, int start_y, double height_threshold);
     void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
+    
+    // Earcut-based efficient bottom face triangulation
+    void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                        const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                    const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 
     // Implementation
 
@@ -660,18 +667,13 @@ namespace TerraScape {
                     // Add two triangles with CCW orientation (viewed from above)
                     mesh.addSurfaceTriangle(v00, v01, v10);
                     mesh.addSurfaceTriangle(v10, v01, v11);
-                    
-                    // Add bottom surface triangles (opposite orientation)
-                    size_t b00 = bottom_vertices[y][x];
-                    size_t b10 = bottom_vertices[y][x+1];
-                    size_t b01 = bottom_vertices[y+1][x];
-                    size_t b11 = bottom_vertices[y+1][x+1];
-                    
-                    mesh.addTriangle(b00, b10, b01);
-                    mesh.addTriangle(b10, b11, b01);
                 }
             }
         }
+        
+        // Add bottom surface triangles using earcut for more efficient triangulation
+        std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
+        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
         
         // Generate walls by examining each potential wall edge
         // For each cell, check its 4 neighbors and create walls where needed
@@ -809,19 +811,8 @@ namespace TerraScape {
             }
         }
 
-        // Add bottom surface triangles (2 triangles per cell, opposite orientation)
-        for (int y = 0; y < terrain.height - 1; ++y) {
-            for (int x = 0; x < terrain.width - 1; ++x) {
-                size_t v00 = bottom_vertices[y][x];
-                size_t v10 = bottom_vertices[y][x + 1];
-                size_t v01 = bottom_vertices[y + 1][x];
-                size_t v11 = bottom_vertices[y + 1][x + 1];
-
-                // Add two triangles with CCW orientation (viewed from below, so reversed)
-                mesh.addTriangle(v00, v10, v01);
-                mesh.addTriangle(v10, v11, v01);
-            }
-        }
+        // Add bottom surface triangles using earcut for more efficient triangulation
+        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, nullptr);
 
         // Add side walls
         // Left wall (x = 0)
@@ -961,10 +952,6 @@ namespace TerraScape {
                     // Top surface triangles
                     mesh.addSurfaceTriangle(v00_top, v01_top, v10_top);
                     mesh.addSurfaceTriangle(v10_top, v01_top, v11_top);
-                    
-                    // Bottom surface triangles (reversed)
-                    mesh.addTriangle(v00_bot, v10_bot, v01_bot);
-                    mesh.addTriangle(v10_bot, v11_bot, v01_bot);
                 } 
                 // Handle cases where we have 3 vertices (create 1 triangle)
                 else if (quad_corners.size() == 3) {
@@ -982,13 +969,24 @@ namespace TerraScape {
                             size_t v2_bot = bottom_vertices[quad_corners[2].second][quad_corners[2].first];
                             
                             mesh.addSurfaceTriangle(v_top, v1_top, v2_top);
-                            mesh.addTriangle(v_bot, v2_bot, v1_bot);
                             break;
                         }
                     }
                 }
             }
         }
+
+        // Add bottom surface triangles using earcut for more efficient triangulation
+        // Create filter set from keep_vertex array
+        std::set<std::pair<int, int>> keep_cells;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (keep_vertex[y][x]) {
+                    keep_cells.insert({x, y});
+                }
+            }
+        }
+        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &keep_cells);
 
         // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
@@ -1162,6 +1160,149 @@ namespace TerraScape {
                     size_t v2 = surface_vertices[p2.second][p2.first];
                     
                     mesh.addSurfaceTriangle(v0, v1, v2);
+                }
+            }
+        }
+    }
+
+    // Earcut-based efficient triangulation of coplanar bottom face
+    void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                        const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        // Since all bottom vertices are coplanar at z=0, we can create a much more efficient triangulation
+        // by collecting all vertices and using earcut to create optimal triangulation
+        
+        std::vector<std::pair<double, double>> polygon;
+        std::vector<size_t> vertex_indices;
+        std::map<std::pair<int, int>, size_t> coord_to_index;
+        
+        // Collect vertices in a predictable order to create the outer boundary
+        int min_x = terrain.width, max_x = -1, min_y = terrain.height, max_y = -1;
+        
+        // First pass: find bounds
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (bottom_vertices[y][x] != SIZE_MAX) {
+                    if (filter_cells == nullptr || filter_cells->count({x, y})) {
+                        min_x = std::min(min_x, x);
+                        max_x = std::max(max_x, x);
+                        min_y = std::min(min_y, y);
+                        max_y = std::max(max_y, y);
+                    }
+                }
+            }
+        }
+        
+        if (min_x > max_x || min_y > max_y) {
+            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+            return;
+        }
+        
+        // Create boundary in counter-clockwise order for earcut
+        // Start from bottom-left, go right, then up, then left, then down
+        
+        // Bottom edge (left to right)
+        for (int x = min_x; x <= max_x; ++x) {
+            if (bottom_vertices[min_y][x] != SIZE_MAX) {
+                if (filter_cells == nullptr || filter_cells->count({x, min_y})) {
+                    const Point3D& vertex = mesh.vertices[bottom_vertices[min_y][x]];
+                    polygon.push_back({vertex.x, vertex.y});
+                    vertex_indices.push_back(bottom_vertices[min_y][x]);
+                    coord_to_index[{x, min_y}] = polygon.size() - 1;
+                }
+            }
+        }
+        
+        // Right edge (bottom to top, skip corner)
+        for (int y = min_y + 1; y <= max_y; ++y) {
+            if (bottom_vertices[y][max_x] != SIZE_MAX) {
+                if (filter_cells == nullptr || filter_cells->count({max_x, y})) {
+                    const Point3D& vertex = mesh.vertices[bottom_vertices[y][max_x]];
+                    polygon.push_back({vertex.x, vertex.y});
+                    vertex_indices.push_back(bottom_vertices[y][max_x]);
+                    coord_to_index[{max_x, y}] = polygon.size() - 1;
+                }
+            }
+        }
+        
+        // Top edge (right to left, skip corner)
+        for (int x = max_x - 1; x >= min_x; --x) {
+            if (bottom_vertices[max_y][x] != SIZE_MAX) {
+                if (filter_cells == nullptr || filter_cells->count({x, max_y})) {
+                    const Point3D& vertex = mesh.vertices[bottom_vertices[max_y][x]];
+                    polygon.push_back({vertex.x, vertex.y});
+                    vertex_indices.push_back(bottom_vertices[max_y][x]);
+                    coord_to_index[{x, max_y}] = polygon.size() - 1;
+                }
+            }
+        }
+        
+        // Left edge (top to bottom, skip corners)
+        for (int y = max_y - 1; y > min_y; --y) {
+            if (bottom_vertices[y][min_x] != SIZE_MAX) {
+                if (filter_cells == nullptr || filter_cells->count({min_x, y})) {
+                    const Point3D& vertex = mesh.vertices[bottom_vertices[y][min_x]];
+                    polygon.push_back({vertex.x, vertex.y});
+                    vertex_indices.push_back(bottom_vertices[y][min_x]);
+                    coord_to_index[{min_x, y}] = polygon.size() - 1;
+                }
+            }
+        }
+        
+        if (polygon.size() < 3) {
+            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+            return;
+        }
+        
+        try {
+            // Use earcut for triangulation - it expects a vector of polygons (rings)
+            std::vector<std::vector<std::pair<double, double>>> polygon_rings;
+            polygon_rings.push_back(polygon);
+            
+            std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon_rings);
+            
+            // Add triangles with proper orientation for bottom face
+            for (size_t i = 0; i < indices.size(); i += 3) {
+                if (i + 2 < indices.size() && indices[i] < vertex_indices.size() && 
+                    indices[i+1] < vertex_indices.size() && indices[i+2] < vertex_indices.size()) {
+                    
+                    size_t v0 = vertex_indices[indices[i]];
+                    size_t v1 = vertex_indices[indices[i + 1]];
+                    size_t v2 = vertex_indices[indices[i + 2]];
+                    
+                    // Add triangle with reversed winding for bottom face (viewed from below)
+                    mesh.addTriangle(v0, v2, v1);
+                }
+            }
+        } catch (const std::exception&) {
+            // If earcut fails, fall back to simple grid triangulation
+            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+        }
+    }
+
+    // Fallback triangulation method (original grid-based approach) 
+    void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                    const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            for (int x = 0; x < terrain.width - 1; ++x) {
+                // Check if all 4 vertices exist for this cell
+                size_t v00 = bottom_vertices[y][x];
+                size_t v10 = bottom_vertices[y][x + 1];
+                size_t v01 = bottom_vertices[y + 1][x];
+                size_t v11 = bottom_vertices[y + 1][x + 1];
+                
+                if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                    // If filter_cells is provided, check if this cell should be included
+                    bool include_cell = (filter_cells == nullptr) || 
+                                       (filter_cells->count({x, y}) && filter_cells->count({x+1, y}) && 
+                                        filter_cells->count({x, y+1}) && filter_cells->count({x+1, y+1}));
+                    
+                    if (include_cell) {
+                        // Add two triangles with CCW orientation (viewed from below, so reversed)
+                        mesh.addTriangle(v00, v10, v01);
+                        mesh.addTriangle(v10, v11, v01);
+                    }
                 }
             }
         }
