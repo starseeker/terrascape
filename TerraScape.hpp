@@ -49,6 +49,7 @@
 #endif
 #include "earcut.hpp"
 #include "detria.hpp"
+#include "manifold/manifold.h"
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -407,6 +408,28 @@ namespace TerraScape {
                               const std::vector<std::pair<double, double>>& steiner_points,
                               std::vector<size_t>& vertex_indices,
                               const TerrainData& terrain);
+
+    // Manifold validation functions using @elalish/manifold library
+    enum class ManifoldValidationResult {
+        Valid,
+        NonFiniteVertex,
+        NotManifold,
+        VertexOutOfBounds,
+        OtherError
+    };
+    
+    struct ManifoldValidationInfo {
+        ManifoldValidationResult result;
+        std::string error_message;
+        bool is_manifold;
+        size_t num_vertices;
+        size_t num_triangles;
+        
+        ManifoldValidationInfo() : result(ManifoldValidationResult::Valid), 
+                                  is_manifold(false), num_vertices(0), num_triangles(0) {}
+    };
+    
+    ManifoldValidationInfo validateMeshWithManifold(const TerrainMesh& mesh);
 
     // Implementation
 
@@ -2091,6 +2114,87 @@ namespace TerraScape {
         return 0; // SUCCESS
     }
     */
+    
+    // Manifold validation implementation using @elalish/manifold library
+    ManifoldValidationInfo validateMeshWithManifold(const TerrainMesh& mesh) {
+        ManifoldValidationInfo info;
+        
+        // Convert TerraScape mesh to manifold::MeshGL format
+        manifold::MeshGL meshGL;
+        
+        // Convert vertices
+        meshGL.vertProperties.reserve(mesh.vertices.size() * 3);
+        for (const auto& vertex : mesh.vertices) {
+            meshGL.vertProperties.push_back(static_cast<float>(vertex.x));
+            meshGL.vertProperties.push_back(static_cast<float>(vertex.y));  
+            meshGL.vertProperties.push_back(static_cast<float>(vertex.z));
+        }
+        
+        // Convert triangles
+        meshGL.triVerts.reserve(mesh.triangles.size() * 3);
+        for (const auto& triangle : mesh.triangles) {
+            meshGL.triVerts.push_back(static_cast<uint32_t>(triangle.vertices[0]));
+            meshGL.triVerts.push_back(static_cast<uint32_t>(triangle.vertices[1]));
+            meshGL.triVerts.push_back(static_cast<uint32_t>(triangle.vertices[2]));
+        }
+        
+        // Set vertex attributes (3 attributes per vertex: x, y, z)
+        meshGL.numProp = 3;
+        
+        info.num_vertices = mesh.vertices.size();
+        info.num_triangles = mesh.triangles.size();
+        
+        try {
+            // Create manifold from mesh
+            manifold::Manifold manifold(meshGL);
+            
+            // Check status
+            manifold::Manifold::Error status = manifold.Status();
+            
+            switch (status) {
+                case manifold::Manifold::Error::NoError:
+                    info.result = ManifoldValidationResult::Valid;
+                    info.is_manifold = true;
+                    info.error_message = "Mesh is valid and manifold";
+                    break;
+                    
+                case manifold::Manifold::Error::NonFiniteVertex:
+                    info.result = ManifoldValidationResult::NonFiniteVertex;
+                    info.is_manifold = false;
+                    info.error_message = "Mesh contains non-finite vertices (NaN or infinity)";
+                    break;
+                    
+                case manifold::Manifold::Error::NotManifold:
+                    info.result = ManifoldValidationResult::NotManifold;
+                    info.is_manifold = false;
+                    info.error_message = "Mesh is not manifold (edge-manifold violated)";
+                    break;
+                    
+                case manifold::Manifold::Error::VertexOutOfBounds:
+                    info.result = ManifoldValidationResult::VertexOutOfBounds;
+                    info.is_manifold = false;
+                    info.error_message = "Triangle references vertex index out of bounds";
+                    break;
+                    
+                default:
+                    info.result = ManifoldValidationResult::OtherError;
+                    info.is_manifold = false;
+#ifdef MANIFOLD_DEBUG
+                    info.error_message = "Other manifold validation error: " + manifold::ToString(status);
+#else
+                    info.error_message = "Other manifold validation error (error code: " + std::to_string(static_cast<int>(status)) + ")";
+#endif
+                    break;
+            }
+            
+        } catch (const std::exception& e) {
+            info.result = ManifoldValidationResult::OtherError;
+            info.is_manifold = false;
+            info.error_message = std::string("Exception during manifold validation: ") + e.what();
+        }
+        
+        return info;
+    }
 
 } // namespace TerraScape
 

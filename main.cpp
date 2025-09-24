@@ -23,6 +23,7 @@ int main(int argc, char* argv[])
         ("components", "Handle terrain islands and holes separately (default)")
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
         ("brlcad-test", "Test BRL-CAD DSP integration")
+        ("manifold-validation", "Validate mesh using @elalish/manifold library")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
@@ -42,6 +43,7 @@ int main(int argc, char* argv[])
     bool use_components = result.count("components") > 0;
     bool use_legacy = result.count("legacy") > 0;
     bool brlcad_test = result.count("brlcad-test") > 0;
+    bool manifold_validation = result.count("manifold-validation") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
@@ -102,6 +104,22 @@ int main(int argc, char* argv[])
         std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
         std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
         std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        
+        // Perform manifold validation using @elalish/manifold library
+        if (manifold_validation) {
+            std::cout << "\nManifold Library Validation:" << std::endl;
+            TerraScape::ManifoldValidationInfo manifold_info = TerraScape::validateMeshWithManifold(mesh);
+            std::cout << "  Vertices: " << manifold_info.num_vertices << std::endl;
+            std::cout << "  Triangles: " << manifold_info.num_triangles << std::endl;
+            std::cout << "  Is manifold: " << (manifold_info.is_manifold ? "yes" : "no") << std::endl;
+            std::cout << "  Status: " << manifold_info.error_message << std::endl;
+            
+            // If there's a validation issue, report it
+            if (!manifold_info.is_manifold) {
+                std::cerr << "Warning: Mesh failed manifold library validation!" << std::endl;
+                std::cerr << "  Issue: " << manifold_info.error_message << std::endl;
+            }
+        }
         
         if (TerraScape::writeObjFile(output_file, mesh)) {
             std::cout << "Successfully wrote BRL-CAD compatible mesh to: " << output_file << std::endl;
@@ -173,6 +191,22 @@ int main(int argc, char* argv[])
         std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
         std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
         std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        
+        // Perform manifold validation using @elalish/manifold library if requested
+        if (manifold_validation) {
+            std::cout << "\nManifold Library Validation:" << std::endl;
+            TerraScape::ManifoldValidationInfo manifold_info = TerraScape::validateMeshWithManifold(mesh);
+            std::cout << "  Vertices: " << manifold_info.num_vertices << std::endl;
+            std::cout << "  Triangles: " << manifold_info.num_triangles << std::endl;
+            std::cout << "  Is manifold: " << (manifold_info.is_manifold ? "yes" : "no") << std::endl;
+            std::cout << "  Status: " << manifold_info.error_message << std::endl;
+            
+            // If there's a validation issue, report it
+            if (!manifold_info.is_manifold) {
+                std::cerr << "Warning: Mesh failed manifold library validation!" << std::endl;
+                std::cerr << "  Issue: " << manifold_info.error_message << std::endl;
+            }
+        }
         
         // Write OBJ file
         if (!TerraScape::writeObjFile(output_file, mesh)) {
