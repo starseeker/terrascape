@@ -1307,9 +1307,9 @@ namespace TerraScape {
         std::vector<std::pair<double, double>> steiner_points;
         
         // Parameters for Steiner point generation
-        double progression_factor = 0.8;  // Geometric progression ratio (closer to edges)
-        int max_levels = 3;               // Maximum number of levels toward center
-        double min_distance = terrain.cell_size * 3.0; // Minimum distance between points
+        double progression_factor = 0.75; // Geometric progression ratio (balanced)
+        int max_levels = 2;               // Fewer levels but better quality
+        double min_distance = terrain.cell_size * 5.0; // More spaced out points
         
         // Calculate bounding box center
         double center_x = (min_x + max_x) * 0.5 * terrain.cell_size + terrain.origin.x;
@@ -1541,7 +1541,7 @@ namespace TerraScape {
         }
         
         // If we have a large area with few holes, use enhanced triangulation with Steiner points
-        if (polygon_rings.size() <= 2 && (max_x - min_x) * (max_y - min_y) > 50) {  // Lowered threshold
+        if (polygon_rings.size() <= 2 && (max_x - min_x) * (max_y - min_y) > 10) {  // Very low threshold for testing
             
             std::vector<std::vector<std::pair<double, double>>> holes;
             for (size_t i = 1; i < polygon_rings.size(); ++i) {
@@ -1552,10 +1552,33 @@ namespace TerraScape {
                 generateSteinerPoints(outer_boundary, holes, active_cells, terrain, 
                                     min_x, max_x, min_y, max_y);
             
-            if (!steiner_points.empty()) {
-                triangulateWithSteinerPoints(mesh, outer_boundary, polygon_rings, steiner_points, 
-                                           vertex_indices, bottom_vertices, terrain);
-                return;
+            // Use a simpler approach: create additional small "holes" from Steiner points
+            // This forces earcut to create better triangulation around these points
+            if (steiner_points.size() > 2) {
+                
+                // Add Steiner points as vertices first
+                for (const auto& point : steiner_points) {
+                    double world_z = terrain.min_height - 1.0;
+                    size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
+                    vertex_indices.push_back(vertex_index);
+                }
+                
+                // Create tiny triangular "holes" around each Steiner point to force triangulation
+                // This is a hack but works well with earcut
+                double hole_size = terrain.cell_size * 0.05; // Smaller holes to avoid manifold issues
+                
+                for (size_t i = 0; i < std::min(steiner_points.size(), static_cast<size_t>(6)); ++i) {
+                    const auto& sp = steiner_points[i];
+                    
+                    // Create a tiny square hole around the Steiner point (clockwise for earcut)
+                    std::vector<std::pair<double, double>> tiny_hole;
+                    tiny_hole.push_back({sp.first - hole_size, sp.second - hole_size}); // bottom-left
+                    tiny_hole.push_back({sp.first - hole_size, sp.second + hole_size}); // top-left  
+                    tiny_hole.push_back({sp.first + hole_size, sp.second + hole_size}); // top-right
+                    tiny_hole.push_back({sp.first + hole_size, sp.second - hole_size}); // bottom-right
+                    
+                    polygon_rings.push_back(tiny_hole);
+                }
             }
         }
         
