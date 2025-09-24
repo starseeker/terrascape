@@ -289,6 +289,14 @@ namespace TerraScape {
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    
+    // Helper for hole boundary extraction
+    bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
+                            const std::set<std::pair<int, int>>& active_cells,
+                            const std::vector<std::vector<size_t>>& bottom_vertices,
+                            const TerrainMesh& mesh,
+                            std::vector<std::pair<double, double>>& hole_boundary,
+                            std::vector<size_t>& vertex_indices);
 
     // Implementation
 
@@ -1165,103 +1173,148 @@ namespace TerraScape {
         }
     }
 
-    // Earcut-based efficient triangulation of coplanar bottom face
+    // Earcut-based efficient triangulation of coplanar bottom face with proper hole support
     void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
         
-        // Since all bottom vertices are coplanar at z=0, we can create a much more efficient triangulation
-        // by collecting all vertices and using earcut to create optimal triangulation
-        
-        std::vector<std::pair<double, double>> polygon;
-        std::vector<size_t> vertex_indices;
-        std::map<std::pair<int, int>, size_t> coord_to_index;
-        
-        // Collect vertices in a predictable order to create the outer boundary
-        int min_x = terrain.width, max_x = -1, min_y = terrain.height, max_y = -1;
-        
-        // First pass: find bounds
+        // Build set of cells that should have bottom faces
+        std::set<std::pair<int, int>> active_cells;
         for (int y = 0; y < terrain.height; ++y) {
             for (int x = 0; x < terrain.width; ++x) {
                 if (bottom_vertices[y][x] != SIZE_MAX) {
                     if (filter_cells == nullptr || filter_cells->count({x, y})) {
-                        min_x = std::min(min_x, x);
-                        max_x = std::max(max_x, x);
-                        min_y = std::min(min_y, y);
-                        max_y = std::max(max_y, y);
+                        active_cells.insert({x, y});
                     }
                 }
             }
         }
         
-        if (min_x > max_x || min_y > max_y) {
-            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+        if (active_cells.empty()) {
             return;
         }
         
-        // Create boundary in counter-clockwise order for earcut
-        // Start from bottom-left, go right, then up, then left, then down
+        // Find bounds of active region
+        int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+        for (const auto& cell : active_cells) {
+            min_x = std::min(min_x, cell.first);
+            max_x = std::max(max_x, cell.first);
+            min_y = std::min(min_y, cell.second);
+            max_y = std::max(max_y, cell.second);
+        }
+        
+        // Create outer boundary (counter-clockwise)
+        std::vector<std::pair<double, double>> outer_boundary;
+        std::vector<size_t> vertex_indices;
         
         // Bottom edge (left to right)
         for (int x = min_x; x <= max_x; ++x) {
-            if (bottom_vertices[min_y][x] != SIZE_MAX) {
-                if (filter_cells == nullptr || filter_cells->count({x, min_y})) {
-                    const Point3D& vertex = mesh.vertices[bottom_vertices[min_y][x]];
-                    polygon.push_back({vertex.x, vertex.y});
-                    vertex_indices.push_back(bottom_vertices[min_y][x]);
-                    coord_to_index[{x, min_y}] = polygon.size() - 1;
-                }
+            if (active_cells.count({x, min_y})) {
+                const Point3D& vertex = mesh.vertices[bottom_vertices[min_y][x]];
+                outer_boundary.push_back({vertex.x, vertex.y});
+                vertex_indices.push_back(bottom_vertices[min_y][x]);
             }
         }
         
-        // Right edge (bottom to top, skip corner)
+        // Right edge (bottom to top, skip corners)
         for (int y = min_y + 1; y <= max_y; ++y) {
-            if (bottom_vertices[y][max_x] != SIZE_MAX) {
-                if (filter_cells == nullptr || filter_cells->count({max_x, y})) {
-                    const Point3D& vertex = mesh.vertices[bottom_vertices[y][max_x]];
-                    polygon.push_back({vertex.x, vertex.y});
-                    vertex_indices.push_back(bottom_vertices[y][max_x]);
-                    coord_to_index[{max_x, y}] = polygon.size() - 1;
-                }
+            if (active_cells.count({max_x, y})) {
+                const Point3D& vertex = mesh.vertices[bottom_vertices[y][max_x]];
+                outer_boundary.push_back({vertex.x, vertex.y});
+                vertex_indices.push_back(bottom_vertices[y][max_x]);
             }
         }
         
-        // Top edge (right to left, skip corner)
+        // Top edge (right to left, skip corners)
         for (int x = max_x - 1; x >= min_x; --x) {
-            if (bottom_vertices[max_y][x] != SIZE_MAX) {
-                if (filter_cells == nullptr || filter_cells->count({x, max_y})) {
-                    const Point3D& vertex = mesh.vertices[bottom_vertices[max_y][x]];
-                    polygon.push_back({vertex.x, vertex.y});
-                    vertex_indices.push_back(bottom_vertices[max_y][x]);
-                    coord_to_index[{x, max_y}] = polygon.size() - 1;
-                }
+            if (active_cells.count({x, max_y})) {
+                const Point3D& vertex = mesh.vertices[bottom_vertices[max_y][x]];
+                outer_boundary.push_back({vertex.x, vertex.y});
+                vertex_indices.push_back(bottom_vertices[max_y][x]);
             }
         }
         
         // Left edge (top to bottom, skip corners)
         for (int y = max_y - 1; y > min_y; --y) {
-            if (bottom_vertices[y][min_x] != SIZE_MAX) {
-                if (filter_cells == nullptr || filter_cells->count({min_x, y})) {
-                    const Point3D& vertex = mesh.vertices[bottom_vertices[y][min_x]];
-                    polygon.push_back({vertex.x, vertex.y});
-                    vertex_indices.push_back(bottom_vertices[y][min_x]);
-                    coord_to_index[{min_x, y}] = polygon.size() - 1;
-                }
+            if (active_cells.count({min_x, y})) {
+                const Point3D& vertex = mesh.vertices[bottom_vertices[y][min_x]];
+                outer_boundary.push_back({vertex.x, vertex.y});
+                vertex_indices.push_back(bottom_vertices[y][min_x]);
             }
         }
         
-        if (polygon.size() < 3) {
+        if (outer_boundary.size() < 3) {
             fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
             return;
         }
         
+        // Find interior holes using flood fill on inactive cells
+        std::vector<std::vector<std::pair<double, double>>> polygon_rings;
+        polygon_rings.push_back(outer_boundary);
+        
+        std::set<std::pair<int, int>> processed_holes;
+        
+        // Look for holes (inactive regions completely surrounded by active regions)
+        for (int y = min_y + 1; y < max_y; ++y) {
+            for (int x = min_x + 1; x < max_x; ++x) {
+                if (!active_cells.count({x, y}) && !processed_holes.count({x, y})) {
+                    
+                    // Flood fill to find connected inactive region
+                    std::vector<std::pair<int, int>> hole_cells;
+                    std::queue<std::pair<int, int>> to_visit;
+                    std::set<std::pair<int, int>> visited;
+                    
+                    to_visit.push({x, y});
+                    visited.insert({x, y});
+                    bool touches_boundary = false;
+                    
+                    while (!to_visit.empty()) {
+                        auto current = to_visit.front();
+                        to_visit.pop();
+                        hole_cells.push_back(current);
+                        
+                        // Check if this touches the boundary of our active region
+                        if (current.first <= min_x || current.first >= max_x || 
+                            current.second <= min_y || current.second >= max_y) {
+                            touches_boundary = true;
+                        }
+                        
+                        // Explore 4-connected neighbors
+                        int dx[] = {-1, 1, 0, 0};
+                        int dy[] = {0, 0, -1, 1};
+                        
+                        for (int i = 0; i < 4; ++i) {
+                            int nx = current.first + dx[i];
+                            int ny = current.second + dy[i];
+                            
+                            if (nx >= 0 && nx < terrain.width && ny >= 0 && ny < terrain.height &&
+                                !active_cells.count({nx, ny}) && !visited.count({nx, ny})) {
+                                visited.insert({nx, ny});
+                                to_visit.push({nx, ny});
+                            }
+                        }
+                    }
+                    
+                    // Mark all cells as processed
+                    for (const auto& cell : hole_cells) {
+                        processed_holes.insert(cell);
+                    }
+                    
+                    // If this doesn't touch boundary, it's a true hole
+                    if (!touches_boundary && hole_cells.size() > 0) {
+                        std::vector<std::pair<double, double>> hole_boundary;
+                        
+                        if (extractHoleBoundary(hole_cells, active_cells, bottom_vertices, mesh, hole_boundary, vertex_indices)) {
+                            polygon_rings.push_back(hole_boundary);
+                        }
+                    }
+                }
+            }
+        }
+        
         try {
-            // Use earcut for triangulation - it expects a vector of polygons (rings)
-            std::vector<std::vector<std::pair<double, double>>> polygon_rings;
-            polygon_rings.push_back(polygon);
-            
             std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon_rings);
             
-            // Add triangles with proper orientation for bottom face
+            // Add triangles with correct bottom face orientation
             for (size_t i = 0; i < indices.size(); i += 3) {
                 if (i + 2 < indices.size() && indices[i] < vertex_indices.size() && 
                     indices[i+1] < vertex_indices.size() && indices[i+2] < vertex_indices.size()) {
@@ -1270,14 +1323,92 @@ namespace TerraScape {
                     size_t v1 = vertex_indices[indices[i + 1]];
                     size_t v2 = vertex_indices[indices[i + 2]];
                     
-                    // Add triangle with reversed winding for bottom face (viewed from below)
+                    // Add triangle with reversed winding for bottom face
                     mesh.addTriangle(v0, v2, v1);
                 }
             }
         } catch (const std::exception&) {
-            // If earcut fails, fall back to simple grid triangulation
             fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
         }
+    }
+    
+    // Extract hole boundary vertices (clockwise for earcut holes)
+    bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
+                            const std::set<std::pair<int, int>>& active_cells,
+                            const std::vector<std::vector<size_t>>& bottom_vertices,
+                            const TerrainMesh& mesh,
+                            std::vector<std::pair<double, double>>& hole_boundary,
+                            std::vector<size_t>& vertex_indices) {
+        
+        // Find active cells adjacent to hole cells - these form the hole boundary
+        std::set<std::pair<int, int>> boundary_cells;
+        
+        for (const auto& hole_cell : hole_cells) {
+            int dx[] = {-1, 1, 0, 0};
+            int dy[] = {0, 0, -1, 1};
+            
+            for (int i = 0; i < 4; ++i) {
+                int nx = hole_cell.first + dx[i];
+                int ny = hole_cell.second + dy[i];
+                
+                if (active_cells.count({nx, ny})) {
+                    boundary_cells.insert({nx, ny});
+                }
+            }
+        }
+        
+        if (boundary_cells.size() < 3) {
+            return false;
+        }
+        
+        // Find boundary box of hole boundary
+        int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+        for (const auto& cell : boundary_cells) {
+            min_x = std::min(min_x, cell.first);
+            max_x = std::max(max_x, cell.first);
+            min_y = std::min(min_y, cell.second);
+            max_y = std::max(max_y, cell.second);
+        }
+        
+        // Trace hole boundary clockwise (required for earcut holes)
+        std::vector<std::pair<int, int>> ordered_boundary;
+        
+        // Bottom edge (left to right)
+        for (int x = min_x; x <= max_x; ++x) {
+            if (boundary_cells.count({x, min_y})) {
+                ordered_boundary.push_back({x, min_y});
+            }
+        }
+        
+        // Right edge (bottom to top, skip corners)
+        for (int y = min_y + 1; y <= max_y; ++y) {
+            if (boundary_cells.count({max_x, y})) {
+                ordered_boundary.push_back({max_x, y});
+            }
+        }
+        
+        // Top edge (right to left, skip corners) 
+        for (int x = max_x - 1; x >= min_x; --x) {
+            if (boundary_cells.count({x, max_y})) {
+                ordered_boundary.push_back({x, max_y});
+            }
+        }
+        
+        // Left edge (top to bottom, skip corners)
+        for (int y = max_y - 1; y > min_y; --y) {
+            if (boundary_cells.count({min_x, y})) {
+                ordered_boundary.push_back({min_x, y});
+            }
+        }
+        
+        // Convert to vertex coordinates and indices
+        for (const auto& cell : ordered_boundary) {
+            const Point3D& vertex = mesh.vertices[bottom_vertices[cell.second][cell.first]];
+            hole_boundary.push_back({vertex.x, vertex.y});
+            vertex_indices.push_back(bottom_vertices[cell.second][cell.first]);
+        }
+        
+        return hole_boundary.size() >= 3;
     }
 
     // Fallback triangulation method (original grid-based approach) 
