@@ -22,6 +22,7 @@ int main(int argc, char* argv[])
         ("surface-only", "Generate surface-only mesh (no volume)")
         ("components", "Handle terrain islands and holes separately (default)")
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
+        ("brlcad-test", "Test BRL-CAD DSP integration")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
@@ -40,12 +41,76 @@ int main(int argc, char* argv[])
     bool surface_only = result.count("surface-only") > 0;
     bool use_components = result.count("components") > 0;
     bool use_legacy = result.count("legacy") > 0;
+    bool brlcad_test = result.count("brlcad-test") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
     std::cout << "Input: " << input_file << std::endl;
     std::cout << "Output: " << output_file << std::endl;
+    
+    // BRL-CAD DSP integration test
+    if (brlcad_test) {
+        std::cout << "Mode: BRL-CAD DSP Integration Test" << std::endl;
+        
+        // Load terrain data first
+        TerraScape::TerrainData terrain;
+        if (!TerraScape::readTerrainFile(input_file, terrain)) {
+            std::cerr << "Error: Failed to read terrain file: " << input_file << std::endl;
+            return 1;
+        }
+        
+        std::cout << "Loaded terrain: " << terrain.width << "x" << terrain.height << " cells" << std::endl;
+        
+        // Convert to DSP format
+        TerraScape::DSPData dsp;
+        if (!TerraScape::convertTerrainToDSP(terrain, dsp)) {
+            std::cerr << "Error: Failed to convert terrain to DSP format" << std::endl;
+            return 1;
+        }
+        
+        // Test BRL-CAD integration
+        TerraScape::NMGTriangleData nmg_data;
+        if (!TerraScape::triangulateTerrainForBRLCAD(dsp, nmg_data)) {
+            std::cerr << "Error: BRL-CAD triangulation failed" << std::endl;
+            return 1;
+        }
+        
+        std::cout << "BRL-CAD Integration Results:" << std::endl;
+        std::cout << "  NMG triangles: " << nmg_data.triangles.size() << std::endl;
+        std::cout << "  Surface triangles: " << nmg_data.surface_triangle_count << std::endl;
+        std::cout << "  Unique vertices: " << nmg_data.unique_vertices.size() << std::endl;
+        
+        // Convert back to regular mesh for validation and output
+        TerraScape::TerrainMesh mesh;
+        mesh.vertices = nmg_data.unique_vertices;
+        mesh.surface_triangle_count = nmg_data.surface_triangle_count;
+        
+        for (const auto& nmg_tri : nmg_data.triangles) {
+            TerraScape::Triangle tri;
+            tri.vertices[0] = nmg_tri.vertices[0].original_index;
+            tri.vertices[1] = nmg_tri.vertices[1].original_index;
+            tri.vertices[2] = nmg_tri.vertices[2].original_index;
+            tri.normal = nmg_tri.normal;
+            mesh.triangles.push_back(tri);
+        }
+        
+        // Validate the mesh
+        TerraScape::MeshStats stats = TerraScape::validateMesh(mesh, terrain);
+        std::cout << "Mesh validation:" << std::endl;
+        std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
+        std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
+        std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
+        std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        
+        if (TerraScape::writeObjFile(output_file, mesh)) {
+            std::cout << "Successfully wrote BRL-CAD compatible mesh to: " << output_file << std::endl;
+        } else {
+            std::cerr << "Failed to write output file: " << output_file << std::endl;
+        }
+        
+        return 0;
+    }
     if (use_components) {
         std::cout << "Mode: Components (separate islands and holes)" << std::endl;
     } else if (use_legacy) {
