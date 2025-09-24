@@ -2,6 +2,25 @@
 
 /*
  * TerraScape - Terrain Triangle Mesh Generation
+ *
+ * A header-only C++ library for converting elevation grids to triangle meshes.
+ * Features volumetric mesh generation with manifold guarantee and CCW orientation.
+ * 
+ * BRL-CAD DSP Integration:
+ * This library now includes functions to integrate with BRL-CAD's DSP (displacement map)
+ * primitive for improved tessellation. The integration provides:
+ * 
+ * 1. DSPData structure compatible with rt_dsp_internal buffer format
+ * 2. Conversion functions between BRL-CAD and TerraScape data formats  
+ * 3. NMGTriangleData output format suitable for nmg_region construction
+ * 4. Complete rt_dsp_tess replacement function
+ *
+ * Key functions for BRL-CAD integration:
+ * - convertDSPToTerrain(): Convert rt_dsp_internal buffer to TerrainData
+ * - triangulateTerrainForBRLCAD(): Complete DSP->NMG triangulation pipeline
+ * - convertMeshToNMG(): Convert TerrainMesh to NMG-compatible format
+ *
+ * See example usage in the triangulateTerrainForBRLCAD() documentation.
  */
 
 #include <vector>
@@ -265,6 +284,71 @@ namespace TerraScape {
         }
     };
 
+    // BRL-CAD DSP compatibility structures
+    struct DSPData {
+        unsigned short* dsp_buf;     // Height data buffer (BRL-CAD format)
+        uint32_t dsp_xcnt;          // Number of samples in row  
+        uint32_t dsp_ycnt;          // Number of columns
+        double cell_size;           // Physical size of each cell
+        Point3D origin;             // Origin point in model space
+        bool owns_buffer;           // Whether this structure owns the buffer
+        
+        DSPData() : dsp_buf(nullptr), dsp_xcnt(0), dsp_ycnt(0), 
+                   cell_size(1.0), origin(0,0,0), owns_buffer(false) {}
+        
+        ~DSPData() {
+            if (owns_buffer && dsp_buf) {
+                delete[] dsp_buf;
+                dsp_buf = nullptr;
+            }
+        }
+        
+        // Get height value at grid position
+        double getHeight(uint32_t x, uint32_t y) const {
+            if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
+                return static_cast<double>(dsp_buf[y * dsp_xcnt + x]);
+            }
+            return 0.0;
+        }
+        
+        // Set height value at grid position  
+        void setHeight(uint32_t x, uint32_t y, unsigned short height) {
+            if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
+                dsp_buf[y * dsp_xcnt + x] = height;
+            }
+        }
+    };
+
+    // NMG-compatible triangle output for BRL-CAD integration
+    struct NMGTriangleData {
+        struct TriangleVertex {
+            Point3D point;
+            size_t original_index;  // Index in original vertex array
+            
+            TriangleVertex(const Point3D& p, size_t idx) : point(p), original_index(idx) {}
+        };
+        
+        struct NMGTriangle {
+            std::array<TriangleVertex, 3> vertices;
+            Point3D normal;
+            bool is_surface;  // True if this is a terrain surface triangle
+            
+            NMGTriangle(const TriangleVertex& v0, const TriangleVertex& v1, const TriangleVertex& v2, bool surf = false) 
+                : vertices{v0, v1, v2}, is_surface(surf) {
+                // Compute normal
+                Point3D edge1 = v1.point - v0.point;
+                Point3D edge2 = v2.point - v0.point;
+                normal = edge1.cross(edge2).normalized();
+            }
+        };
+        
+        std::vector<NMGTriangle> triangles;
+        std::vector<Point3D> unique_vertices;
+        size_t surface_triangle_count;
+        
+        NMGTriangleData() : surface_triangle_count(0) {}
+    };
+
     // Forward declarations
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
@@ -276,6 +360,12 @@ namespace TerraScape {
     std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
     MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
     bool writeObjFile(const std::string& filename, const TerrainMesh& mesh);
+    
+    // BRL-CAD DSP integration functions
+    bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain);
+    bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp);
+    bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data);
+    bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
     
     // Flood fill and connected component analysis
     TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double height_threshold = 1e-6);
@@ -1564,6 +1654,189 @@ namespace TerraScape {
         file.close();
         return true;
     }
+
+    // BRL-CAD DSP Integration Functions
+    
+    // Convert DSP data to TerraScape TerrainData format
+    bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain) {
+        if (!dsp.dsp_buf || dsp.dsp_xcnt == 0 || dsp.dsp_ycnt == 0) {
+            return false;
+        }
+        
+        terrain.width = static_cast<int>(dsp.dsp_xcnt);
+        terrain.height = static_cast<int>(dsp.dsp_ycnt);
+        terrain.cell_size = dsp.cell_size;
+        terrain.origin = dsp.origin;
+        
+        // Initialize height array
+        terrain.heights.resize(terrain.height);
+        for (int y = 0; y < terrain.height; ++y) {
+            terrain.heights[y].resize(terrain.width);
+        }
+        
+        // Convert unsigned short data to double and find min/max
+        terrain.min_height = std::numeric_limits<double>::max();
+        terrain.max_height = std::numeric_limits<double>::lowest();
+        
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                double height = static_cast<double>(dsp.dsp_buf[y * dsp.dsp_xcnt + x]);
+                terrain.heights[y][x] = height;
+                terrain.min_height = std::min(terrain.min_height, height);
+                terrain.max_height = std::max(terrain.max_height, height);
+            }
+        }
+        
+        return true;
+    }
+    
+    // Convert TerraScape TerrainData to DSP format
+    bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp) {
+        if (terrain.width <= 0 || terrain.height <= 0 || terrain.heights.empty()) {
+            return false;
+        }
+        
+        dsp.dsp_xcnt = static_cast<uint32_t>(terrain.width);
+        dsp.dsp_ycnt = static_cast<uint32_t>(terrain.height);
+        dsp.cell_size = terrain.cell_size;
+        dsp.origin = terrain.origin;
+        
+        // Allocate buffer if not already allocated
+        if (!dsp.dsp_buf) {
+            dsp.dsp_buf = new unsigned short[dsp.dsp_xcnt * dsp.dsp_ycnt];
+            dsp.owns_buffer = true;
+        }
+        
+        // Convert double data to unsigned short
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                double height = terrain.getHeight(x, y);
+                // Clamp to unsigned short range
+                if (height < 0) height = 0;
+                if (height > 65535) height = 65535;
+                dsp.dsp_buf[y * dsp.dsp_xcnt + x] = static_cast<unsigned short>(height);
+            }
+        }
+        
+        return true;
+    }
+    
+    // Convert TerrainMesh to NMG-compatible triangle data
+    bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data) {
+        if (mesh.vertices.empty() || mesh.triangles.empty()) {
+            return false;
+        }
+        
+        nmg_data.triangles.clear();
+        nmg_data.unique_vertices = mesh.vertices;  // Copy vertex data
+        nmg_data.surface_triangle_count = mesh.surface_triangle_count;
+        
+        // Convert triangles to NMG format
+        nmg_data.triangles.reserve(mesh.triangles.size());
+        
+        for (size_t i = 0; i < mesh.triangles.size(); ++i) {
+            const Triangle& tri = mesh.triangles[i];
+            
+            // Create triangle vertices with references to unique vertex array
+            NMGTriangleData::TriangleVertex v0(mesh.vertices[tri.vertices[0]], tri.vertices[0]);
+            NMGTriangleData::TriangleVertex v1(mesh.vertices[tri.vertices[1]], tri.vertices[1]);
+            NMGTriangleData::TriangleVertex v2(mesh.vertices[tri.vertices[2]], tri.vertices[2]);
+            
+            // Determine if this is a surface triangle (first N triangles are surface)
+            bool is_surface = (i < mesh.surface_triangle_count);
+            
+            // Create NMG triangle
+            NMGTriangleData::NMGTriangle nmg_tri(v0, v1, v2, is_surface);
+            nmg_data.triangles.push_back(nmg_tri);
+        }
+        
+        return true;
+    }
+    
+    // Main function for BRL-CAD: Convert DSP to triangulated mesh ready for nmg_region
+    bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) {
+        // Step 1: Convert DSP to TerraScape format
+        TerrainData terrain;
+        if (!convertDSPToTerrain(dsp, terrain)) {
+            return false;
+        }
+        
+        // Step 2: Generate volumetric triangle mesh using TerraScape
+        TerrainMesh mesh;
+        triangulateTerrainVolume(terrain, mesh);
+        
+        // Step 3: Convert mesh to NMG format
+        return convertMeshToNMG(mesh, nmg_data);
+    }
+
+    // Example function showing how to integrate with BRL-CAD rt_dsp_tess
+    // This demonstrates the interface that rt_dsp_tess would use
+    /*
+    Usage in rt_dsp_tess replacement:
+    
+    int rt_dsp_tess_terrascape(struct nmgregion **r, struct model *m, 
+                              struct rt_db_internal *ip, 
+                              const struct bg_tess_tol *ttol, 
+                              const struct bn_tol *tol) {
+        
+        struct rt_dsp_internal *dsp_ip = (struct rt_dsp_internal *)ip->idb_ptr;
+        
+        // Step 1: Create TerraScape DSPData from rt_dsp_internal
+        TerraScape::DSPData dsp;
+        dsp.dsp_buf = dsp_ip->dsp_buf;           // Point to existing buffer
+        dsp.dsp_xcnt = dsp_ip->dsp_xcnt;         // Copy dimensions
+        dsp.dsp_ycnt = dsp_ip->dsp_ycnt;
+        dsp.cell_size = 1.0;                     // Will be scaled by transformation matrix
+        dsp.origin = TerraScape::Point3D(0, 0, 0);
+        dsp.owns_buffer = false;                 // Don't delete BRL-CAD's buffer
+        
+        // Step 2: Generate triangulated mesh
+        TerraScape::NMGTriangleData nmg_data;
+        if (!TerraScape::triangulateTerrainForBRLCAD(dsp, nmg_data)) {
+            return -1; // FAIL
+        }
+        
+        // Step 3: Create nmg_region and shell
+        *r = nmg_mrsv(m);
+        struct shell *s = BU_LIST_FIRST(shell, &(*r)->s_hd);
+        
+        // Step 4: Convert TerraScape triangles to NMG vertices and faces
+        std::vector<struct vertex*> vertices(nmg_data.unique_vertices.size());
+        
+        // Create vertices
+        for (size_t i = 0; i < nmg_data.unique_vertices.size(); ++i) {
+            const auto& pt = nmg_data.unique_vertices[i];
+            point_t model_pt;
+            
+            // Transform from DSP coordinates to model space using dsp_stom matrix
+            point_t dsp_pt = {pt.x, pt.y, pt.z};
+            MAT4X3PNT(model_pt, dsp_ip->dsp_stom, dsp_pt);
+            
+            vertices[i] = nmg_msv(*r);
+            nmg_vertex_gv(vertices[i], model_pt);
+        }
+        
+        // Create faces
+        for (const auto& triangle : nmg_data.triangles) {
+            struct vertex *face_verts[3];
+            face_verts[0] = vertices[triangle.vertices[0].original_index];
+            face_verts[1] = vertices[triangle.vertices[1].original_index];
+            face_verts[2] = vertices[triangle.vertices[2].original_index];
+            
+            struct faceuse *fu = nmg_cmface(s, face_verts, 3);
+            if (!fu) {
+                return -1; // FAIL
+            }
+        }
+        
+        // Step 5: Final processing (same as original rt_dsp_tess)
+        nmg_mark_edges_real(&s->l.magic, &rt_vlfree);
+        nmg_region_a(*r, tol);
+        nmg_make_faces_within_tol(s, &rt_vlfree, tol);
+        
+        return 0; // SUCCESS
+    }
+    */
 
 } // namespace TerraScape
 
