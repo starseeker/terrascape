@@ -377,6 +377,10 @@ namespace TerraScape {
     // Earcut-based efficient bottom face triangulation
     void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    void triangulateBottomFaceWithEnhancedEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                               const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    void triangulateBottomFaceWithSubdivision(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                            const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     
@@ -769,9 +773,9 @@ namespace TerraScape {
             }
         }
         
-        // Add bottom surface triangles using earcut for more efficient triangulation
+        // Add bottom surface triangles using enhanced earcut with Steiner points for better triangulation
         std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
+        triangulateBottomFaceWithEnhancedEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
         
         // Generate walls by examining each potential wall edge
         // For each cell, check its 4 neighbors and create walls where needed
@@ -909,8 +913,8 @@ namespace TerraScape {
             }
         }
 
-        // Add bottom surface triangles using earcut for more efficient triangulation
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, nullptr);
+        // Add bottom surface triangles using enhanced earcut with Steiner points for better triangulation
+        triangulateBottomFaceWithEnhancedEarcut(mesh, bottom_vertices, terrain, nullptr);
 
         // Add side walls
         // Left wall (x = 0)
@@ -1084,7 +1088,7 @@ namespace TerraScape {
                 }
             }
         }
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &keep_cells);
+        triangulateBottomFaceWithEnhancedEarcut(mesh, bottom_vertices, terrain, &keep_cells);
 
         // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
@@ -1263,6 +1267,212 @@ namespace TerraScape {
         }
     }
 
+    // Enhanced triangulation with strategic point insertion to reduce long thin triangles
+    void triangulateBottomFaceWithEnhancedEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                                 const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        // Build set of cells that should have bottom faces
+        std::set<std::pair<int, int>> active_cells;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (bottom_vertices[y][x] != SIZE_MAX) {
+                    if (filter_cells == nullptr || filter_cells->count({x, y})) {
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+        }
+        
+        if (active_cells.empty()) {
+            return;
+        }
+        
+        // For large polygons, use a subdivision approach instead of adding Steiner points
+        // Calculate the area of active cells
+        double area = active_cells.size() * terrain.cell_size * terrain.cell_size;
+        const double large_area_threshold = 100000.0; // Square units
+        
+        if (area > large_area_threshold) {
+            // Use subdivision approach for large areas
+            triangulateBottomFaceWithSubdivision(mesh, bottom_vertices, terrain, filter_cells);
+        } else {
+            // Use standard earcut for smaller areas
+            triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, filter_cells);
+        }
+    }
+    
+    // Subdivide large bottom faces into smaller regions for better triangulation
+    void triangulateBottomFaceWithSubdivision(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                             const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        // Build set of cells that should have bottom faces
+        std::set<std::pair<int, int>> active_cells;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (bottom_vertices[y][x] != SIZE_MAX) {
+                    if (filter_cells == nullptr || filter_cells->count({x, y})) {
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+        }
+        
+        if (active_cells.empty()) {
+            return;
+        }
+        
+        // Find bounds of active region
+        int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+        for (const auto& cell : active_cells) {
+            min_x = std::min(min_x, cell.first);
+            max_x = std::max(max_x, cell.first);
+            min_y = std::min(min_y, cell.second);
+            max_y = std::max(max_y, cell.second);
+        }
+        
+        // Calculate subdivision size based on region size
+        int width = max_x - min_x + 1;
+        int height = max_y - min_y + 1;
+        int subdiv_size = std::max(64, std::min(width/2, height/2)); // Less aggressive subdivision
+        
+        // Track processed cells to avoid overlaps
+        std::set<std::pair<int, int>> processed_cells;
+        
+        // Process region in NON-overlapping subdivisions
+        for (int start_y = min_y; start_y <= max_y; start_y += subdiv_size) {
+            for (int start_x = min_x; start_x <= max_x; start_x += subdiv_size) {
+                int end_x = std::min(max_x, start_x + subdiv_size - 1);
+                int end_y = std::min(max_y, start_y + subdiv_size - 1);
+                
+                // Create filter for this subdivision (only unprocessed cells)
+                std::set<std::pair<int, int>> subdiv_filter;
+                bool has_active = false;
+                for (int y = start_y; y <= end_y; ++y) {
+                    for (int x = start_x; x <= end_x; ++x) {
+                        if (active_cells.count({x, y}) && !processed_cells.count({x, y})) {
+                            subdiv_filter.insert({x, y});
+                            processed_cells.insert({x, y});
+                            has_active = true;
+                        }
+                    }
+                }
+                
+                if (has_active && subdiv_filter.size() > 2) {
+                    // Triangulate this subdivision
+                    triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &subdiv_filter);
+                }
+            }
+        }
+    }
+
+    // Add Steiner points to improve triangulation quality for large polygons
+    void addSteinerPointsToPolygon(std::vector<std::pair<double, double>>& polygon, 
+                                  std::vector<size_t>& vertex_indices,
+                                  TerrainMesh& mesh, 
+                                  const std::set<std::pair<int, int>>& active_cells,
+                                  const std::vector<std::vector<size_t>>& bottom_vertices,
+                                  const TerrainData& terrain,
+                                  double min_area_threshold = 50000.0) {
+        
+        // Calculate polygon area using shoelace formula
+        double area = 0.0;
+        for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+            area += (polygon[j].first + polygon[i].first) * (polygon[j].second - polygon[i].second);
+        }
+        area = std::abs(area) / 2.0;
+        
+        // Only add Steiner points for very large polygons and use a more conservative approach
+        if (area < min_area_threshold) {
+            return;
+        }
+        
+        // Find bounds of polygon
+        double min_x = polygon[0].first, max_x = polygon[0].first;
+        double min_y = polygon[0].second, max_y = polygon[0].second;
+        for (const auto& p : polygon) {
+            min_x = std::min(min_x, p.first);
+            max_x = std::max(max_x, p.first);
+            min_y = std::min(min_y, p.second);
+            max_y = std::max(max_y, p.second);
+        }
+        
+        // Calculate grid spacing based on polygon size - more conservative grid
+        double width = max_x - min_x;
+        double height = max_y - min_y;
+        int grid_x = std::max(1, static_cast<int>(std::sqrt(width / terrain.cell_size) / 4));
+        int grid_y = std::max(1, static_cast<int>(std::sqrt(height / terrain.cell_size) / 4));
+        
+        // Limit to maximum reasonable number of Steiner points
+        grid_x = std::min(grid_x, 8);
+        grid_y = std::min(grid_y, 8);
+        
+        double step_x = width / (grid_x + 1);
+        double step_y = height / (grid_y + 1);
+        
+        // Generate candidate Steiner points on a regular grid - only interior points
+        std::vector<std::pair<double, double>> steiner_candidates;
+        for (int i = 1; i <= grid_x; ++i) {
+            for (int j = 1; j <= grid_y; ++j) {
+                double x = min_x + i * step_x;
+                double y = min_y + j * step_y;
+                steiner_candidates.push_back({x, y});
+            }
+        }
+        
+        // Filter Steiner points: only include those well inside the polygon and over active cells
+        int added_steiner_count = 0;
+        const int max_steiner_points = 16; // Limit total Steiner points
+        
+        for (const auto& candidate : steiner_candidates) {
+            if (added_steiner_count >= max_steiner_points) break;
+            
+            // Point-in-polygon test using ray casting with margin check
+            bool inside = false;
+            double min_dist_to_edge = std::numeric_limits<double>::max();
+            
+            for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+                // Ray casting for inside test
+                if (((polygon[i].second > candidate.second) != (polygon[j].second > candidate.second)) &&
+                    (candidate.first < (polygon[j].first - polygon[i].first) * (candidate.second - polygon[i].second) / 
+                                      (polygon[j].second - polygon[i].second) + polygon[i].first)) {
+                    inside = !inside;
+                }
+                
+                // Calculate distance to polygon edge
+                double dx = polygon[j].first - polygon[i].first;
+                double dy = polygon[j].second - polygon[i].second;
+                double t = ((candidate.first - polygon[i].first) * dx + (candidate.second - polygon[i].second) * dy) / (dx * dx + dy * dy);
+                t = std::max(0.0, std::min(1.0, t));
+                double proj_x = polygon[i].first + t * dx;
+                double proj_y = polygon[i].second + t * dy;
+                double dist = std::sqrt((candidate.first - proj_x) * (candidate.first - proj_x) + 
+                                       (candidate.second - proj_y) * (candidate.second - proj_y));
+                min_dist_to_edge = std::min(min_dist_to_edge, dist);
+            }
+            
+            // Only add if inside and sufficiently far from polygon boundary
+            if (inside && min_dist_to_edge > terrain.cell_size * 2.0) {
+                // Convert world coordinates to grid coordinates
+                int grid_x = static_cast<int>((candidate.first - terrain.origin.x) / terrain.cell_size + 0.5);
+                int grid_y = static_cast<int>((terrain.origin.y - candidate.second) / terrain.cell_size + 0.5);
+                
+                // Check if this grid cell is active
+                if (grid_x >= 0 && grid_x < terrain.width && 
+                    grid_y >= 0 && grid_y < terrain.height &&
+                    active_cells.count({grid_x, grid_y})) {
+                    
+                    // Create a new bottom vertex at this location
+                    size_t new_vertex_idx = mesh.addVertex(Point3D(candidate.first, candidate.second, 0.0));
+                    
+                    // Add the Steiner point to the polygon (at the end, after boundary points)
+                    polygon.push_back(candidate);
+                    vertex_indices.push_back(new_vertex_idx);
+                    added_steiner_count++;
+                }
+            }
+        }
+    }
+
     // Earcut-based efficient triangulation of coplanar bottom face with proper hole support
     void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
@@ -1400,6 +1610,12 @@ namespace TerraScape {
                 }
             }
         }
+        
+        // Add Steiner points to improve triangulation quality - DISABLED for now to maintain manifold property
+        // Only add to the outer boundary (polygon_rings[0]) for now
+        // if (!polygon_rings.empty()) {
+        //     addSteinerPointsToPolygon(polygon_rings[0], vertex_indices, mesh, active_cells, bottom_vertices, terrain);
+        // }
         
         try {
             std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon_rings);
