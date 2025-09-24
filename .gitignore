@@ -34,3 +34,7 @@ Thumbs.db
 /tmp/
 *test*
 
+# Third party build artifacts
+third_party/*/build/
+_deps/
+
