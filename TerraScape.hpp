@@ -261,7 +261,7 @@ class MeshStats {
 class SimplificationParams {
     public:
 	double error_tol;      // Maximum allowed geometric error
-	double slope_tol;      // Slope threshold for feature preservation  
+	double slope_tol;      // Slope threshold for feature preservation
 	int min_reduction;     // Minimum percentage of triangles to remove
 	bool preserve_bounds;  // Whether to preserve terrain boundaries
 
@@ -1468,6 +1468,107 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
     return inside;
 }
 
+// Helper function to validate and add a Steiner point candidate
+bool addSteinerPointIfValid(double x, double y,
+	const std::vector<std::pair<double, double>>& boundary,
+	const std::vector<std::vector<std::pair<double, double>>>& holes,
+	const std::set<std::pair<int, int>>& active_cells,
+	const TerrainData& terrain,
+	double min_distance,
+	const std::function<double(double, double)>& distanceToEdges,
+	std::vector<std::pair<double, double>>& steiner_points) {
+    // Check if point is valid (inside boundary, not in holes)
+    if (!pointInPolygon(x, y, boundary)) {
+	return false;
+    }
+
+    // Check if point is in any hole
+    for (const auto& hole : holes) {
+	if (pointInPolygon(x, y, hole)) {
+	    return false;
+	}
+    }
+
+    // Check distance to edges
+    double edge_distance = distanceToEdges(x, y);
+    if (edge_distance <= min_distance) {
+	return false;
+    }
+
+    // Check terrain coordinates and active region
+    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+
+    if (terrain_x < 0 || terrain_x >= terrain.width ||
+	    terrain_y < 0 || terrain_y >= terrain.height) {
+	return false;
+    }
+
+    if (active_cells.count({terrain_x, terrain_y}) == 0) {
+	return false;
+    }
+
+    // Check distance to existing points
+    for (const auto& existing : steiner_points) {
+	double dx_check = x - existing.first;
+	double dy_check = y - existing.second;
+	if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+	    return false;
+	}
+    }
+
+    // Point is valid, add it
+    steiner_points.push_back({x, y});
+    return true;
+}
+
+// Helper function to process guide lines from edge points to center
+void processGuideLines(const std::vector<std::pair<double, double>>& edge_points,
+	double center_x, double center_y,
+	double min_viable_len,
+	const std::vector<double>& step_probabilities,
+	const std::function<double()>& next_random,
+	const std::vector<std::pair<double, double>>& boundary,
+	const std::vector<std::vector<std::pair<double, double>>>& holes,
+	const std::set<std::pair<int, int>>& active_cells,
+	const TerrainData& terrain,
+	double min_distance,
+	const std::function<double(double, double)>& distanceToEdges,
+	std::vector<std::pair<double, double>>& steiner_points,
+	size_t sample_step,
+	double step_divisor = 1.0) {
+    for (size_t i = 0; i < edge_points.size(); i += sample_step) {
+	const auto& edge_point = edge_points[i];
+
+	// Create guide line from edge point to center
+	double dx = center_x - edge_point.first;
+	double dy = center_y - edge_point.second;
+	double line_length = std::sqrt(dx * dx + dy * dy);
+
+	if (line_length > min_viable_len) {
+	    // Normalize direction
+	    dx /= line_length;
+	    dy /= line_length;
+
+	    // Step along the guide line from edge toward center
+	    double step_size = line_length / 5;
+
+	    for (int step = 1; step <= 4; ++step) {
+		// Apply probability selection
+		double probability = step_probabilities[step - 1];
+		if (next_random() > probability) continue;
+
+		double step_distance = step * step_size / step_divisor;
+		double x = edge_point.first + dx * step_distance;
+		double y = edge_point.second + dy * step_distance;
+
+		addSteinerPointIfValid(x, y, boundary, holes, active_cells, terrain,
+			min_distance, distanceToEdges, steiner_points);
+	    }
+	}
+    }
+}
+
 // Generate Steiner points using simple guide lines to average center point
 std::vector<std::pair<double, double>> generateSteinerPoints(
 	const std::vector<std::pair<double, double>>& boundary,
@@ -1566,217 +1667,25 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	return (double)(rng_state % 1000) / 1000.0;
     };
 
-    // Create guide lines from boundary edges to the average center point
-    // Sample boundary points (not all to avoid too many points)
+    // Process boundary guide lines
     size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 100));
+    std::vector<double> boundary_probabilities = {0.9, 0.7, 0.5, 0.3}; // step probabilities
+    processGuideLines(boundary, center_x, center_y, min_viable_len, boundary_probabilities,
+	    next_random, boundary, holes, active_cells, terrain, min_distance,
+	    distanceToEdges, steiner_points, boundary_sample_step);
 
-    for (size_t i = 0; i < boundary.size(); i += boundary_sample_step) {
-	const auto& edge_point = boundary[i];
-
-	// Create guide line from edge point to center
-	double dx = center_x - edge_point.first;
-	double dy = center_y - edge_point.second;
-	double line_length = std::sqrt(dx * dx + dy * dy);
-
-	if (line_length > min_viable_len) { // Ensure line is long enough for meaningful stepping
-	    // Normalize direction
-	    dx /= line_length;
-	    dy /= line_length;
-
-	    // Step along the guide line from edge toward center
-	    double step_size = line_length / 5;
-
-	    for (int step = 1; step <= 4; ++step) {
-		// Apply probability selection to prevent clustering near center
-		// Points closer to center have lower probability of being selected
-		double probability;
-		if (step == 1) probability = 0.9;        // 90% probability for closest point to edge
-		else if (step == 2) probability = 0.7;   // 30% probability for second point
-		else if (step == 3) probability = 0.5;   // 10% probability for third point
-		else probability = 0.3;                 // 1% probability for fourth point
-
-		// Use pseudo-random sampling with specific probabilities
-		if (next_random() > probability) continue;
-
-		double step_distance = step * step_size;
-		double x = edge_point.first + dx * step_distance;
-		double y = edge_point.second + dy * step_distance;
-
-		// Check if point is valid (inside boundary, not in holes)
-		if (pointInPolygon(x, y, boundary)) {
-		    bool in_hole = false;
-		    for (const auto& hole : holes) {
-			if (pointInPolygon(x, y, hole)) {
-			    in_hole = true;
-			    break;
-			}
-		    }
-
-		    if (!in_hole) {
-			double edge_distance = distanceToEdges(x, y);
-
-			if (edge_distance > min_distance) {
-			    // Check terrain coordinates
-			    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-			    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-
-			    bool is_in_active_region = false;
-			    if (terrain_x >= 0 && terrain_x < terrain.width && 
-				    terrain_y >= 0 && terrain_y < terrain.height) {
-				is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-			    }
-
-			    if (is_in_active_region) {
-				// Check distance to existing points
-				bool too_close = false;
-				for (const auto& existing : steiner_points) {
-				    double dx_check = x - existing.first;
-				    double dy_check = y - existing.second;
-				    if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-					too_close = true;
-					break;
-				    }
-				}
-
-				if (!too_close) {
-				    steiner_points.push_back({x, y});
-				}
-			    }
-			}
-		    }
-		}
-	    }
-
-	    // Add center point
-	    if (pointInPolygon(center_x, center_y, boundary)) {
-		double x = center_x;
-		double y = center_y;
-		bool in_hole = false;
-		for (const auto& hole : holes) {
-		    if (pointInPolygon(x, y, hole)) {
-			in_hole = true;
-			break;
-		    }
-		}
-
-		if (!in_hole) {
-		    double edge_distance = distanceToEdges(x, y);
-
-		    if (edge_distance > min_distance) {
-			// Check terrain coordinates
-			int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-			int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-
-			bool is_in_active_region = false;
-			if (terrain_x >= 0 && terrain_x < terrain.width && 
-				terrain_y >= 0 && terrain_y < terrain.height) {
-			    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-			}
-
-			if (is_in_active_region) {
-			    // Check distance to existing points
-			    bool too_close = false;
-			    for (const auto& existing : steiner_points) {
-				double dx_check = x - existing.first;
-				double dy_check = y - existing.second;
-				if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-				    too_close = true;
-				    break;
-				}
-			    }
-
-			    if (!too_close) {
-				steiner_points.push_back({x, y});
-			    }
-			}
-		    }
-		}
-	    }
-	}
-    }
-    // Also create guide lines from hole edges to center (if any holes exist)
+    // Process hole guide lines
     for (const auto& hole : holes) {
 	size_t hole_sample_step = std::max(1, (int)(hole.size() / 50));
-
-	for (size_t i = 0; i < hole.size(); i += hole_sample_step) {
-	    const auto& hole_edge_point = hole[i];
-
-	    // Create guide line from hole edge point to center
-	    double dx = center_x - hole_edge_point.first;
-	    double dy = center_y - hole_edge_point.second;
-	    double line_length = std::sqrt(dx * dx + dy * dy);
-
-	    if (line_length > min_viable_len) {
-		// Normalize direction
-		dx /= line_length;
-		dy /= line_length;
-
-		// Step along the guide line from hole edge toward center
-		double step_size = line_length / 5;
-
-		for (int step = 1; step <= 4; ++step) {
-		    // Apply probability selection to prevent clustering near center
-		    // Points closer to center have lower probability of being selected
-		    double probability;
-		    if (step == 1) probability = 1.0;        // Always add closest point to edge
-		    else if (step == 2) probability = 0.3;   // 30% probability for second point
-		    else if (step == 3) probability = 0.1;   // 10% probability for third point
-		    else probability = 0.01;                 // 1% probability for fourth point
-
-		    // Use pseudo-random sampling with specific probabilities
-		    if (next_random() > probability) continue;
-
-		    double step_distance = step * step_size / 5;
-		    double x = hole_edge_point.first + dx * step_distance;
-		    double y = hole_edge_point.second + dy * step_distance;
-
-		    // Check if point is valid
-		    if (pointInPolygon(x, y, boundary)) {
-			bool in_any_hole = false;
-			for (const auto& check_hole : holes) {
-			    if (pointInPolygon(x, y, check_hole)) {
-				in_any_hole = true;
-				break;
-			    }
-			}
-
-			if (!in_any_hole) {
-			    double edge_distance = distanceToEdges(x, y);
-
-			    if (edge_distance > min_distance) {
-				// Check terrain coordinates
-				int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-				int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-
-				bool is_in_active_region = false;
-				if (terrain_x >= 0 && terrain_x < terrain.width && 
-					terrain_y >= 0 && terrain_y < terrain.height) {
-				    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-				}
-
-				if (is_in_active_region) {
-				    // Check distance to existing points
-				    bool too_close = false;
-				    for (const auto& existing : steiner_points) {
-					double dx_check = x - existing.first;
-					double dy_check = y - existing.second;
-					if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-					    too_close = true;
-					    break;
-					}
-				    }
-
-				    if (!too_close) {
-					steiner_points.push_back({x, y});
-				    }
-				}
-			    }
-			}
-		    }
-		}
-	    }
-	}
+	std::vector<double> hole_probabilities = {1.0, 0.3, 0.1, 0.01}; // different probabilities for holes
+	processGuideLines(hole, center_x, center_y, min_viable_len, hole_probabilities,
+		next_random, boundary, holes, active_cells, terrain, min_distance,
+		distanceToEdges, steiner_points, hole_sample_step, 5.0); // step_divisor = 5.0 for holes
     }
+
+    // Add center point (only once, outside the loops)
+    addSteinerPointIfValid(center_x, center_y, boundary, holes, active_cells, terrain,
+	    min_distance, distanceToEdges, steiner_points);
 
     std::cout << "Generated " << steiner_points.size() << " Steiner points using guide lines to average center point" << std::endl;
 
