@@ -1823,6 +1823,17 @@ namespace TerraScape {
             }
         }
         
+        // Limit the number of splits to avoid explosion in mesh size
+        const int max_splits = std::max(1, static_cast<int>(edges_to_split.size() / 2));
+        if (edges_to_split.size() > static_cast<size_t>(max_splits)) {
+            // Keep only the first max_splits edges
+            std::vector<std::pair<Edge, Point3D>> limited_edges;
+            for (int i = 0; i < max_splits && i < static_cast<int>(edges_to_split.size()); ++i) {
+                limited_edges.push_back(edges_to_split[i]);
+            }
+            edges_to_split = limited_edges;
+        }
+        
         // Perform edge splits with proper triangle subdivision
         std::vector<Triangle> new_triangles;
         std::set<size_t> triangles_to_remove;
@@ -1839,6 +1850,8 @@ namespace TerraScape {
             const std::vector<size_t>& adjacent_triangles = remesh_data.edge_to_triangles.at(edge);
             
             for (size_t tri_idx : adjacent_triangles) {
+                if (triangles_to_remove.count(tri_idx)) continue; // Skip already processed
+                
                 const Triangle& original_tri = remesh_data.triangles[tri_idx];
                 
                 // Find the vertex opposite to the edge being split
@@ -1856,15 +1869,30 @@ namespace TerraScape {
                 Triangle tri1(edge.v0, new_vertex_idx, opposite_vertex);
                 Triangle tri2(new_vertex_idx, edge.v1, opposite_vertex);
                 
-                // Compute normals
-                tri1.computeNormal(remesh_data.vertices);
-                tri2.computeNormal(remesh_data.vertices);
+                // Validate triangles are not degenerate
+                TriangleQuality qual1 = calculateTriangleQuality(
+                    remesh_data.vertices[tri1.vertices[0]], 
+                    remesh_data.vertices[tri1.vertices[1]], 
+                    remesh_data.vertices[tri1.vertices[2]]
+                );
+                TriangleQuality qual2 = calculateTriangleQuality(
+                    remesh_data.vertices[tri2.vertices[0]], 
+                    remesh_data.vertices[tri2.vertices[1]], 
+                    remesh_data.vertices[tri2.vertices[2]]
+                );
                 
-                new_triangles.push_back(tri1);
-                new_triangles.push_back(tri2);
-                
-                // Mark original triangle for removal
-                triangles_to_remove.insert(tri_idx);
+                if (!qual1.is_degenerate && !qual2.is_degenerate && 
+                    qual1.area > 1e-12 && qual2.area > 1e-12) {
+                    // Compute normals
+                    tri1.computeNormal(remesh_data.vertices);
+                    tri2.computeNormal(remesh_data.vertices);
+                    
+                    new_triangles.push_back(tri1);
+                    new_triangles.push_back(tri2);
+                    
+                    // Mark original triangle for removal
+                    triangles_to_remove.insert(tri_idx);
+                }
             }
         }
         
@@ -1911,11 +1939,15 @@ namespace TerraScape {
             }
         }
         
-        // Perform edge collapse operations
+        // Perform edge collapse operations (be conservative to avoid mesh degradation)
         std::set<size_t> vertices_to_remove;
         std::set<size_t> triangles_to_remove;
+        int collapses_performed = 0;
+        const int max_collapses = std::max(1, static_cast<int>(edges_to_collapse.size() / 4)); // Limit collapses
         
         for (const Edge& edge : edges_to_collapse) {
+            if (collapses_performed >= max_collapses) break;
+            
             // Skip if either vertex has already been marked for removal
             if (vertices_to_remove.count(edge.v0) || vertices_to_remove.count(edge.v1)) {
                 continue;
@@ -1925,6 +1957,31 @@ namespace TerraScape {
             size_t keep_vertex = edge.v0;
             size_t remove_vertex = edge.v1;
             
+            // Check if collapse would create degenerate triangles
+            const std::vector<size_t>& adjacent_triangles = remesh_data.vertex_to_triangles[remove_vertex];
+            bool would_be_degenerate = false;
+            
+            for (size_t tri_idx : adjacent_triangles) {
+                const Triangle& tri = remesh_data.triangles[tri_idx];
+                std::set<size_t> unique_vertices;
+                for (int i = 0; i < 3; ++i) {
+                    if (tri.vertices[i] == remove_vertex) {
+                        unique_vertices.insert(keep_vertex);
+                    } else {
+                        unique_vertices.insert(tri.vertices[i]);
+                    }
+                }
+                if (unique_vertices.size() < 3) {
+                    // This triangle would become degenerate
+                    if (adjacent_triangles.size() <= 3) {  // Only allow if we have enough triangles
+                        would_be_degenerate = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (would_be_degenerate) continue;
+            
             // Calculate new position for the kept vertex (midpoint)
             const Point3D& p0 = remesh_data.vertices[keep_vertex];
             const Point3D& p1 = remesh_data.vertices[remove_vertex];
@@ -1933,27 +1990,24 @@ namespace TerraScape {
             // Update position of kept vertex
             remesh_data.vertices[keep_vertex] = new_pos;
             
-            // Find all triangles adjacent to the vertex being removed
-            const std::vector<size_t>& adjacent_triangles = remesh_data.vertex_to_triangles[remove_vertex];
-            
+            // Update triangles that reference the removed vertex
             for (size_t tri_idx : adjacent_triangles) {
                 Triangle& tri = remesh_data.triangles[tri_idx];
                 bool contains_both = false;
                 
-                // Check if triangle contains both vertices (these triangles will be degenerate)
+                // Replace remove_vertex with keep_vertex
                 for (int i = 0; i < 3; ++i) {
                     if (tri.vertices[i] == remove_vertex) {
-                        // Replace with kept vertex
                         tri.vertices[i] = keep_vertex;
-                        
-                        // Check if triangle now has duplicate vertices
-                        std::set<size_t> unique_vertices(tri.vertices.begin(), tri.vertices.end());
-                        if (unique_vertices.size() < 3) {
-                            triangles_to_remove.insert(tri_idx);
-                            contains_both = true;
-                        }
                         break;
                     }
+                }
+                
+                // Check if triangle now has duplicate vertices
+                std::set<size_t> unique_vertices(tri.vertices.begin(), tri.vertices.end());
+                if (unique_vertices.size() < 3) {
+                    triangles_to_remove.insert(tri_idx);
+                    contains_both = true;
                 }
                 
                 // If triangle is not degenerate, recompute its normal
@@ -1964,6 +2018,7 @@ namespace TerraScape {
             
             // Mark vertex for removal
             vertices_to_remove.insert(remove_vertex);
+            collapses_performed++;
         }
         
         // Remove degenerate triangles
