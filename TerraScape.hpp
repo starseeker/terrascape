@@ -350,9 +350,10 @@ class TerrainFeature {
 
 // Edge structure for manifold checking
 class Edge {
-    public:
+    private:
 	size_t v0, v1;
 
+    public:
 	Edge(size_t a, size_t b) {
 	    if (a < b) {
 		v0 = a; v1 = b;
@@ -360,6 +361,10 @@ class Edge {
 		v0 = b; v1 = a;
 	    }
 	}
+
+	// Getters
+	size_t getV0() const { return v0; }
+	size_t getV1() const { return v1; }
 
 	bool operator<(const Edge& other) const {
 	    if (v0 != other.v0) return v0 < other.v0;
@@ -375,7 +380,7 @@ class Edge {
 class EdgeHash {
     public:
 	size_t operator()(const Edge& e) const {
-	    return std::hash<size_t>()(e.v0) ^ (std::hash<size_t>()(e.v1) << 1);
+	    return std::hash<size_t>()(e.getV0()) ^ (std::hash<size_t>()(e.getV1()) << 1);
 	}
 };
 
@@ -752,6 +757,10 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
     mesh.triangulateComponentVolume(terrain, component);
 }
 
+void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolumeLegacy(terrain);
+}
+
 // Triangulate a single connected component as a separate volumetric mesh
 void TerrainMesh::triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component) {
     if (component.cells.empty()) {
@@ -894,8 +903,8 @@ void TerrainMesh::triangulateVolumeWithComponents(const TerrainData& terrain) {
 }
 
 // Generate a volumetric triangle mesh from terrain data (legacy single-mesh approach)
-void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.clear();
+void TerrainMesh::triangulateVolumeLegacy(const TerrainData& terrain) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -917,8 +926,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	    double world_y = terrain.origin.y - y * terrain.cell_size; // Note: y is flipped in image coordinates
 	    double height = terrain.getHeight(x, y);
 
-	    top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-	    bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+	    top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+	    bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
 	}
     }
 
@@ -933,14 +942,14 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 
 	    // Add two triangles with CCW orientation (viewed from above)
 	    // Triangle 1: v00, v01, v10
-	    mesh.addSurfaceTriangle(v00, v01, v10);
+	    addSurfaceTriangle(v00, v01, v10);
 	    // Triangle 2: v10, v01, v11
-	    mesh.addSurfaceTriangle(v10, v01, v11);
+	    addSurfaceTriangle(v10, v01, v11);
 	}
     }
 
     // Add bottom surface triangles using detria for high-quality triangulation
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, nullptr);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, nullptr);
 
     // Add side walls
     // Left wall (x = 0)
@@ -950,8 +959,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][0];
 	size_t bot_1 = bottom_vertices[y + 1][0];
 
-	mesh.addTriangle(top_0, bot_0, top_1);
-	mesh.addTriangle(top_1, bot_0, bot_1);
+	addTriangle(top_0, bot_0, top_1);
+	addTriangle(top_1, bot_0, bot_1);
     }
 
     // Right wall (x = width - 1)
@@ -962,8 +971,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][x];
 	size_t bot_1 = bottom_vertices[y + 1][x];
 
-	mesh.addTriangle(top_0, top_1, bot_0);
-	mesh.addTriangle(top_1, bot_1, bot_0);
+	addTriangle(top_0, top_1, bot_0);
+	addTriangle(top_1, bot_1, bot_0);
     }
 
     // Top wall (y = 0)
@@ -973,8 +982,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[0][x];
 	size_t bot_1 = bottom_vertices[0][x + 1];
 
-	mesh.addTriangle(top_0, top_1, bot_0);
-	mesh.addTriangle(top_1, bot_1, bot_0);
+	addTriangle(top_0, top_1, bot_0);
+	addTriangle(top_1, bot_1, bot_0);
     }
 
     // Bottom wall (y = height - 1)
@@ -985,8 +994,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][x];
 	size_t bot_1 = bottom_vertices[y][x + 1];
 
-	mesh.addTriangle(top_0, bot_0, top_1);
-	mesh.addTriangle(top_1, bot_0, bot_1);
+	addTriangle(top_0, bot_0, top_1);
+	addTriangle(top_1, bot_0, bot_1);
     }
 }
 
