@@ -51,356 +51,371 @@
 namespace TerraScape {
 
 // Forward declarations for types used in method signatures
-struct TerrainFeature;
-struct SimplificationParams;
-struct TerrainComponents;
-struct ConnectedComponent;
-struct MeshStats;
-struct TerrainData;
-struct DSPData;
-struct NMGTriangleData;
+class TerrainFeature;
+class SimplificationParams;
+class TerrainComponents;
+class ConnectedComponent;
+class MeshStats;
+class TerrainData;
+class DSPData;
+class NMGTriangleData;
 
 // Basic 3D point structure
-struct Point3D {
-    double x, y, z;
+class Point3D {
+    public:
+	double x, y, z;
 
-    Point3D() : x(0), y(0), z(0) {}
-    Point3D(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
+	Point3D() : x(0), y(0), z(0) {}
+	Point3D(double x_, double y_, double z_) : x(x_), y(y_), z(z_) {}
 
-    Point3D operator+(const Point3D& other) const {
-	return Point3D(x + other.x, y + other.y, z + other.z);
-    }
-
-    Point3D operator-(const Point3D& other) const {
-	return Point3D(x - other.x, y - other.y, z - other.z);
-    }
-
-    Point3D cross(const Point3D& other) const {
-	return Point3D(
-		y * other.z - z * other.y,
-		z * other.x - x * other.z,
-		x * other.y - y * other.x
-		);
-    }
-
-    double dot(const Point3D& other) const {
-	return x * other.x + y * other.y + z * other.z;
-    }
-
-    double length() const {
-	return std::sqrt(x * x + y * y + z * z);
-    }
-
-    Point3D normalized() const {
-	double len = length();
-	if (len > 0) {
-	    return Point3D(x / len, y / len, z / len);
+	Point3D operator+(const Point3D& other) const {
+	    return Point3D(x + other.x, y + other.y, z + other.z);
 	}
-	return Point3D(0, 0, 0);
-    }
+
+	Point3D operator-(const Point3D& other) const {
+	    return Point3D(x - other.x, y - other.y, z - other.z);
+	}
+
+	Point3D cross(const Point3D& other) const {
+	    return Point3D(
+		    y * other.z - z * other.y,
+		    z * other.x - x * other.z,
+		    x * other.y - y * other.x
+		    );
+	}
+
+	double dot(const Point3D& other) const {
+	    return x * other.x + y * other.y + z * other.z;
+	}
+
+	double length() const {
+	    return std::sqrt(x * x + y * y + z * z);
+	}
+
+	Point3D normalized() const {
+	    double len = length();
+	    if (len > 0) {
+		return Point3D(x / len, y / len, z / len);
+	    }
+	    return Point3D(0, 0, 0);
+	}
 };
 
 // Triangle structure with vertex indices
-struct Triangle {
-    std::array<size_t, 3> vertices;
-    Point3D normal;
+class Triangle {
+    public:
+	std::array<size_t, 3> vertices;
+	Point3D normal;
 
-    Triangle() {}
-    Triangle(size_t v0, size_t v1, size_t v2) {
-	vertices[0] = v0;
-	vertices[1] = v1;
-	vertices[2] = v2;
-    }
+	Triangle() {}
+	Triangle(size_t v0, size_t v1, size_t v2) {
+	    vertices[0] = v0;
+	    vertices[1] = v1;
+	    vertices[2] = v2;
+	}
 
-    void computeNormal(const std::vector<Point3D>& vertex_list) {
-	const Point3D& p0 = vertex_list[vertices[0]];
-	const Point3D& p1 = vertex_list[vertices[1]];
-	const Point3D& p2 = vertex_list[vertices[2]];
+	void computeNormal(const std::vector<Point3D>& vertex_list) {
+	    const Point3D& p0 = vertex_list[vertices[0]];
+	    const Point3D& p1 = vertex_list[vertices[1]];
+	    const Point3D& p2 = vertex_list[vertices[2]];
 
-	Point3D edge1 = p1 - p0;
-	Point3D edge2 = p2 - p0;
-	normal = edge1.cross(edge2).normalized();
-    }
+	    Point3D edge1 = p1 - p0;
+	    Point3D edge2 = p2 - p0;
+	    normal = edge1.cross(edge2).normalized();
+	}
 
-    bool isCCW(const std::vector<Point3D>& vertex_list) const {
-	const Point3D& p0 = vertex_list[vertices[0]];
-	const Point3D& p1 = vertex_list[vertices[1]];
-	const Point3D& p2 = vertex_list[vertices[2]];
+	bool isCCW(const std::vector<Point3D>& vertex_list) const {
+	    const Point3D& p0 = vertex_list[vertices[0]];
+	    const Point3D& p1 = vertex_list[vertices[1]];
+	    const Point3D& p2 = vertex_list[vertices[2]];
 
-	Point3D edge1 = p1 - p0;
-	Point3D edge2 = p2 - p0;
-	Point3D cross_product = edge1.cross(edge2);
-	return cross_product.length() > 0; // non-degenerate test
-    }
+	    Point3D edge1 = p1 - p0;
+	    Point3D edge2 = p2 - p0;
+	    Point3D cross_product = edge1.cross(edge2);
+	    return cross_product.length() > 0; // non-degenerate test
+	}
 
-    // Calculate triangle area
-    double area(const std::vector<Point3D>& vertex_list) const {
-	const Point3D& p0 = vertex_list[vertices[0]];
-	const Point3D& p1 = vertex_list[vertices[1]];
-	const Point3D& p2 = vertex_list[vertices[2]];
+	// Calculate triangle area
+	double area(const std::vector<Point3D>& vertex_list) const {
+	    const Point3D& p0 = vertex_list[vertices[0]];
+	    const Point3D& p1 = vertex_list[vertices[1]];
+	    const Point3D& p2 = vertex_list[vertices[2]];
 
-	Point3D edge1 = p1 - p0;
-	Point3D edge2 = p2 - p0;
-	return edge1.cross(edge2).length() * 0.5;
-    }
+	    Point3D edge1 = p1 - p0;
+	    Point3D edge2 = p2 - p0;
+	    return edge1.cross(edge2).length() * 0.5;
+	}
 
-    // Check if triangle is degenerate (zero area)
-    bool isDegenerate(const std::vector<Point3D>& vertex_list, double tolerance = 1e-10) const {
-	return area(vertex_list) < tolerance;
-    }
+	// Check if triangle is degenerate (zero area)
+	bool isDegenerate(const std::vector<Point3D>& vertex_list, double tolerance = 1e-10) const {
+	    return area(vertex_list) < tolerance;
+	}
 };
 
 // Terrain data structure
-struct TerrainData {
-    std::vector<std::vector<double>> heights;
-    int width, height;
-    double min_height, max_height;
-    double cell_size;
-    Point3D origin;
+class TerrainData {
+    public:
+	std::vector<std::vector<double>> heights;
+	int width, height;
+	double min_height, max_height;
+	double cell_size;
+	Point3D origin;
 
-    TerrainData() : width(0), height(0), min_height(0), max_height(0), cell_size(1.0), origin(0, 0, 0) {}
+	TerrainData() : width(0), height(0), min_height(0), max_height(0), cell_size(1.0), origin(0, 0, 0) {}
 
-    double getHeight(int x, int y) const {
-	if (x >= 0 && x < width && y >= 0 && y < height) {
-	    return heights[y][x];
+	double getHeight(int x, int y) const {
+	    if (x >= 0 && x < width && y >= 0 && y < height) {
+		return heights[y][x];
+	    }
+	    return 0.0;
 	}
-	return 0.0;
-    }
 
-    bool isValidCell(int x, int y) const {
-	return x >= 0 && x < width && y >= 0 && y < height;
-    }
+	bool isValidCell(int x, int y) const {
+	    return x >= 0 && x < width && y >= 0 && y < height;
+	}
 
-    // Method declarations - implementations follow after all struct definitions
-    TerrainFeature analyzePoint(int x, int y) const;
-    std::vector<std::vector<bool>> generateSampleMask(const SimplificationParams& params) const;
-    TerrainComponents analyzeComponents(double height_threshold = 1e-6) const;
-    
-    // DSP conversion methods
-    bool fromDSP(const DSPData& dsp);
-    bool toDSP(DSPData& dsp) const;
+	// Method declarations - implementations follow after all class definitions
+	TerrainFeature analyzePoint(int x, int y) const;
+	std::vector<std::vector<bool>> generateSampleMask(const SimplificationParams& params) const;
+	TerrainComponents analyzeComponents(double height_threshold = 1e-6) const;
 
-private:
-    void floodFill(std::vector<std::vector<bool>>& visited,
-                   ConnectedComponent& component, int start_x, int start_y, double height_threshold) const;
+	// DSP conversion methods
+	bool fromDSP(const DSPData& dsp);
+	bool toDSP(DSPData& dsp) const;
+
+    private:
+	void floodFill(std::vector<std::vector<bool>>& visited,
+		ConnectedComponent& component, int start_x, int start_y, double height_threshold) const;
 };
 
 // Triangle mesh structure
-struct TerrainMesh {
-    std::vector<Point3D> vertices;
-    std::vector<Triangle> triangles;
-    size_t surface_triangle_count = 0; // Number of terrain surface triangles
+class TerrainMesh {
+    public:
+	std::vector<Point3D> vertices;
+	std::vector<Triangle> triangles;
+	size_t surface_triangle_count = 0; // Number of terrain surface triangles
 
-    void clear() {
-	vertices.clear();
-	triangles.clear();
-	surface_triangle_count = 0;
-    }
-
-    size_t addVertex(const Point3D& vertex) {
-	vertices.push_back(vertex);
-	return vertices.size() - 1;
-    }
-
-    void addTriangle(size_t v0, size_t v1, size_t v2) {
-	Triangle tri(v0, v1, v2);
-	tri.computeNormal(vertices);
-	triangles.push_back(tri);
-    }
-
-    void addSurfaceTriangle(size_t v0, size_t v1, size_t v2) {
-	addTriangle(v0, v1, v2);
-	surface_triangle_count++;
-    }
-
-    // Validate mesh properties
-    MeshStats validate(const TerrainData& terrain) const;
-
-    // Calculate total surface area of all triangles
-    double calculateTotalArea() const {
-	double total = 0.0;
-	for (const auto& triangle : triangles) {
-	    total += triangle.area(vertices);
+	void clear() {
+	    vertices.clear();
+	    triangles.clear();
+	    surface_triangle_count = 0;
 	}
-	return total;
-    }
 
-    // Calculate surface area of terrain surface triangles only
-    double calculateSurfaceArea() const {
-	double total = 0.0;
-	for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
-	    total += triangles[i].area(vertices);
+	size_t addVertex(const Point3D& vertex) {
+	    vertices.push_back(vertex);
+	    return vertices.size() - 1;
 	}
-	return total;
-    }
 
-    // Convert mesh to NMG-compatible triangle data
-    bool toNMG(NMGTriangleData& nmg_data) const;
+	void addTriangle(size_t v0, size_t v1, size_t v2) {
+	    Triangle tri(v0, v1, v2);
+	    tri.computeNormal(vertices);
+	    triangles.push_back(tri);
+	}
+
+	void addSurfaceTriangle(size_t v0, size_t v1, size_t v2) {
+	    addTriangle(v0, v1, v2);
+	    surface_triangle_count++;
+	}
+
+	// Validate mesh properties
+	MeshStats validate(const TerrainData& terrain) const;
+
+	// Calculate total surface area of all triangles
+	double calculateTotalArea() const {
+	    double total = 0.0;
+	    for (const auto& triangle : triangles) {
+		total += triangle.area(vertices);
+	    }
+	    return total;
+	}
+
+	// Calculate surface area of terrain surface triangles only
+	double calculateSurfaceArea() const {
+	    double total = 0.0;
+	    for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
+		total += triangles[i].area(vertices);
+	    }
+	    return total;
+	}
+
+	// Convert mesh to NMG-compatible triangle data
+	bool toNMG(NMGTriangleData& nmg_data) const;
 };
 
 // Mesh validation statistics
-struct MeshStats {
-    double volume;
-    double surface_area;
-    double expected_volume;
-    double expected_surface_area;
-    bool is_manifold;
-    bool is_ccw_oriented;
-    int non_manifold_edges;
+class MeshStats {
+    public:
+	double volume;
+	double surface_area;
+	double expected_volume;
+	double expected_surface_area;
+	bool is_manifold;
+	bool is_ccw_oriented;
+	int non_manifold_edges;
 
-    MeshStats() : volume(0), surface_area(0), expected_volume(0), expected_surface_area(0),
-    is_manifold(true), is_ccw_oriented(true), non_manifold_edges(0) {}
+	MeshStats() : volume(0), surface_area(0), expected_volume(0), expected_surface_area(0),
+	is_manifold(true), is_ccw_oriented(true), non_manifold_edges(0) {}
 };
 
 // Terrain simplification parameters based on Terra/Scape concepts
-struct SimplificationParams {
-    double error_tol;      // Maximum allowed geometric error
-    double slope_tol;      // Slope threshold for feature preservation  
-    int min_reduction;     // Minimum percentage of triangles to remove
-    bool preserve_bounds;  // Whether to preserve terrain boundaries
+class SimplificationParams {
+    public:
+	double error_tol;      // Maximum allowed geometric error
+	double slope_tol;      // Slope threshold for feature preservation  
+	int min_reduction;     // Minimum percentage of triangles to remove
+	bool preserve_bounds;  // Whether to preserve terrain boundaries
 
-    SimplificationParams() :
-	error_tol(0.1),
-	slope_tol(0.2),
-	min_reduction(50),
-	preserve_bounds(true) {}
+	SimplificationParams() :
+	    error_tol(0.1),
+	    slope_tol(0.2),
+	    min_reduction(50),
+	    preserve_bounds(true) {}
 };
 
 // Local terrain analysis for adaptive simplification
-struct TerrainFeature {
-    double curvature;          // Local surface curvature
-    double slope;              // Local slope magnitude
-    double roughness;          // Local height variation
-    bool is_boundary;          // Whether this is a boundary vertex
-    double importance;   // Combined importance metric
+class TerrainFeature {
+    public:
+	double curvature;          // Local surface curvature
+	double slope;              // Local slope magnitude
+	double roughness;          // Local height variation
+	bool is_boundary;          // Whether this is a boundary vertex
+	double importance;   // Combined importance metric
 
-    TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
+	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
 };
 
 // Edge structure for manifold checking
-struct Edge {
-    size_t v0, v1;
+class Edge {
+    public:
+	size_t v0, v1;
 
-    Edge(size_t a, size_t b) {
-	if (a < b) {
-	    v0 = a; v1 = b;
-	} else {
-	    v0 = b; v1 = a;
+	Edge(size_t a, size_t b) {
+	    if (a < b) {
+		v0 = a; v1 = b;
+	    } else {
+		v0 = b; v1 = a;
+	    }
 	}
-    }
 
-    bool operator<(const Edge& other) const {
-	if (v0 != other.v0) return v0 < other.v0;
-	return v1 < other.v1;
-    }
+	bool operator<(const Edge& other) const {
+	    if (v0 != other.v0) return v0 < other.v0;
+	    return v1 < other.v1;
+	}
 
-    bool operator==(const Edge& other) const {
-	return v0 == other.v0 && v1 == other.v1;
-    }
+	bool operator==(const Edge& other) const {
+	    return v0 == other.v0 && v1 == other.v1;
+	}
 };
 
 // Hash function for Edge
-struct EdgeHash {
-    size_t operator()(const Edge& e) const {
-	return std::hash<size_t>()(e.v0) ^ (std::hash<size_t>()(e.v1) << 1);
-    }
+class EdgeHash {
+    public:
+	size_t operator()(const Edge& e) const {
+	    return std::hash<size_t>()(e.v0) ^ (std::hash<size_t>()(e.v1) << 1);
+	}
 };
 
 // Connected component structure for handling terrain islands
-struct ConnectedComponent {
-    int id;
-    std::vector<std::pair<int, int>> cells;  // List of (x, y) coordinates in this component
-    std::vector<std::pair<int, int>> boundary_cells;  // Boundary cells of this component
-    std::vector<std::pair<int, int>> holes;  // Interior holes within this component
-    int min_x, max_x, min_y, max_y;  // Bounding box
+class ConnectedComponent {
+    public:
+	int id;
+	std::vector<std::pair<int, int>> cells;  // List of (x, y) coordinates in this component
+	std::vector<std::pair<int, int>> boundary_cells;  // Boundary cells of this component
+	std::vector<std::pair<int, int>> holes;  // Interior holes within this component
+	int min_x, max_x, min_y, max_y;  // Bounding box
 
-    ConnectedComponent() : id(-1), min_x(INT_MAX), max_x(INT_MIN), min_y(INT_MAX), max_y(INT_MIN) {}
+	ConnectedComponent() : id(-1), min_x(INT_MAX), max_x(INT_MIN), min_y(INT_MAX), max_y(INT_MIN) {}
 
-    void addCell(int x, int y) {
-	cells.push_back({x, y});
-	min_x = std::min(min_x, x);
-	max_x = std::max(max_x, x);
-	min_y = std::min(min_y, y);
-	max_y = std::max(max_y, y);
-    }
+	void addCell(int x, int y) {
+	    cells.push_back({x, y});
+	    min_x = std::min(min_x, x);
+	    max_x = std::max(max_x, x);
+	    min_y = std::min(min_y, y);
+	    max_y = std::max(max_y, y);
+	}
 };
 
 // Terrain analysis result containing all connected components
-struct TerrainComponents {
-    std::vector<ConnectedComponent> components;
-    std::vector<std::vector<int>> component_map;  // component_id for each cell (-1 for background)
+class TerrainComponents {
+    public:
+	std::vector<ConnectedComponent> components;
+	std::vector<std::vector<int>> component_map;  // component_id for each cell (-1 for background)
 
-    TerrainComponents(int width, int height) {
-	component_map.resize(height, std::vector<int>(width, -1));
-    }
+	TerrainComponents(int width, int height) {
+	    component_map.resize(height, std::vector<int>(width, -1));
+	}
 };
 
 // DSP compatibility structures
-struct DSPData {
-    unsigned short* dsp_buf;     // Height data buffer (BRL-CAD format)
-    uint32_t dsp_xcnt;          // Number of samples in row
-    uint32_t dsp_ycnt;          // Number of columns
-    double cell_size;           // Physical size of each cell
-    Point3D origin;             // Origin point in model space
-    bool owns_buffer;           // Whether this structure owns the buffer
+class DSPData {
+    public:
+	unsigned short* dsp_buf;     // Height data buffer (BRL-CAD format)
+	uint32_t dsp_xcnt;          // Number of samples in row
+	uint32_t dsp_ycnt;          // Number of columns
+	double cell_size;           // Physical size of each cell
+	Point3D origin;             // Origin point in model space
+	bool owns_buffer;           // Whether this structure owns the buffer
 
-    DSPData() : dsp_buf(nullptr), dsp_xcnt(0), dsp_ycnt(0),
-    cell_size(1.0), origin(0,0,0), owns_buffer(false) {}
+	DSPData() : dsp_buf(nullptr), dsp_xcnt(0), dsp_ycnt(0),
+	cell_size(1.0), origin(0,0,0), owns_buffer(false) {}
 
-    ~DSPData() {
-	if (owns_buffer && dsp_buf) {
-	    delete[] dsp_buf;
-	    dsp_buf = nullptr;
+	~DSPData() {
+	    if (owns_buffer && dsp_buf) {
+		delete[] dsp_buf;
+		dsp_buf = nullptr;
+	    }
 	}
-    }
 
-    // Get height value at grid position
-    double getHeight(uint32_t x, uint32_t y) const {
-	if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
-	    return static_cast<double>(dsp_buf[y * dsp_xcnt + x]);
+	// Get height value at grid position
+	double getHeight(uint32_t x, uint32_t y) const {
+	    if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
+		return static_cast<double>(dsp_buf[y * dsp_xcnt + x]);
+	    }
+	    return 0.0;
 	}
-	return 0.0;
-    }
 
-    // Set height value at grid position
-    void setHeight(uint32_t x, uint32_t y, unsigned short height) {
-	if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
-	    dsp_buf[y * dsp_xcnt + x] = height;
+	// Set height value at grid position
+	void setHeight(uint32_t x, uint32_t y, unsigned short height) {
+	    if (x < dsp_xcnt && y < dsp_ycnt && dsp_buf) {
+		dsp_buf[y * dsp_xcnt + x] = height;
+	    }
 	}
-    }
 
-    // Convert to TerrainData format
-    bool toTerrain(TerrainData& terrain) const;
+	// Convert to TerrainData format
+	bool toTerrain(TerrainData& terrain) const;
 };
 
 // NMG-compatible triangle output
-struct NMGTriangleData {
-    struct TriangleVertex {
-	Point3D point;
-	size_t original_index;  // Index in original vertex array
+class NMGTriangleData {
+    public:
+	class TriangleVertex {
+	    public:
+		Point3D point;
+		size_t original_index;  // Index in original vertex array
 
-	TriangleVertex(const Point3D& p, size_t idx) : point(p), original_index(idx) {}
-    };
+		TriangleVertex(const Point3D& p, size_t idx) : point(p), original_index(idx) {}
+	};
 
-    struct NMGTriangle {
-	std::array<TriangleVertex, 3> vertices;
-	Point3D normal;
-	bool is_surface;  // True if this is a terrain surface triangle
+	class NMGTriangle {
+	    public:
+		std::array<TriangleVertex, 3> vertices;
+		Point3D normal;
+		bool is_surface;  // True if this is a terrain surface triangle
 
-	NMGTriangle(const TriangleVertex& v0, const TriangleVertex& v1, const TriangleVertex& v2, bool surf = false)
-	    : vertices{v0, v1, v2}, is_surface(surf) {
-		// Compute normal
-		Point3D edge1 = v1.point - v0.point;
-		Point3D edge2 = v2.point - v0.point;
-		normal = edge1.cross(edge2).normalized();
-	    }
-    };
+		NMGTriangle(const TriangleVertex& v0, const TriangleVertex& v1, const TriangleVertex& v2, bool surf = false)
+		    : vertices{v0, v1, v2}, is_surface(surf) {
+			// Compute normal
+			Point3D edge1 = v1.point - v0.point;
+			Point3D edge2 = v2.point - v0.point;
+			normal = edge1.cross(edge2).normalized();
+		    }
+	};
 
-    std::vector<NMGTriangle> triangles;
-    std::vector<Point3D> unique_vertices;
-    size_t surface_triangle_count;
+	std::vector<NMGTriangle> triangles;
+	std::vector<Point3D> unique_vertices;
+	size_t surface_triangle_count;
 
-    NMGTriangleData() : surface_triangle_count(0) {}
+	NMGTriangleData() : surface_triangle_count(0) {}
 };
 
 // Forward declarations
@@ -574,7 +589,7 @@ std::vector<std::vector<bool>> TerrainData::generateSampleMask(const Simplificat
 }
 
 void TerrainData::floodFill(std::vector<std::vector<bool>>& visited,
-                           ConnectedComponent& component, int start_x, int start_y, double height_threshold) const {
+	ConnectedComponent& component, int start_x, int start_y, double height_threshold) const {
     std::queue<std::pair<int, int>> to_visit;
     to_visit.push({start_x, start_y});
     visited[start_y][start_x] = true;
@@ -1458,204 +1473,204 @@ std::vector<std::pair<double, double>> calculateMedialAxisPoints(
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
 	double cell_size, double min_x, double max_x, double min_y, double max_y) {
-	
+
     std::vector<std::pair<double, double>> medial_points;
-    
+
     // Use provided bounds instead of calculating from boundary
-    
+
     // Distance function to boundary edges
     auto distanceToEdges = [&](double x, double y) -> double {
-        double min_dist = std::numeric_limits<double>::max();
-        
-        // Distance to boundary
-        for (size_t i = 0; i < boundary.size(); ++i) {
-            size_t next = (i + 1) % boundary.size();
-            double dx1 = boundary[next].first - boundary[i].first;
-            double dy1 = boundary[next].second - boundary[i].second;
-            double dx2 = x - boundary[i].first;
-            double dy2 = y - boundary[i].second;
-            
-            double dot = dx1 * dx2 + dy1 * dy2;
-            double len_sq = dx1 * dx1 + dy1 * dy1;
-            
-            double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
-            double px = boundary[i].first + t * dx1;
-            double py = boundary[i].second + t * dy1;
-            
-            double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
-            min_dist = std::min(min_dist, dist);
-        }
-        
-        // Distance to holes
-        for (const auto& hole : holes) {
-            for (size_t i = 0; i < hole.size(); ++i) {
-                size_t next = (i + 1) % hole.size();
-                double dx1 = hole[next].first - hole[i].first;
-                double dy1 = hole[next].second - hole[i].second;
-                double dx2 = x - hole[i].first;
-                double dy2 = y - hole[i].second;
-                
-                double dot = dx1 * dx2 + dy1 * dy2;
-                double len_sq = dx1 * dx1 + dy1 * dy1;
-                
-                double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
-                double px = hole[i].first + t * dx1;
-                double py = hole[i].second + t * dy1;
-                
-                double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
-                min_dist = std::min(min_dist, dist);
-            }
-        }
-        
-        return min_dist;
+	double min_dist = std::numeric_limits<double>::max();
+
+	// Distance to boundary
+	for (size_t i = 0; i < boundary.size(); ++i) {
+	    size_t next = (i + 1) % boundary.size();
+	    double dx1 = boundary[next].first - boundary[i].first;
+	    double dy1 = boundary[next].second - boundary[i].second;
+	    double dx2 = x - boundary[i].first;
+	    double dy2 = y - boundary[i].second;
+
+	    double dot = dx1 * dx2 + dy1 * dy2;
+	    double len_sq = dx1 * dx1 + dy1 * dy1;
+
+	    double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+	    double px = boundary[i].first + t * dx1;
+	    double py = boundary[i].second + t * dy1;
+
+	    double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+	    min_dist = std::min(min_dist, dist);
+	}
+
+	// Distance to holes
+	for (const auto& hole : holes) {
+	    for (size_t i = 0; i < hole.size(); ++i) {
+		size_t next = (i + 1) % hole.size();
+		double dx1 = hole[next].first - hole[i].first;
+		double dy1 = hole[next].second - hole[i].second;
+		double dx2 = x - hole[i].first;
+		double dy2 = y - hole[i].second;
+
+		double dot = dx1 * dx2 + dy1 * dy2;
+		double len_sq = dx1 * dx1 + dy1 * dy1;
+
+		double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+		double px = hole[i].first + t * dx1;
+		double py = hole[i].second + t * dy1;
+
+		double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+		min_dist = std::min(min_dist, dist);
+	    }
+	}
+
+	return min_dist;
     };
-    
+
     // Sample grid to find local maxima of distance function (approximate medial axis)
     double sample_spacing = cell_size * 2.0; // Much finer spacing to catch interior regions
     double medial_threshold = cell_size * 0.1; // Very low threshold to ensure we find points
-    
+
     int points_tested = 0;
     int points_inside = 0;
-    
+
     // Use boundary-guided approach to find medial axis points
     // Instead of grid sampling, step inward from boundary points to find interior points
     double inward_step = cell_size * 4.0;
-    
+
     for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 100))) {
-        const auto& boundary_point = boundary[i];
-        
-        // Calculate inward direction (toward bounding box center as approximation)
-        double center_x = (min_x + max_x) * 0.5;
-        double center_y = (min_y + max_y) * 0.5;
-        double inward_dx = center_x - boundary_point.first;
-        double inward_dy = center_y - boundary_point.second;
-        double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
-        
-        if (inward_len > inward_step) {
-            inward_dx /= inward_len;
-            inward_dy /= inward_len;
-            
-            // Try several points stepping inward
-            for (int step = 2; step <= 6; ++step) {
-                double test_x = boundary_point.first + inward_dx * inward_step * step;
-                double test_y = boundary_point.second + inward_dy * inward_step * step;
-                
-                if (pointInPolygon(test_x, test_y, boundary)) {
-                    points_inside++;
-                    // Check not inside holes
-                    bool in_hole = false;
-                    for (const auto& hole : holes) {
-                        if (pointInPolygon(test_x, test_y, hole)) {
-                            in_hole = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!in_hole) {
-                        double dist = distanceToEdges(test_x, test_y);
-                        
-                        // Only keep points that are reasonably far from edges
-                        if (dist > medial_threshold) {
-                            medial_points.push_back({test_x, test_y});
-                        }
-                    }
-                }
-                points_tested++;
-            }
-        }
+	const auto& boundary_point = boundary[i];
+
+	// Calculate inward direction (toward bounding box center as approximation)
+	double center_x = (min_x + max_x) * 0.5;
+	double center_y = (min_y + max_y) * 0.5;
+	double inward_dx = center_x - boundary_point.first;
+	double inward_dy = center_y - boundary_point.second;
+	double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
+
+	if (inward_len > inward_step) {
+	    inward_dx /= inward_len;
+	    inward_dy /= inward_len;
+
+	    // Try several points stepping inward
+	    for (int step = 2; step <= 6; ++step) {
+		double test_x = boundary_point.first + inward_dx * inward_step * step;
+		double test_y = boundary_point.second + inward_dy * inward_step * step;
+
+		if (pointInPolygon(test_x, test_y, boundary)) {
+		    points_inside++;
+		    // Check not inside holes
+		    bool in_hole = false;
+		    for (const auto& hole : holes) {
+			if (pointInPolygon(test_x, test_y, hole)) {
+			    in_hole = true;
+			    break;
+			}
+		    }
+
+		    if (!in_hole) {
+			double dist = distanceToEdges(test_x, test_y);
+
+			// Only keep points that are reasonably far from edges
+			if (dist > medial_threshold) {
+			    medial_points.push_back({test_x, test_y});
+			}
+		    }
+		}
+		points_tested++;
+	    }
+	}
     }
-    
+
     std::cout << "Found " << medial_points.size() << " medial axis points" << std::endl;
-    
+
     return medial_points;
 }
 
 // Construct medial axis polyline from discrete points using minimum spanning tree approach
 std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> constructMedialAxisPolyline(
-    const std::vector<std::pair<double, double>>& medial_points) {
-    
+	const std::vector<std::pair<double, double>>& medial_points) {
+
     std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> polyline_segments;
-    
+
     if (medial_points.size() < 2) {
-        return polyline_segments;
+	return polyline_segments;
     }
-    
+
     // Simple approach: connect each point to its nearest neighbor to form a connected polyline
     std::vector<bool> used(medial_points.size(), false);
     std::vector<int> connection_order;
-    
+
     // Start with first point
     connection_order.push_back(0);
     used[0] = true;
-    
+
     // Greedily connect to nearest unused point
     for (size_t connected = 1; connected < medial_points.size(); ++connected) {
-        int last_point = connection_order.back();
-        double min_dist = std::numeric_limits<double>::max();
-        int next_point = -1;
-        
-        for (size_t i = 0; i < medial_points.size(); ++i) {
-            if (used[i]) continue;
-            
-            double dx = medial_points[i].first - medial_points[last_point].first;
-            double dy = medial_points[i].second - medial_points[last_point].second;
-            double dist = std::sqrt(dx * dx + dy * dy);
-            
-            if (dist < min_dist) {
-                min_dist = dist;
-                next_point = i;
-            }
-        }
-        
-        if (next_point != -1) {
-            // Add segment from last point to next point
-            polyline_segments.push_back({medial_points[last_point], medial_points[next_point]});
-            connection_order.push_back(next_point);
-            used[next_point] = true;
-        }
+	int last_point = connection_order.back();
+	double min_dist = std::numeric_limits<double>::max();
+	int next_point = -1;
+
+	for (size_t i = 0; i < medial_points.size(); ++i) {
+	    if (used[i]) continue;
+
+	    double dx = medial_points[i].first - medial_points[last_point].first;
+	    double dy = medial_points[i].second - medial_points[last_point].second;
+	    double dist = std::sqrt(dx * dx + dy * dy);
+
+	    if (dist < min_dist) {
+		min_dist = dist;
+		next_point = i;
+	    }
+	}
+
+	if (next_point != -1) {
+	    // Add segment from last point to next point
+	    polyline_segments.push_back({medial_points[last_point], medial_points[next_point]});
+	    connection_order.push_back(next_point);
+	    used[next_point] = true;
+	}
     }
-    
+
     return polyline_segments;
 }
 
 // Find closest point on medial axis polyline to a given point
 std::pair<double, double> closestPointOnMedialPolyline(
-    double x, double y,
-    const std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>>& polyline_segments) {
-    
+	double x, double y,
+	const std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>>& polyline_segments) {
+
     if (polyline_segments.empty()) {
-        return {x, y}; // Return input point if no polyline
+	return {x, y}; // Return input point if no polyline
     }
-    
+
     double min_dist = std::numeric_limits<double>::max();
     std::pair<double, double> closest_point = {x, y};
-    
+
     for (const auto& segment : polyline_segments) {
-        const auto& p1 = segment.first;
-        const auto& p2 = segment.second;
-        
-        // Find closest point on line segment p1-p2 to point (x,y)
-        double dx = p2.first - p1.first;
-        double dy = p2.second - p1.second;
-        double len_sq = dx * dx + dy * dy;
-        
-        double t = 0.0;
-        if (len_sq > 0.0) {
-            double dot = (x - p1.first) * dx + (y - p1.second) * dy;
-            t = std::max(0.0, std::min(1.0, dot / len_sq));
-        }
-        
-        double closest_x = p1.first + t * dx;
-        double closest_y = p1.second + t * dy;
-        
-        double dist_sq = (x - closest_x) * (x - closest_x) + (y - closest_y) * (y - closest_y);
-        
-        if (dist_sq < min_dist) {
-            min_dist = dist_sq;
-            closest_point = {closest_x, closest_y};
-        }
+	const auto& p1 = segment.first;
+	const auto& p2 = segment.second;
+
+	// Find closest point on line segment p1-p2 to point (x,y)
+	double dx = p2.first - p1.first;
+	double dy = p2.second - p1.second;
+	double len_sq = dx * dx + dy * dy;
+
+	double t = 0.0;
+	if (len_sq > 0.0) {
+	    double dot = (x - p1.first) * dx + (y - p1.second) * dy;
+	    t = std::max(0.0, std::min(1.0, dot / len_sq));
+	}
+
+	double closest_x = p1.first + t * dx;
+	double closest_y = p1.second + t * dy;
+
+	double dist_sq = (x - closest_x) * (x - closest_x) + (y - closest_y) * (y - closest_y);
+
+	if (dist_sq < min_dist) {
+	    min_dist = dist_sq;
+	    closest_point = {closest_x, closest_y};
+	}
     }
-    
+
     return closest_point;
 }
 
@@ -1668,271 +1683,271 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	double min_x, double max_x, double min_y, double max_y) {
 
     std::vector<std::pair<double, double>> steiner_points;
-    
+
     // Calculate medial axis points
     std::vector<std::pair<double, double>> medial_axis = calculateMedialAxisPoints(boundary, holes, terrain.cell_size, min_x, max_x, min_y, max_y);
-    
+
     // Construct medial axis polyline from discrete points
     std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> medial_polyline = 
-        constructMedialAxisPolyline(medial_axis);
-    
+	constructMedialAxisPolyline(medial_axis);
+
     // Parameters for medial axis guided Steiner point generation
     double min_distance = terrain.cell_size * 3.0;
     int max_lines_per_vertex = 6; // Maximum guidance lines from each boundary vertex
     double step_size = terrain.cell_size * 4.0; // Distance between points along guidance lines
-    
+
     // Distance function to edges
     auto distanceToEdges = [&](double x, double y) -> double {
-        double min_dist = std::numeric_limits<double>::max();
-        
-        // Distance to boundary
-        for (size_t i = 0; i < boundary.size(); ++i) {
-            size_t next = (i + 1) % boundary.size();
-            double dx1 = boundary[next].first - boundary[i].first;
-            double dy1 = boundary[next].second - boundary[i].second;
-            double dx2 = x - boundary[i].first;
-            double dy2 = y - boundary[i].second;
-            
-            double dot = dx1 * dx2 + dy1 * dy2;
-            double len_sq = dx1 * dx1 + dy1 * dy1;
-            
-            double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
-            double px = boundary[i].first + t * dx1;
-            double py = boundary[i].second + t * dy1;
-            
-            double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
-            min_dist = std::min(min_dist, dist);
-        }
-        
-        // Distance to holes
-        for (const auto& hole : holes) {
-            for (size_t i = 0; i < hole.size(); ++i) {
-                size_t next = (i + 1) % hole.size();
-                double dx1 = hole[next].first - hole[i].first;
-                double dy1 = hole[next].second - hole[i].second;
-                double dx2 = x - hole[i].first;
-                double dy2 = y - hole[i].second;
-                
-                double dot = dx1 * dx2 + dy1 * dy2;
-                double len_sq = dx1 * dx1 + dy1 * dy1;
-                
-                double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
-                double px = hole[i].first + t * dx1;
-                double py = hole[i].second + t * dy1;
-                
-                double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
-                min_dist = std::min(min_dist, dist);
-            }
-        }
-        
-        return min_dist;
+	double min_dist = std::numeric_limits<double>::max();
+
+	// Distance to boundary
+	for (size_t i = 0; i < boundary.size(); ++i) {
+	    size_t next = (i + 1) % boundary.size();
+	    double dx1 = boundary[next].first - boundary[i].first;
+	    double dy1 = boundary[next].second - boundary[i].second;
+	    double dx2 = x - boundary[i].first;
+	    double dy2 = y - boundary[i].second;
+
+	    double dot = dx1 * dx2 + dy1 * dy2;
+	    double len_sq = dx1 * dx1 + dy1 * dy1;
+
+	    double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+	    double px = boundary[i].first + t * dx1;
+	    double py = boundary[i].second + t * dy1;
+
+	    double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+	    min_dist = std::min(min_dist, dist);
+	}
+
+	// Distance to holes
+	for (const auto& hole : holes) {
+	    for (size_t i = 0; i < hole.size(); ++i) {
+		size_t next = (i + 1) % hole.size();
+		double dx1 = hole[next].first - hole[i].first;
+		double dy1 = hole[next].second - hole[i].second;
+		double dx2 = x - hole[i].first;
+		double dy2 = y - hole[i].second;
+
+		double dot = dx1 * dx2 + dy1 * dy2;
+		double len_sq = dx1 * dx1 + dy1 * dy1;
+
+		double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+		double px = hole[i].first + t * dx1;
+		double py = hole[i].second + t * dy1;
+
+		double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+		min_dist = std::min(min_dist, dist);
+	    }
+	}
+
+	return min_dist;
     };
-    
+
     // Simple pseudo-random number generator (using linear congruential generator)
     uint32_t rng_state = 12345; // Seed
     auto next_random = [&rng_state]() -> double {
-        rng_state = rng_state * 1664525 + 1013904223;
-        return (double)(rng_state % 1000) / 1000.0;
+	rng_state = rng_state * 1664525 + 1013904223;
+	return (double)(rng_state % 1000) / 1000.0;
     };
-    
+
     // Create guidance lines from boundary vertices to medial axis polyline
     if (!medial_polyline.empty()) {
-        for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / (max_lines_per_vertex * 4)))) {
-            const auto& vertex = boundary[i];
-            
-            // Find closest point on medial axis polyline
-            std::pair<double, double> closest_medial = closestPointOnMedialPolyline(vertex.first, vertex.second, medial_polyline);
-            
-            // Create guidance line from vertex to closest point on medial axis polyline
-            double dx = closest_medial.first - vertex.first;
-            double dy = closest_medial.second - vertex.second;
-            double line_length = std::sqrt(dx * dx + dy * dy);
-            
-            if (line_length > min_distance * 2.0) {
-                // Normalize direction
-                dx /= line_length;
-                dy /= line_length;
-                
-                // Place points along this guidance line with adaptive density
-                int num_steps = std::max(2, (int)(line_length / step_size));
-                
-                for (int step = 1; step < num_steps; ++step) {
-                    // Use pseudo-random sampling to avoid clustering
-                    if (next_random() > 0.4) continue; // Skip some points randomly
-                    
-                    double t = (double)step / num_steps;
-                    double x = vertex.first + t * dx * line_length;
-                    double y = vertex.second + t * dy * line_length;
-                    
-                    // Check if point is valid
-                    if (pointInPolygon(x, y, boundary)) {
-                        // Check not in holes
-                        bool in_hole = false;
-                        for (const auto& hole : holes) {
-                            if (pointInPolygon(x, y, hole)) {
-                                in_hole = true;
-                                break;
-                            }
-                        }
-                        
-                        if (!in_hole) {
-                            double edge_distance = distanceToEdges(x, y);
-                            
-                            // Closer to medial axis = fewer points (tapering effect)
-                            double distance_to_medial = std::sqrt((x - closest_medial.first) * (x - closest_medial.first) + 
-                                                                  (y - closest_medial.second) * (y - closest_medial.second));
-                            double taper_factor = 1.0 - (distance_to_medial / line_length);
-                            double required_distance = min_distance * (1.0 + taper_factor);
-                            
-                            if (edge_distance > required_distance) {
-                                // Check terrain coordinates
-                                int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-                                int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-                                
-                                bool is_in_active_region = false;
-                                if (terrain_x >= 0 && terrain_x < terrain.width && 
-                                    terrain_y >= 0 && terrain_y < terrain.height) {
-                                    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-                                }
-                                
-                                if (is_in_active_region) {
-                                    // Check distance to existing points
-                                    bool too_close = false;
-                                    for (const auto& existing : steiner_points) {
-                                        double dx_check = x - existing.first;
-                                        double dy_check = y - existing.second;
-                                        if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < required_distance) {
-                                            too_close = true;
-                                            break;
-                                        }
-                                    }
-                                    
-                                    if (!too_close) {
-                                        steiner_points.push_back({x, y});
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+	for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / (max_lines_per_vertex * 4)))) {
+	    const auto& vertex = boundary[i];
+
+	    // Find closest point on medial axis polyline
+	    std::pair<double, double> closest_medial = closestPointOnMedialPolyline(vertex.first, vertex.second, medial_polyline);
+
+	    // Create guidance line from vertex to closest point on medial axis polyline
+	    double dx = closest_medial.first - vertex.first;
+	    double dy = closest_medial.second - vertex.second;
+	    double line_length = std::sqrt(dx * dx + dy * dy);
+
+	    if (line_length > min_distance * 2.0) {
+		// Normalize direction
+		dx /= line_length;
+		dy /= line_length;
+
+		// Place points along this guidance line with adaptive density
+		int num_steps = std::max(2, (int)(line_length / step_size));
+
+		for (int step = 1; step < num_steps; ++step) {
+		    // Use pseudo-random sampling to avoid clustering
+		    if (next_random() > 0.4) continue; // Skip some points randomly
+
+		    double t = (double)step / num_steps;
+		    double x = vertex.first + t * dx * line_length;
+		    double y = vertex.second + t * dy * line_length;
+
+		    // Check if point is valid
+		    if (pointInPolygon(x, y, boundary)) {
+			// Check not in holes
+			bool in_hole = false;
+			for (const auto& hole : holes) {
+			    if (pointInPolygon(x, y, hole)) {
+				in_hole = true;
+				break;
+			    }
+			}
+
+			if (!in_hole) {
+			    double edge_distance = distanceToEdges(x, y);
+
+			    // Closer to medial axis = fewer points (tapering effect)
+			    double distance_to_medial = std::sqrt((x - closest_medial.first) * (x - closest_medial.first) + 
+				    (y - closest_medial.second) * (y - closest_medial.second));
+			    double taper_factor = 1.0 - (distance_to_medial / line_length);
+			    double required_distance = min_distance * (1.0 + taper_factor);
+
+			    if (edge_distance > required_distance) {
+				// Check terrain coordinates
+				int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+				int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+
+				bool is_in_active_region = false;
+				if (terrain_x >= 0 && terrain_x < terrain.width && 
+					terrain_y >= 0 && terrain_y < terrain.height) {
+				    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+				}
+
+				if (is_in_active_region) {
+				    // Check distance to existing points
+				    bool too_close = false;
+				    for (const auto& existing : steiner_points) {
+					double dx_check = x - existing.first;
+					double dy_check = y - existing.second;
+					if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < required_distance) {
+					    too_close = true;
+					    break;
+					}
+				    }
+
+				    if (!too_close) {
+					steiner_points.push_back({x, y});
+				    }
+				}
+			    }
+			}
+		    }
+		}
+	    }
+	}
     } else {
-        // Fallback: generate points using boundary-guided approach if no medial axis polyline found
-        std::cout << "Using boundary-guided approach for Steiner point generation" << std::endl;
-        
-        double sample_distance = terrain.cell_size * 8.0; // Distance to step inward from boundary
-        
-        // Generate points by stepping inward from boundary edges
-        for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 200))) { // Sample every few boundary points
-            const auto& edge_point = boundary[i];
-            
-            // Find inward direction (toward center of bounding box for simplicity)
-            double center_x = (min_x + max_x) * 0.5;
-            double center_y = (min_y + max_y) * 0.5;
-            double inward_dx = center_x - edge_point.first;
-            double inward_dy = center_y - edge_point.second;
-            double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
-            
-            if (inward_len > sample_distance) {
-                inward_dx /= inward_len;
-                inward_dy /= inward_len;
-                
-                // Try several points stepping inward from this boundary point
-                for (int step = 1; step <= 3; ++step) {
-                    double step_dist = sample_distance * step;
-                    if (step_dist > inward_len * 0.8) break; // Don't go too far toward center
-                    
-                    double test_x = edge_point.first + inward_dx * step_dist;
-                    double test_y = edge_point.second + inward_dy * step_dist;
-                    
-                    // Add some randomization to avoid regular patterns
-                    double jitter_x = (next_random() - 0.5) * terrain.cell_size * 2.0;
-                    double jitter_y = (next_random() - 0.5) * terrain.cell_size * 2.0;
-                    test_x += jitter_x;
-                    test_y += jitter_y;
-                    
-                    if (pointInPolygon(test_x, test_y, boundary)) {
-                        // Check not in holes
-                        bool in_hole = false;
-                        for (const auto& hole : holes) {
-                            if (pointInPolygon(test_x, test_y, hole)) {
-                                in_hole = true;
-                                break;
-                            }
-                        }
-                        
-                        if (!in_hole) {
-                            double edge_distance = distanceToEdges(test_x, test_y);
-                            
-                            if (edge_distance > min_distance) {
-                                // Check terrain coordinates
-                                int terrain_x = static_cast<int>((test_x - terrain.origin.x) / terrain.cell_size);
-                                int terrain_y = static_cast<int>((terrain.origin.y - test_y) / terrain.cell_size);
-                                
-                                bool is_in_active_region = false;
-                                if (terrain_x >= 0 && terrain_x < terrain.width && 
-                                    terrain_y >= 0 && terrain_y < terrain.height) {
-                                    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-                                }
-                                
-                                if (is_in_active_region) {
-                                    // Check distance to existing points
-                                    bool too_close = false;
-                                    for (const auto& existing : steiner_points) {
-                                        double dx_check = test_x - existing.first;
-                                        double dy_check = test_y - existing.second;
-                                        if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-                                            too_close = true;
-                                            break;
-                                        }
-                                    }
-                                    
-                                    if (!too_close) {
-                                        steiner_points.push_back({test_x, test_y});
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        std::cout << "Generated " << steiner_points.size() << " Steiner points using boundary-guided approach" << std::endl;
+	// Fallback: generate points using boundary-guided approach if no medial axis polyline found
+	std::cout << "Using boundary-guided approach for Steiner point generation" << std::endl;
+
+	double sample_distance = terrain.cell_size * 8.0; // Distance to step inward from boundary
+
+	// Generate points by stepping inward from boundary edges
+	for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 200))) { // Sample every few boundary points
+	    const auto& edge_point = boundary[i];
+
+	    // Find inward direction (toward center of bounding box for simplicity)
+	    double center_x = (min_x + max_x) * 0.5;
+	    double center_y = (min_y + max_y) * 0.5;
+	    double inward_dx = center_x - edge_point.first;
+	    double inward_dy = center_y - edge_point.second;
+	    double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
+
+	    if (inward_len > sample_distance) {
+		inward_dx /= inward_len;
+		inward_dy /= inward_len;
+
+		// Try several points stepping inward from this boundary point
+		for (int step = 1; step <= 3; ++step) {
+		    double step_dist = sample_distance * step;
+		    if (step_dist > inward_len * 0.8) break; // Don't go too far toward center
+
+		    double test_x = edge_point.first + inward_dx * step_dist;
+		    double test_y = edge_point.second + inward_dy * step_dist;
+
+		    // Add some randomization to avoid regular patterns
+		    double jitter_x = (next_random() - 0.5) * terrain.cell_size * 2.0;
+		    double jitter_y = (next_random() - 0.5) * terrain.cell_size * 2.0;
+		    test_x += jitter_x;
+		    test_y += jitter_y;
+
+		    if (pointInPolygon(test_x, test_y, boundary)) {
+			// Check not in holes
+			bool in_hole = false;
+			for (const auto& hole : holes) {
+			    if (pointInPolygon(test_x, test_y, hole)) {
+				in_hole = true;
+				break;
+			    }
+			}
+
+			if (!in_hole) {
+			    double edge_distance = distanceToEdges(test_x, test_y);
+
+			    if (edge_distance > min_distance) {
+				// Check terrain coordinates
+				int terrain_x = static_cast<int>((test_x - terrain.origin.x) / terrain.cell_size);
+				int terrain_y = static_cast<int>((terrain.origin.y - test_y) / terrain.cell_size);
+
+				bool is_in_active_region = false;
+				if (terrain_x >= 0 && terrain_x < terrain.width && 
+					terrain_y >= 0 && terrain_y < terrain.height) {
+				    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+				}
+
+				if (is_in_active_region) {
+				    // Check distance to existing points
+				    bool too_close = false;
+				    for (const auto& existing : steiner_points) {
+					double dx_check = test_x - existing.first;
+					double dy_check = test_y - existing.second;
+					if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+					    too_close = true;
+					    break;
+					}
+				    }
+
+				    if (!too_close) {
+					steiner_points.push_back({test_x, test_y});
+				    }
+				}
+			    }
+			}
+		    }
+		}
+	    }
+	}
+
+	std::cout << "Generated " << steiner_points.size() << " Steiner points using boundary-guided approach" << std::endl;
     }
-    
+
     // Add medial axis points themselves as Steiner points (if they satisfy constraints)
     for (const auto& medial_pt : medial_axis) {
-        int terrain_x = static_cast<int>((medial_pt.first - terrain.origin.x) / terrain.cell_size);
-        int terrain_y = static_cast<int>((terrain.origin.y - medial_pt.second) / terrain.cell_size);
-        
-        bool is_in_active_region = false;
-        if (terrain_x >= 0 && terrain_x < terrain.width && 
-            terrain_y >= 0 && terrain_y < terrain.height) {
-            is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-        }
-        
-        if (is_in_active_region) {
-            bool too_close = false;
-            for (const auto& existing : steiner_points) {
-                double dx = medial_pt.first - existing.first;
-                double dy = medial_pt.second - existing.second;
-                if (std::sqrt(dx * dx + dy * dy) < min_distance * 2.0) {
-                    too_close = true;
-                    break;
-                }
-            }
-            
-            if (!too_close) {
-                steiner_points.push_back(medial_pt);
-            }
-        }
+	int terrain_x = static_cast<int>((medial_pt.first - terrain.origin.x) / terrain.cell_size);
+	int terrain_y = static_cast<int>((terrain.origin.y - medial_pt.second) / terrain.cell_size);
+
+	bool is_in_active_region = false;
+	if (terrain_x >= 0 && terrain_x < terrain.width && 
+		terrain_y >= 0 && terrain_y < terrain.height) {
+	    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+	}
+
+	if (is_in_active_region) {
+	    bool too_close = false;
+	    for (const auto& existing : steiner_points) {
+		double dx = medial_pt.first - existing.first;
+		double dy = medial_pt.second - existing.second;
+		if (std::sqrt(dx * dx + dy * dy) < min_distance * 2.0) {
+		    too_close = true;
+		    break;
+		}
+	    }
+
+	    if (!too_close) {
+		steiner_points.push_back(medial_pt);
+	    }
+	}
     }
 
     std::cout << "Generated " << steiner_points.size() << " Steiner points using medial axis polyline guidance" 
-              << (medial_polyline.empty() ? " (boundary-guided fallback)" : "") << std::endl;
-    
+	<< (medial_polyline.empty() ? " (boundary-guided fallback)" : "") << std::endl;
+
     return steiner_points;
 }
 
