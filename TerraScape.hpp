@@ -45,7 +45,6 @@
 #  pragma clang diagnostic ignored "-Wfloat-equal"
 #endif
 
-#include "earcut.hpp"
 #include "detria.hpp"
 
 namespace TerraScape {
@@ -251,8 +250,6 @@ class TerrainMesh {
 
     private:
 	// Helper methods for triangulation
-	void triangulateBottomFaceWithEarcut(const std::vector<std::vector<size_t>>& bottom_vertices,
-		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 	void triangulateBottomFaceWithDetria(const std::vector<std::vector<size_t>>& bottom_vertices,
 		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 	void fallbackBottomTriangulation(const std::vector<std::vector<size_t>>& bottom_vertices,
@@ -498,10 +495,6 @@ bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
 // Triangulation functions (these will eventually be moved to TerrainMesh class)
 void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
-
-// Earcut-based efficient bottom face triangulation
-void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 
 // Detria-based high-quality bottom face triangulation
 void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
@@ -1307,165 +1300,6 @@ void TerrainMesh::triangulateSurfaceOnly(const TerrainData& terrain, const Simpl
     }
 }
 
-// Earcut-based efficient triangulation of coplanar bottom face with proper hole support
-void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
-
-    // Build set of cells that should have bottom faces
-    std::set<std::pair<int, int>> active_cells;
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    if (bottom_vertices[y][x] != SIZE_MAX) {
-		if (filter_cells == nullptr || filter_cells->count({x, y})) {
-		    active_cells.insert({x, y});
-		}
-	    }
-	}
-    }
-
-    if (active_cells.empty()) {
-	return;
-    }
-
-    // Find bounds of active region
-    int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
-    for (const auto& cell : active_cells) {
-	min_x = std::min(min_x, cell.first);
-	max_x = std::max(max_x, cell.first);
-	min_y = std::min(min_y, cell.second);
-	max_y = std::max(max_y, cell.second);
-    }
-
-    // Create outer boundary (counter-clockwise)
-    std::vector<std::pair<double, double>> outer_boundary;
-    std::vector<size_t> vertex_indices;
-
-    // Bottom edge (left to right)
-    for (int x = min_x; x <= max_x; ++x) {
-	if (active_cells.count({x, min_y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[min_y][x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(bottom_vertices[min_y][x]);
-	}
-    }
-
-    // Right edge (bottom to top, skip corners)
-    for (int y = min_y + 1; y <= max_y; ++y) {
-	if (active_cells.count({max_x, y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[y][max_x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(bottom_vertices[y][max_x]);
-	}
-    }
-
-    // Top edge (right to left, skip corners)
-    for (int x = max_x - 1; x >= min_x; --x) {
-	if (active_cells.count({x, max_y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[max_y][x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(bottom_vertices[max_y][x]);
-	}
-    }
-
-    // Left edge (top to bottom, skip corners)
-    for (int y = max_y - 1; y > min_y; --y) {
-	if (active_cells.count({min_x, y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[y][min_x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(bottom_vertices[y][min_x]);
-	}
-    }
-
-    if (outer_boundary.size() < 3) {
-	fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
-	return;
-    }
-
-    // Find interior holes using flood fill on inactive cells
-    std::vector<std::vector<std::pair<double, double>>> polygon_rings;
-    polygon_rings.push_back(outer_boundary);
-
-    std::set<std::pair<int, int>> processed_holes;
-
-    // Look for holes (inactive regions completely surrounded by active regions)
-    for (int y = min_y + 1; y < max_y; ++y) {
-	for (int x = min_x + 1; x < max_x; ++x) {
-	    if (!active_cells.count({x, y}) && !processed_holes.count({x, y})) {
-
-		// Flood fill to find connected inactive region
-		std::vector<std::pair<int, int>> hole_cells;
-		std::queue<std::pair<int, int>> to_visit;
-		std::set<std::pair<int, int>> visited;
-
-		to_visit.push({x, y});
-		visited.insert({x, y});
-		bool touches_boundary = false;
-
-		while (!to_visit.empty()) {
-		    auto current = to_visit.front();
-		    to_visit.pop();
-		    hole_cells.push_back(current);
-
-		    // Check if this touches the boundary of our active region
-		    if (current.first <= min_x || current.first >= max_x ||
-			    current.second <= min_y || current.second >= max_y) {
-			touches_boundary = true;
-		    }
-
-		    // Explore 4-connected neighbors
-		    int dx[] = {-1, 1, 0, 0};
-		    int dy[] = {0, 0, -1, 1};
-
-		    for (int i = 0; i < 4; ++i) {
-			int nx = current.first + dx[i];
-			int ny = current.second + dy[i];
-
-			if (nx >= 0 && nx < terrain.width && ny >= 0 && ny < terrain.height &&
-				!active_cells.count({nx, ny}) && !visited.count({nx, ny})) {
-			    visited.insert({nx, ny});
-			    to_visit.push({nx, ny});
-			}
-		    }
-		}
-
-		// Mark all cells as processed
-		for (const auto& cell : hole_cells) {
-		    processed_holes.insert(cell);
-		}
-
-		// If this doesn't touch boundary, it's a true hole
-		if (!touches_boundary && hole_cells.size() > 0) {
-		    std::vector<std::pair<double, double>> hole_boundary;
-
-		    if (extractHoleBoundary(hole_cells, active_cells, bottom_vertices, mesh, hole_boundary, vertex_indices)) {
-			polygon_rings.push_back(hole_boundary);
-		    }
-		}
-	    }
-	}
-    }
-
-    try {
-	std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon_rings);
-
-	// Add triangles with correct bottom face orientation
-	for (size_t i = 0; i < indices.size(); i += 3) {
-	    if (i + 2 < indices.size() && indices[i] < vertex_indices.size() &&
-		    indices[i+1] < vertex_indices.size() && indices[i+2] < vertex_indices.size()) {
-
-		size_t v0 = vertex_indices[indices[i]];
-		size_t v1 = vertex_indices[indices[i + 1]];
-		size_t v2 = vertex_indices[indices[i + 2]];
-
-		// Add triangle with reversed winding for bottom face
-		mesh.addTriangle(v0, v2, v1);
-	    }
-	}
-    } catch (const std::exception&) {
-	fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
-    }
-}
-
 // Extract hole boundary vertices (clockwise for earcut holes)
 bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
 	const std::set<std::pair<int, int>>& active_cells,
@@ -2010,37 +1844,12 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 
 		    }, cwTriangles);
 	} else {
-	    // Fall back to earcut if detria fails
-	    std::vector<std::vector<std::pair<double, double>>> rings;
-	    rings.push_back(outer_boundary);
-	    for (const auto& hole : holes) {
-		rings.push_back(hole);
-	    }
-
-	    try {
-		std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(rings);
-
-		// Only use boundary vertex count for earcut fallback
-		size_t boundary_vertex_count = outer_boundary.size();
-		for (size_t i = 0; i < indices.size(); i += 3) {
-		    if (i + 2 < indices.size() && indices[i] < boundary_vertex_count &&
-			    indices[i+1] < boundary_vertex_count && indices[i+2] < boundary_vertex_count) {
-
-			size_t v0 = vertex_indices[indices[i]];
-			size_t v1 = vertex_indices[indices[i + 1]];
-			size_t v2 = vertex_indices[indices[i + 2]];
-
-			mesh.addTriangle(v0, v2, v1);
-		    }
-		}
-	    } catch (const std::exception&) {
-		// If both detria and earcut fail, use fallback
-		fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
-	    }
+	    // If detria fails, use fallback
+	    fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
 	}
     } catch (const std::exception&) {
-	// Fall back to earcut if detria fails
-	triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, filter_cells);
+	// Fall back to dense fallback if detria fails
+	fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
     }
 }
 
