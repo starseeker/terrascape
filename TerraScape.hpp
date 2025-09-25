@@ -483,15 +483,6 @@ class NMGTriangleData {
 	NMGTriangleData() : surface_triangle_count(0) {}
 };
 
-// Forward declarations
-void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh);
-void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
-void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
-void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
-
-// BRL-CAD DSP integration functions
-bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
-
 // Triangulation functions (these will eventually be moved to TerrainMesh class)
 void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
@@ -734,31 +725,6 @@ TerrainComponents TerrainData::analyzeComponents(double height_threshold) const 
     }
 
     return result;
-}
-
-// Wrapper functions for backwards compatibility
-void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.triangulateVolume(terrain);
-}
-
-void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.triangulateVolumeWithComponents(terrain);
-}
-
-void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh) {
-    mesh.triangulateComponentVolume(terrain, component);
-}
-
-void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.triangulateVolumeLegacy(terrain);
-}
-
-void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.triangulateVolumeSimplified(terrain, params);
-}
-
-void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.triangulateSurfaceOnly(terrain, params);
 }
 
 // Triangulate a single connected component as a separate volumetric mesh
@@ -2071,23 +2037,6 @@ bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
 
     return true;
 }
-
-// Main function for BRL-CAD: Convert DSP to triangulated mesh ready for nmg_region
-bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) {
-    // Step 1: Convert DSP to TerraScape format
-    TerrainData terrain;
-    if (!terrain.fromDSP(dsp)) {
-	return false;
-    }
-
-    // Step 2: Generate volumetric triangle mesh using TerraScape
-    TerrainMesh mesh;
-    triangulateVolume(terrain, mesh);
-
-    // Step 3: Convert mesh to NMG format
-    return mesh.toNMG(nmg_data);
-}
-
 
 } // namespace TerraScape
 

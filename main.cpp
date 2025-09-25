@@ -9,6 +9,22 @@
 #include <gdal.h>
 #endif
 
+// Main function for BRL-CAD: Convert DSP to triangulated mesh ready for nmg_region
+bool triangulateTerrainForBRLCAD(const TerraScape::DSPData& dsp, TerraScape::NMGTriangleData& nmg_data) {
+	// Step 1: Convert DSP to TerraScape format
+	TerraScape::TerrainData terrain;
+	if (!terrain.fromDSP(dsp)) {
+		return false;
+	}
+
+	// Step 2: Generate volumetric triangle mesh using TerraScape
+	TerraScape::TerrainMesh mesh;
+	mesh.triangulateVolume(terrain);
+
+	// Step 3: Convert mesh to NMG format
+	return mesh.toNMG(nmg_data);
+}
+
 int main(int argc, char* argv[])
 {
     cxxopts::Options options("terrascape_demo", "Terrain Triangle Mesh Generation Demo");
@@ -69,7 +85,7 @@ int main(int argc, char* argv[])
         
         // Test BRL-CAD integration
         TerraScape::NMGTriangleData nmg_data;
-        if (!TerraScape::triangulateTerrainForBRLCAD(dsp, nmg_data)) {
+        if (!triangulateTerrainForBRLCAD(dsp, nmg_data)) {
             std::cerr << "Error: BRL-CAD triangulation failed" << std::endl;
             return 1;
         }
@@ -143,22 +159,22 @@ int main(int argc, char* argv[])
         // Generate triangle mesh
         TerraScape::TerrainMesh mesh;
         if (use_components) {
-            TerraScape::triangulateVolumeWithComponents(terrain, mesh);
+            mesh.triangulateVolumeWithComponents(terrain);
         } else if (use_legacy) {
-            TerraScape::triangulateVolumeLegacy(terrain, mesh);
+            mesh.triangulateVolumeLegacy(terrain);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
-            TerraScape::triangulateSurfaceOnly(terrain, mesh, params);
+            mesh.triangulateSurfaceOnly(terrain, params);
         } else if (use_simplified) {
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
-            TerraScape::triangulateVolumeSimplified(terrain, mesh, params);
+            mesh.triangulateVolumeSimplified(terrain, params);
         } else {
             // Default to component-based approach
-            TerraScape::triangulateVolume(terrain, mesh);
+            mesh.triangulateVolume(terrain);
         }
         
         std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
