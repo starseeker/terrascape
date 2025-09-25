@@ -246,7 +246,7 @@ class TerrainMesh {
 	}
 
 	// Validate mesh properties
-	MeshStats validate(TerrainData& terrain) const;
+	MeshStats validate(const TerrainData& terrain) const;
 
 	// Calculate total surface area of all triangles
 	double calculateTotalArea() const {
@@ -1856,7 +1856,7 @@ TerrainMesh::fallbackBottomTriangulation(const std::vector<std::vector<size_t>>&
     }
 }
 
-MeshStats TerrainMesh::validate(TerrainData& terrain) const {
+MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     MeshStats stats;
 
     // Check edge manifold property
