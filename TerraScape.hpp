@@ -138,6 +138,32 @@ namespace TerraScape {
         }
     };
 
+    // Quad tree node for integer-coordinate bottom face mesh generation
+    struct QuadNode {
+        int min_x, min_y, max_x, max_y;
+        std::vector<std::pair<int, int>> edge_points;  // Actual edge points within this quad
+        std::vector<std::unique_ptr<QuadNode>> children; // 4 children for subdivided quads
+        bool is_leaf;
+        
+        QuadNode(int minX, int minY, int maxX, int maxY) 
+            : min_x(minX), min_y(minY), max_x(maxX), max_y(maxY), is_leaf(true) {}
+            
+        double getAspectRatio() const {
+            int width = max_x - min_x;
+            int height = max_y - min_y;
+            if (width == 0 || height == 0) return 1.0;
+            return std::max(width, height) / static_cast<double>(std::min(width, height));
+        }
+        
+        bool hasGoodAspectRatio(double threshold = 2.0) const {
+            return getAspectRatio() <= threshold;
+        }
+        
+        std::pair<int, int> getCenter() const {
+            return {(min_x + max_x) / 2, (min_y + max_y) / 2};
+        }
+    };
+
     // Terrain data structure
     struct TerrainData {
         std::vector<std::vector<double>> heights;
@@ -376,8 +402,8 @@ namespace TerraScape {
     void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
     
-    // Earcut-based efficient bottom face triangulation
-    void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+    // Quad-tree-based bottom face triangulation  
+    void triangulateBottomFaceWithQuadTree(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
@@ -814,7 +840,7 @@ namespace TerraScape {
         
         // Add bottom surface triangles using earcut for more efficient triangulation
         std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
+        triangulateBottomFaceWithQuadTree(mesh, bottom_vertices, terrain, &component_cells_set);
         
         // Generate walls by examining each potential wall edge
         // For each cell, check its 4 neighbors and create walls where needed
@@ -953,7 +979,7 @@ namespace TerraScape {
         }
 
         // Add bottom surface triangles using earcut for more efficient triangulation
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, nullptr);
+        triangulateBottomFaceWithQuadTree(mesh, bottom_vertices, terrain, nullptr);
 
         // Add side walls
         // Left wall (x = 0)
@@ -1127,7 +1153,7 @@ namespace TerraScape {
                 }
             }
         }
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &keep_cells);
+        triangulateBottomFaceWithQuadTree(mesh, bottom_vertices, terrain, &keep_cells);
 
         // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
@@ -1521,8 +1547,167 @@ namespace TerraScape {
         }
         return inside;
     }
+    
+    // Build quad tree for integer coordinates with aspect ratio control
+    std::unique_ptr<QuadNode> buildQuadTree(const std::set<std::pair<int, int>>& edge_points,
+                                           int min_x, int min_y, int max_x, int max_y,
+                                           double aspect_ratio_threshold = 2.0, int max_depth = 8, int current_depth = 0) {
+        auto node = std::make_unique<QuadNode>(min_x, min_y, max_x, max_y);
+        
+        // Find edge points within this quad's bounds
+        for (const auto& point : edge_points) {
+            if (point.first >= min_x && point.first <= max_x &&
+                point.second >= min_y && point.second <= max_y) {
+                node->edge_points.push_back(point);
+            }
+        }
+        
+        // Termination conditions:
+        // 1. Maximum depth reached
+        // 2. Quad is too small (1x1 or 2x2)
+        // 3. If quad has no edge points and good aspect ratio, stop
+        // 4. For small quads with edge points, stop subdividing
+        int width = max_x - min_x;
+        int height = max_y - min_y;
+        
+        if (current_depth >= max_depth ||
+            (width <= 2 && height <= 2) ||
+            (node->edge_points.empty() && node->hasGoodAspectRatio(aspect_ratio_threshold)) ||
+            (width <= 1 || height <= 1)) {
+            return node;
+        }
+        
+        // For larger quads with edge points, check if all are on boundary corners
+        if (!node->edge_points.empty() && width > 2 && height > 2) {
+            bool all_edge_points_are_corners = true;
+            for (const auto& point : node->edge_points) {
+                // Check if point is on a corner (not just boundary)
+                bool is_corner = (point.first == min_x || point.first == max_x) &&
+                                (point.second == min_y || point.second == max_y);
+                if (!is_corner) {
+                    all_edge_points_are_corners = false;
+                    break;
+                }
+            }
+            if (all_edge_points_are_corners && node->edge_points.size() <= 4) {
+                return node; // Good termination condition met
+            }
+        }
+        
+        // If aspect ratio is bad, split only in the longer direction
+        if (!node->hasGoodAspectRatio(aspect_ratio_threshold)) {
+            if (width > height && width > 1) {
+                // Split horizontally only
+                int split_x = min_x + width / 2;
+                node->children.push_back(buildQuadTree(edge_points, min_x, min_y, split_x, max_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->children.push_back(buildQuadTree(edge_points, split_x, min_y, max_x, max_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->is_leaf = false;
+            } else if (height > width && height > 1) {
+                // Split vertically only
+                int split_y = min_y + height / 2;
+                node->children.push_back(buildQuadTree(edge_points, min_x, min_y, max_x, split_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->children.push_back(buildQuadTree(edge_points, min_x, split_y, max_x, max_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->is_leaf = false;
+            }
+        } else {
+            // Normal quad split if we can split in both directions
+            if (width > 1 && height > 1) {
+                int split_x = min_x + width / 2;
+                int split_y = min_y + height / 2;
+                
+                // Create 4 child quads
+                node->children.push_back(buildQuadTree(edge_points, min_x, min_y, split_x, split_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->children.push_back(buildQuadTree(edge_points, split_x, min_y, max_x, split_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->children.push_back(buildQuadTree(edge_points, min_x, split_y, split_x, max_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->children.push_back(buildQuadTree(edge_points, split_x, split_y, max_x, max_y, aspect_ratio_threshold, max_depth, current_depth + 1));
+                node->is_leaf = false;
+            }
+        }
+        
+        return node;
+    }
+    
+    // Simple triangulation for a single quad (rectangles are easy to triangulate)
+    void triangulateQuad(TerrainMesh& mesh, const QuadNode& quad, 
+                        const std::vector<std::vector<size_t>>& bottom_vertices) {
+        
+        // For simple quads, just create two triangles using the 4 corners
+        size_t v00, v10, v01, v11;
+        
+        // Get the 4 corner vertices if they exist
+        if (bottom_vertices[quad.min_y][quad.min_x] != SIZE_MAX &&
+            bottom_vertices[quad.min_y][quad.max_x] != SIZE_MAX &&
+            bottom_vertices[quad.max_y][quad.min_x] != SIZE_MAX &&
+            bottom_vertices[quad.max_y][quad.max_x] != SIZE_MAX) {
+            
+            v00 = bottom_vertices[quad.min_y][quad.min_x];  // Bottom-left
+            v10 = bottom_vertices[quad.min_y][quad.max_x];  // Bottom-right
+            v01 = bottom_vertices[quad.max_y][quad.min_x];  // Top-left
+            v11 = bottom_vertices[quad.max_y][quad.max_x];  // Top-right
+            
+            // Create two triangles with correct winding for bottom face (reversed for upward normal)
+            // Triangle 1: bottom-left, top-left, bottom-right
+            mesh.addTriangle(v00, v01, v10);
+            // Triangle 2: bottom-right, top-left, top-right
+            mesh.addTriangle(v10, v01, v11);
+        }
+    }
+    
+    // Triangulate all leaf nodes of the quad tree
+    void triangulateQuadTreeLeaves(TerrainMesh& mesh, const QuadNode& node,
+                                  const std::vector<std::vector<size_t>>& bottom_vertices) {
+        if (node.is_leaf) {
+            triangulateQuad(mesh, node, bottom_vertices);
+        } else {
+            for (const auto& child : node.children) {
+                if (child) {
+                    triangulateQuadTreeLeaves(mesh, *child, bottom_vertices);
+                }
+            }
+        }
+    }
 
-    // Earcut-based efficient triangulation of coplanar bottom face with proper hole support and Steiner points
+    // Quad-tree-based triangulation of coplanar bottom face with integer coordinates
+    void triangulateBottomFaceWithQuadTree(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                          const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        // Build set of cells that should have bottom faces (these are our "edge points")
+        std::set<std::pair<int, int>> active_cells;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (bottom_vertices[y][x] != SIZE_MAX) {
+                    if (filter_cells == nullptr || filter_cells->count({x, y})) {
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+        }
+        
+        if (active_cells.empty()) {
+            return;
+        }
+        
+        // Find bounds of active region 
+        int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+        for (const auto& cell : active_cells) {
+            min_x = std::min(min_x, cell.first);
+            max_x = std::max(max_x, cell.first);
+            min_y = std::min(min_y, cell.second);
+            max_y = std::max(max_y, cell.second);
+        }
+        
+        try {
+            // Build quad tree using the active cells as edge points
+            auto quad_tree = buildQuadTree(active_cells, min_x, min_y, max_x, max_y, 2.0, 8, 0);
+            
+            // Triangulate all leaf nodes of the quad tree
+            triangulateQuadTreeLeaves(mesh, *quad_tree, bottom_vertices);
+            
+        } catch (const std::exception&) {
+            // Fall back to original grid-based approach if quad tree fails
+            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+        }
+    }
     void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
         
