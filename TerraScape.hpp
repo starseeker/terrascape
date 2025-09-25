@@ -380,6 +380,10 @@ namespace TerraScape {
     void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     
+    // Grid-aware rectangle decomposition triangulation
+    void gridAwareBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    
     // Helper for hole boundary extraction
     bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
                             const std::set<std::pair<int, int>>& active_cells,
@@ -769,9 +773,9 @@ namespace TerraScape {
             }
         }
         
-        // Add bottom surface triangles using earcut for more efficient triangulation
+        // Add bottom surface triangles using grid-aware rectangle decomposition
         std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
+        gridAwareBottomTriangulation(mesh, bottom_vertices, terrain, &component_cells_set);
         
         // Generate walls by examining each potential wall edge
         // For each cell, check its 4 neighbors and create walls where needed
@@ -909,8 +913,8 @@ namespace TerraScape {
             }
         }
 
-        // Add bottom surface triangles using earcut for more efficient triangulation
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, nullptr);
+        // Add bottom surface triangles using grid-aware rectangle decomposition
+        gridAwareBottomTriangulation(mesh, bottom_vertices, terrain, nullptr);
 
         // Add side walls
         // Left wall (x = 0)
@@ -1084,7 +1088,7 @@ namespace TerraScape {
                 }
             }
         }
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &keep_cells);
+        gridAwareBottomTriangulation(mesh, bottom_vertices, terrain, &keep_cells);
 
         // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
@@ -1521,6 +1525,177 @@ namespace TerraScape {
                     
                     if (include_cell) {
                         // Add two triangles with CCW orientation (viewed from below, so reversed)
+                        mesh.addTriangle(v00, v10, v01);
+                        mesh.addTriangle(v10, v11, v01);
+                    }
+                }
+            }
+        }
+    }
+
+    // Rectangle structure for maximal rectangle decomposition
+    struct Rectangle {
+        int x, y, width, height;
+        Rectangle(int x_, int y_, int w, int h) : x(x_), y(y_), width(w), height(h) {}
+        
+        int area() const { return width * height; }
+        
+        bool contains(int px, int py) const {
+            return px >= x && px < x + width && py >= y && py < y + height;
+        }
+    };
+
+    // Find maximal rectangles using a fast greedy approach for large grids
+    std::vector<Rectangle> findMaximalRectangles(const std::vector<std::vector<bool>>& grid) {
+        if (grid.empty() || grid[0].empty()) {
+            return {};
+        }
+        
+        int rows = grid.size();
+        int cols = grid[0].size();
+        std::vector<Rectangle> rectangles;
+        std::vector<std::vector<bool>> used(rows, std::vector<bool>(cols, false));
+        
+        // Use a simpler, faster approach for large grids
+        // Find horizontal strips first, then try to merge them vertically
+        for (int y = 0; y < rows; ++y) {
+            int start_x = -1;
+            for (int x = 0; x <= cols; ++x) {
+                bool is_active = (x < cols && grid[y][x] && !used[y][x]);
+                
+                if (is_active && start_x == -1) {
+                    start_x = x;
+                } else if (!is_active && start_x != -1) {
+                    int width = x - start_x;
+                    
+                    // Try to extend this horizontal strip vertically
+                    int height = 1;
+                    for (int check_y = y + 1; check_y < rows; ++check_y) {
+                        bool can_extend = true;
+                        for (int check_x = start_x; check_x < start_x + width; ++check_x) {
+                            if (!grid[check_y][check_x] || used[check_y][check_x]) {
+                                can_extend = false;
+                                break;
+                            }
+                        }
+                        if (can_extend) {
+                            height++;
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    if (width > 0 && height > 0) {
+                        rectangles.push_back(Rectangle(start_x, y, width, height));
+                        
+                        // Mark as used
+                        for (int mark_y = y; mark_y < y + height; ++mark_y) {
+                            for (int mark_x = start_x; mark_x < start_x + width; ++mark_x) {
+                                used[mark_y][mark_x] = true;
+                            }
+                        }
+                    }
+                    
+                    start_x = -1;
+                }
+            }
+        }
+        
+        return rectangles;
+    }
+
+    // Grid-aware rectangle decomposition triangulation 
+    void gridAwareBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
+                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
+        
+        // For large grids, fall back to the simple approach to avoid performance issues
+        int total_cells = (terrain.height - 1) * (terrain.width - 1);
+        int active_cell_count = 0;
+        
+        if (filter_cells != nullptr) {
+            active_cell_count = filter_cells->size();
+        } else {
+            // Count active cells
+            for (int y = 0; y < terrain.height - 1; ++y) {
+                for (int x = 0; x < terrain.width - 1; ++x) {
+                    if (bottom_vertices[y][x] != SIZE_MAX && bottom_vertices[y][x + 1] != SIZE_MAX &&
+                        bottom_vertices[y + 1][x] != SIZE_MAX && bottom_vertices[y + 1][x + 1] != SIZE_MAX) {
+                        active_cell_count++;
+                    }
+                }
+            }
+        }
+        
+        // Use rectangle decomposition only for smaller regions (under 10,000 active cells)
+        if (active_cell_count > 10000) {
+            // For large regions, use the simple fallback approach
+            fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+            return;
+        }
+        
+        // Build binary grid of active cells for smaller regions
+        std::vector<std::vector<bool>> active_grid(terrain.height - 1, std::vector<bool>(terrain.width - 1, false));
+        
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            for (int x = 0; x < terrain.width - 1; ++x) {
+                // Check if all 4 vertices exist for this cell
+                size_t v00 = bottom_vertices[y][x];
+                size_t v10 = bottom_vertices[y][x + 1];
+                size_t v01 = bottom_vertices[y + 1][x];
+                size_t v11 = bottom_vertices[y + 1][x + 1];
+                
+                if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                    // If filter_cells is provided, check if this cell should be included
+                    bool include_cell = (filter_cells == nullptr) || 
+                                       (filter_cells->count({x, y}) && filter_cells->count({x+1, y}) && 
+                                        filter_cells->count({x, y+1}) && filter_cells->count({x+1, y+1}));
+                    
+                    active_grid[y][x] = include_cell;
+                }
+            }
+        }
+        
+        // Find maximal rectangles in the binary grid
+        std::vector<Rectangle> rectangles = findMaximalRectangles(active_grid);
+        
+        // Track which cells have been triangulated
+        std::vector<std::vector<bool>> triangulated(terrain.height - 1, std::vector<bool>(terrain.width - 1, false));
+        
+        // Triangulate each rectangle with 2 triangles per rectangle
+        for (const auto& rect : rectangles) {
+            // Get the 4 corner vertices of the rectangle
+            size_t v00 = bottom_vertices[rect.y][rect.x];                           // bottom-left
+            size_t v10 = bottom_vertices[rect.y][rect.x + rect.width];             // bottom-right  
+            size_t v01 = bottom_vertices[rect.y + rect.height][rect.x];            // top-left
+            size_t v11 = bottom_vertices[rect.y + rect.height][rect.x + rect.width]; // top-right
+            
+            if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                // Add two triangles with CCW orientation (viewed from below, so reversed)
+                // Split rectangle diagonally for consistent 45-90 degree angles
+                mesh.addTriangle(v00, v10, v01);  // bottom-right triangle
+                mesh.addTriangle(v10, v11, v01);  // top-left triangle
+                
+                // Mark all cells in this rectangle as triangulated
+                for (int y = rect.y; y < rect.y + rect.height; ++y) {
+                    for (int x = rect.x; x < rect.x + rect.width; ++x) {
+                        triangulated[y][x] = true;
+                    }
+                }
+            }
+        }
+        
+        // Handle any remaining cells that weren't covered by rectangles (boundary/hole edges)
+        // Use single-cell triangulation to ensure manifold property is maintained
+        for (int y = 0; y < terrain.height - 1; ++y) {
+            for (int x = 0; x < terrain.width - 1; ++x) {
+                if (active_grid[y][x] && !triangulated[y][x]) {
+                    size_t v00 = bottom_vertices[y][x];
+                    size_t v10 = bottom_vertices[y][x + 1];
+                    size_t v01 = bottom_vertices[y + 1][x];
+                    size_t v11 = bottom_vertices[y + 1][x + 1];
+                    
+                    if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                        // Add two triangles with CCW orientation for individual cells
                         mesh.addTriangle(v00, v10, v01);
                         mesh.addTriangle(v10, v11, v01);
                     }
