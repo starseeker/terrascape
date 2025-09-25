@@ -143,22 +143,22 @@ int main(int argc, char* argv[])
         // Generate triangle mesh
         TerraScape::TerrainMesh mesh;
         if (use_components) {
-            TerraScape::triangulateTerrainVolumeWithComponents(terrain, mesh);
+            TerraScape::triangulateVolumeWithComponents(terrain, mesh);
         } else if (use_legacy) {
-            TerraScape::triangulateTerrainVolumeLegacy(terrain, mesh);
+            TerraScape::triangulateVolumeLegacy(terrain, mesh);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
-            params.error_threshold = error_threshold;
-            params.min_triangle_reduction = reduction_percent;
-            TerraScape::triangulateTerrainSurfaceOnly(terrain, mesh, params);
+            params.error_tol = error_threshold;
+            params.min_reduction = reduction_percent;
+            TerraScape::triangulateSurfaceOnly(terrain, mesh, params);
         } else if (use_simplified) {
             TerraScape::SimplificationParams params;
-            params.error_threshold = error_threshold;
-            params.min_triangle_reduction = reduction_percent;
-            TerraScape::triangulateTerrainVolumeSimplified(terrain, mesh, params);
+            params.error_tol = error_threshold;
+            params.min_reduction = reduction_percent;
+            TerraScape::triangulateVolumeSimplified(terrain, mesh, params);
         } else {
             // Default to component-based approach
-            TerraScape::triangulateTerrainVolume(terrain, mesh);
+            TerraScape::triangulateVolume(terrain, mesh);
         }
         
         std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
