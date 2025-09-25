@@ -1559,6 +1559,13 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	return min_dist;
     };
 
+    // Simple pseudo-random number generator (using linear congruential generator)
+    uint32_t rng_state = 12345; // Seed
+    auto next_random = [&rng_state]() -> double {
+	rng_state = rng_state * 1664525 + 1013904223;
+	return (double)(rng_state % 1000) / 1000.0;
+    };
+
     // Create guide lines from boundary edges to the average center point
     // Sample boundary points (not all to avoid too many points)
     size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 100));
@@ -1580,6 +1587,17 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
             int max_steps = (int)(line_length / step_size) - 1; // Leave some distance from center
             
             for (int step = 1; step <= max_steps && step <= 4; ++step) {
+                // Apply probability selection to prevent clustering near center
+                // Points closer to center have lower probability of being selected
+                double probability;
+                if (step == 1) probability = 1.0;        // Always add closest point to edge
+                else if (step == 2) probability = 0.3;   // 30% probability for second point
+                else if (step == 3) probability = 0.1;   // 10% probability for third point
+                else probability = 0.01;                 // 1% probability for fourth point
+                
+                // Use pseudo-random sampling with specific probabilities
+                if (next_random() > probability) continue;
+
                 double step_distance = step * step_size;
                 double x = edge_point.first + dx * step_distance;
                 double y = edge_point.second + dy * step_distance;
@@ -1652,6 +1670,17 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
                 int max_steps = (int)(line_length / step_size) - 1;
                 
                 for (int step = 1; step <= max_steps && step <= 4; ++step) {
+                    // Apply probability selection to prevent clustering near center
+                    // Points closer to center have lower probability of being selected
+                    double probability;
+                    if (step == 1) probability = 1.0;        // Always add closest point to edge
+                    else if (step == 2) probability = 0.3;   // 30% probability for second point
+                    else if (step == 3) probability = 0.1;   // 10% probability for third point
+                    else probability = 0.01;                 // 1% probability for fourth point
+                    
+                    // Use pseudo-random sampling with specific probabilities
+                    if (next_random() > probability) continue;
+
                     double step_distance = step * step_size;
                     double x = hole_edge_point.first + dx * step_distance;
                     double y = hole_edge_point.second + dy * step_distance;
