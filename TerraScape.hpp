@@ -50,6 +50,16 @@
 
 namespace TerraScape {
 
+// Forward declarations for types used in method signatures
+struct TerrainFeature;
+struct SimplificationParams;
+struct TerrainComponents;
+struct ConnectedComponent;
+struct MeshStats;
+struct TerrainData;
+struct DSPData;
+struct NMGTriangleData;
+
 // Basic 3D point structure
 struct Point3D {
     double x, y, z;
@@ -122,6 +132,22 @@ struct Triangle {
 	Point3D cross_product = edge1.cross(edge2);
 	return cross_product.length() > 0; // non-degenerate test
     }
+
+    // Calculate triangle area
+    double area(const std::vector<Point3D>& vertex_list) const {
+	const Point3D& p0 = vertex_list[vertices[0]];
+	const Point3D& p1 = vertex_list[vertices[1]];
+	const Point3D& p2 = vertex_list[vertices[2]];
+
+	Point3D edge1 = p1 - p0;
+	Point3D edge2 = p2 - p0;
+	return edge1.cross(edge2).length() * 0.5;
+    }
+
+    // Check if triangle is degenerate (zero area)
+    bool isDegenerate(const std::vector<Point3D>& vertex_list, double tolerance = 1e-10) const {
+	return area(vertex_list) < tolerance;
+    }
 };
 
 // Terrain data structure
@@ -144,6 +170,19 @@ struct TerrainData {
     bool isValidCell(int x, int y) const {
 	return x >= 0 && x < width && y >= 0 && y < height;
     }
+
+    // Method declarations - implementations follow after all struct definitions
+    TerrainFeature analyzePoint(int x, int y) const;
+    std::vector<std::vector<bool>> generateSampleMask(const SimplificationParams& params) const;
+    TerrainComponents analyzeComponents(double height_threshold = 1e-6) const;
+    
+    // DSP conversion methods
+    bool fromDSP(const DSPData& dsp);
+    bool toDSP(DSPData& dsp) const;
+
+private:
+    void floodFill(std::vector<std::vector<bool>>& visited,
+                   ConnectedComponent& component, int start_x, int start_y, double height_threshold) const;
 };
 
 // Triangle mesh structure
@@ -173,6 +212,30 @@ struct TerrainMesh {
 	addTriangle(v0, v1, v2);
 	surface_triangle_count++;
     }
+
+    // Validate mesh properties
+    MeshStats validate(const TerrainData& terrain) const;
+
+    // Calculate total surface area of all triangles
+    double calculateTotalArea() const {
+	double total = 0.0;
+	for (const auto& triangle : triangles) {
+	    total += triangle.area(vertices);
+	}
+	return total;
+    }
+
+    // Calculate surface area of terrain surface triangles only
+    double calculateSurfaceArea() const {
+	double total = 0.0;
+	for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
+	    total += triangles[i].area(vertices);
+	}
+	return total;
+    }
+
+    // Convert mesh to NMG-compatible triangle data
+    bool toNMG(NMGTriangleData& nmg_data) const;
 };
 
 // Mesh validation statistics
@@ -305,6 +368,9 @@ struct DSPData {
 	    dsp_buf[y * dsp_xcnt + x] = height;
 	}
     }
+
+    // Convert to TerrainData format
+    bool toTerrain(TerrainData& terrain) const;
 };
 
 // NMG-compatible triangle output
@@ -342,20 +408,11 @@ void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
 void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
-TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y);
-std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, const SimplificationParams& params);
-MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
 
 // BRL-CAD DSP integration functions
-bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain);
-bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp);
-bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data);
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
 
-// Flood fill and connected component analysis
-TerrainComponents analyzeComponents(const TerrainData& terrain, double height_threshold = 1e-6);
-void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
-	ConnectedComponent& component, int start_x, int start_y, double height_threshold);
+// Triangulation functions (these will eventually be moved to TerrainMesh class)
 void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
 
@@ -392,31 +449,31 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
 // Implementation
 
 // Analyze terrain features at a specific point (Terra/Scape inspired)
-TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
+TerrainFeature TerrainData::analyzePoint(int x, int y) const {
     TerrainFeature feature;
 
-    if (!terrain.isValidCell(x, y)) {
+    if (!isValidCell(x, y)) {
 	return feature;
     }
 
     // Calculate local slope using central differences
     double dx = 0, dy = 0;
-    if (terrain.isValidCell(x-1, y) && terrain.isValidCell(x+1, y)) {
-	dx = (terrain.getHeight(x+1, y) - terrain.getHeight(x-1, y)) / (2.0 * terrain.cell_size);
+    if (isValidCell(x-1, y) && isValidCell(x+1, y)) {
+	dx = (getHeight(x+1, y) - getHeight(x-1, y)) / (2.0 * cell_size);
     }
-    if (terrain.isValidCell(x, y-1) && terrain.isValidCell(x, y+1)) {
-	dy = (terrain.getHeight(x, y+1) - terrain.getHeight(x, y-1)) / (2.0 * terrain.cell_size);
+    if (isValidCell(x, y-1) && isValidCell(x, y+1)) {
+	dy = (getHeight(x, y+1) - getHeight(x, y-1)) / (2.0 * cell_size);
     }
     feature.slope = std::sqrt(dx*dx + dy*dy);
 
     // Calculate local curvature (second derivatives)
     double dxx = 0, dyy = 0;
-    double h_center = terrain.getHeight(x, y);
-    if (terrain.isValidCell(x-1, y) && terrain.isValidCell(x+1, y)) {
-	dxx = (terrain.getHeight(x+1, y) - 2*h_center + terrain.getHeight(x-1, y)) / (terrain.cell_size * terrain.cell_size);
+    double h_center = getHeight(x, y);
+    if (isValidCell(x-1, y) && isValidCell(x+1, y)) {
+	dxx = (getHeight(x+1, y) - 2*h_center + getHeight(x-1, y)) / (cell_size * cell_size);
     }
-    if (terrain.isValidCell(x, y-1) && terrain.isValidCell(x, y+1)) {
-	dyy = (terrain.getHeight(x, y+1) - 2*h_center + terrain.getHeight(x, y-1)) / (terrain.cell_size * terrain.cell_size);
+    if (isValidCell(x, y-1) && isValidCell(x, y+1)) {
+	dyy = (getHeight(x, y+1) - 2*h_center + getHeight(x, y-1)) / (cell_size * cell_size);
     }
     feature.curvature = std::abs(dxx) + std::abs(dyy);
 
@@ -426,8 +483,8 @@ TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
     int neighbor_count = 0;
     for (int oy = -1; oy <= 1; ++oy) {
 	for (int ox = -1; ox <= 1; ++ox) {
-	    if (terrain.isValidCell(x+ox, y+oy)) {
-		double h = terrain.getHeight(x+ox, y+oy);
+	    if (isValidCell(x+ox, y+oy)) {
+		double h = getHeight(x+ox, y+oy);
 		height_sum += h;
 		neighbor_count++;
 	    }
@@ -438,8 +495,8 @@ TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
 	double mean_height = height_sum / neighbor_count;
 	for (int oy = -1; oy <= 1; ++oy) {
 	    for (int ox = -1; ox <= 1; ++ox) {
-		if (terrain.isValidCell(x+ox, y+oy)) {
-		    double h = terrain.getHeight(x+ox, y+oy);
+		if (isValidCell(x+ox, y+oy)) {
+		    double h = getHeight(x+ox, y+oy);
 		    height_variance += (h - mean_height) * (h - mean_height);
 		}
 	    }
@@ -448,7 +505,7 @@ TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
     }
 
     // Check if this is a boundary point
-    feature.is_boundary = (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1);
+    feature.is_boundary = (x == 0 || x == width-1 || y == 0 || y == height-1);
 
     // Calculate importance score (Terra/Scape style geometric importance)
     feature.importance = feature.curvature + 0.5 * feature.slope + 0.3 * feature.roughness;
@@ -458,13 +515,13 @@ TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
 }
 
 // Generate adaptive sampling mask based on terrain features
-std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, const SimplificationParams& params) {
-    std::vector<std::vector<bool>> mask(terrain.height, std::vector<bool>(terrain.width, false));
+std::vector<std::vector<bool>> TerrainData::generateSampleMask(const SimplificationParams& params) const {
+    std::vector<std::vector<bool>> mask(height, std::vector<bool>(width, false));
 
     // Always include boundary points
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    if (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1) {
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    if (x == 0 || x == width-1 || y == 0 || y == height-1) {
 		mask[y][x] = true;
 	    }
 	}
@@ -473,9 +530,9 @@ std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, co
     // Analyze terrain features and mark important points
     std::vector<std::pair<double, std::pair<int, int>>> importance_points;
 
-    for (int y = 1; y < terrain.height-1; ++y) {
-	for (int x = 1; x < terrain.width-1; ++x) {
-	    TerrainFeature feature = analyzePoint(terrain, x, y);
+    for (int y = 1; y < height-1; ++y) {
+	for (int x = 1; x < width-1; ++x) {
+	    TerrainFeature feature = analyzePoint(x, y);
 
 	    // Include points with high importance or exceeding thresholds
 	    if (feature.importance > params.error_tol ||
@@ -492,13 +549,13 @@ std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, co
     std::sort(importance_points.rbegin(), importance_points.rend());
 
     int current_points = 0;
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
 	    if (mask[y][x]) current_points++;
 	}
     }
 
-    int total_points = terrain.width * terrain.height;
+    int total_points = width * height;
     int min_required = total_points * (100 - params.min_reduction) / 100;
 
     // Add most important remaining points to reach minimum density
@@ -516,9 +573,8 @@ std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, co
     return mask;
 }
 
-// Flood fill to identify a connected component of non-zero height cells
-void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
-	ConnectedComponent& component, int start_x, int start_y, double height_threshold) {
+void TerrainData::floodFill(std::vector<std::vector<bool>>& visited,
+                           ConnectedComponent& component, int start_x, int start_y, double height_threshold) const {
     std::queue<std::pair<int, int>> to_visit;
     to_visit.push({start_x, start_y});
     visited[start_y][start_x] = true;
@@ -537,9 +593,9 @@ void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visit
 	    int nx = x + dx[i];
 	    int ny = y + dy[i];
 
-	    if (terrain.isValidCell(nx, ny) &&
+	    if (isValidCell(nx, ny) &&
 		    !visited[ny][nx] &&
-		    terrain.getHeight(nx, ny) > height_threshold) {
+		    getHeight(nx, ny) > height_threshold) {
 
 		visited[ny][nx] = true;
 		to_visit.push({nx, ny});
@@ -549,21 +605,20 @@ void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visit
     }
 }
 
-// Analyze terrain to identify connected components (islands)
-TerrainComponents analyzeComponents(const TerrainData& terrain, double height_threshold) {
-    TerrainComponents result(terrain.width, terrain.height);
-    std::vector<std::vector<bool>> visited(terrain.height, std::vector<bool>(terrain.width, false));
+TerrainComponents TerrainData::analyzeComponents(double height_threshold) const {
+    TerrainComponents result(width, height);
+    std::vector<std::vector<bool>> visited(height, std::vector<bool>(width, false));
 
     int component_id = 0;
 
     // Find all connected components of non-zero height cells
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    if (!visited[y][x] && terrain.getHeight(x, y) > height_threshold) {
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    if (!visited[y][x] && getHeight(x, y) > height_threshold) {
 		ConnectedComponent component;
 		component.id = component_id;
 
-		floodFill(terrain, visited, component, x, y, height_threshold);
+		floodFill(visited, component, x, y, height_threshold);
 
 		// Mark cells in the component map
 		for (const auto& cell : component.cells) {
@@ -585,7 +640,7 @@ TerrainComponents analyzeComponents(const TerrainData& terrain, double height_th
 			int ny = cy + dy[i];
 
 			// Boundary if neighbor is out of bounds or zero-height
-			if (!terrain.isValidCell(nx, ny) || terrain.getHeight(nx, ny) <= height_threshold) {
+			if (!isValidCell(nx, ny) || getHeight(nx, ny) <= height_threshold) {
 			    is_boundary = true;
 			    break;
 			}
@@ -734,7 +789,7 @@ void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& me
     }
 
     // Analyze terrain to find connected components
-    TerrainComponents components = analyzeComponents(terrain);
+    TerrainComponents components = terrain.analyzeComponents();
 
     std::cout << "Found " << components.components.size() << " terrain component(s)" << std::endl;
 
@@ -858,7 +913,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
     }
 
     // Generate adaptive sampling mask based on terrain features
-    auto sample_mask = generateSampleMask(terrain, params);
+    auto sample_mask = terrain.generateSampleMask(params);
 
     // Create a new simplified grid by decimation
     std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
@@ -1060,7 +1115,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
     }
 
     // Generate adaptive sampling mask
-    auto sample_mask = generateSampleMask(terrain, params);
+    auto sample_mask = terrain.generateSampleMask(params);
 
     // Use more aggressive decimation for surface-only mode
     int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.min_reduction)));
@@ -2168,14 +2223,13 @@ void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vecto
     }
 }
 
-// Validate mesh properties
-MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
+MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     MeshStats stats;
 
     // Check edge manifold property
     std::unordered_map<Edge, int, EdgeHash> edge_count;
 
-    for (const auto& triangle : mesh.triangles) {
+    for (const auto& triangle : triangles) {
 	Edge e1(triangle.vertices[0], triangle.vertices[1]);
 	Edge e2(triangle.vertices[1], triangle.vertices[2]);
 	Edge e3(triangle.vertices[2], triangle.vertices[0]);
@@ -2199,10 +2253,10 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
     int total_triangles = 0;
     int properly_oriented = 0;
 
-    for (const auto& triangle : mesh.triangles) {
-	const Point3D& p0 = mesh.vertices[triangle.vertices[0]];
-	const Point3D& p1 = mesh.vertices[triangle.vertices[1]];
-	const Point3D& p2 = mesh.vertices[triangle.vertices[2]];
+    for (const auto& triangle : triangles) {
+	const Point3D& p0 = vertices[triangle.vertices[0]];
+	const Point3D& p1 = vertices[triangle.vertices[1]];
+	const Point3D& p2 = vertices[triangle.vertices[2]];
 
 	Point3D edge1 = p1 - p0;
 	Point3D edge2 = p2 - p0;
@@ -2222,10 +2276,10 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
 
     // Calculate volume using divergence theorem
     stats.volume = 0.0;
-    for (const auto& triangle : mesh.triangles) {
-	const Point3D& p0 = mesh.vertices[triangle.vertices[0]];
-	const Point3D& p1 = mesh.vertices[triangle.vertices[1]];
-	const Point3D& p2 = mesh.vertices[triangle.vertices[2]];
+    for (const auto& triangle : triangles) {
+	const Point3D& p0 = vertices[triangle.vertices[0]];
+	const Point3D& p1 = vertices[triangle.vertices[1]];
+	const Point3D& p2 = vertices[triangle.vertices[2]];
 
 	// Volume contribution from this triangle
 	stats.volume += (p0.x * (p1.y * p2.z - p2.y * p1.z) +
@@ -2245,11 +2299,11 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
 
     // Calculate surface area (only terrain surface triangles)
     stats.surface_area = 0.0;
-    for (size_t i = 0; i < mesh.surface_triangle_count && i < mesh.triangles.size(); ++i) {
-	const Triangle& triangle = mesh.triangles[i];
-	const Point3D& p0 = mesh.vertices[triangle.vertices[0]];
-	const Point3D& p1 = mesh.vertices[triangle.vertices[1]];
-	const Point3D& p2 = mesh.vertices[triangle.vertices[2]];
+    for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
+	const Triangle& triangle = triangles[i];
+	const Point3D& p0 = vertices[triangle.vertices[0]];
+	const Point3D& p1 = vertices[triangle.vertices[1]];
+	const Point3D& p2 = vertices[triangle.vertices[2]];
 
 	Point3D edge1 = p1 - p0;
 	Point3D edge2 = p2 - p0;
@@ -2263,49 +2317,47 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
     return stats;
 }
 
-// Convert DSP data to TerraScape TerrainData format
-bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain) {
+bool TerrainData::fromDSP(const DSPData& dsp) {
     if (!dsp.dsp_buf || dsp.dsp_xcnt == 0 || dsp.dsp_ycnt == 0) {
 	return false;
     }
 
-    terrain.width = static_cast<int>(dsp.dsp_xcnt);
-    terrain.height = static_cast<int>(dsp.dsp_ycnt);
-    terrain.cell_size = dsp.cell_size;
-    terrain.origin = dsp.origin;
+    width = static_cast<int>(dsp.dsp_xcnt);
+    height = static_cast<int>(dsp.dsp_ycnt);
+    cell_size = dsp.cell_size;
+    origin = dsp.origin;
 
     // Initialize height array
-    terrain.heights.resize(terrain.height);
-    for (int y = 0; y < terrain.height; ++y) {
-	terrain.heights[y].resize(terrain.width);
+    heights.resize(height);
+    for (int y = 0; y < height; ++y) {
+	heights[y].resize(width);
     }
 
     // Convert unsigned short data to double and find min/max
-    terrain.min_height = std::numeric_limits<double>::max();
-    terrain.max_height = std::numeric_limits<double>::lowest();
+    min_height = std::numeric_limits<double>::max();
+    max_height = std::numeric_limits<double>::lowest();
 
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    double height = static_cast<double>(dsp.dsp_buf[y * dsp.dsp_xcnt + x]);
-	    terrain.heights[y][x] = height;
-	    terrain.min_height = std::min(terrain.min_height, height);
-	    terrain.max_height = std::max(terrain.max_height, height);
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    double height_val = static_cast<double>(dsp.dsp_buf[y * dsp.dsp_xcnt + x]);
+	    heights[y][x] = height_val;
+	    min_height = std::min(min_height, height_val);
+	    max_height = std::max(max_height, height_val);
 	}
     }
 
     return true;
 }
 
-// Convert TerraScape TerrainData to DSP format
-bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp) {
-    if (terrain.width <= 0 || terrain.height <= 0 || terrain.heights.empty()) {
+bool TerrainData::toDSP(DSPData& dsp) const {
+    if (width <= 0 || height <= 0 || heights.empty()) {
 	return false;
     }
 
-    dsp.dsp_xcnt = static_cast<uint32_t>(terrain.width);
-    dsp.dsp_ycnt = static_cast<uint32_t>(terrain.height);
-    dsp.cell_size = terrain.cell_size;
-    dsp.origin = terrain.origin;
+    dsp.dsp_xcnt = static_cast<uint32_t>(width);
+    dsp.dsp_ycnt = static_cast<uint32_t>(height);
+    dsp.cell_size = cell_size;
+    dsp.origin = origin;
 
     // Allocate buffer if not already allocated
     if (!dsp.dsp_buf) {
@@ -2314,42 +2366,45 @@ bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp) {
     }
 
     // Convert double data to unsigned short
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    double height = terrain.getHeight(x, y);
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    double height_val = getHeight(x, y);
 	    // Clamp to unsigned short range
-	    if (height < 0) height = 0;
-	    if (height > 65535) height = 65535;
-	    dsp.dsp_buf[y * dsp.dsp_xcnt + x] = static_cast<unsigned short>(height);
+	    if (height_val < 0) height_val = 0;
+	    if (height_val > 65535) height_val = 65535;
+	    dsp.dsp_buf[y * dsp.dsp_xcnt + x] = static_cast<unsigned short>(height_val);
 	}
     }
 
     return true;
 }
 
-// Convert TerrainMesh to NMG-compatible triangle data
-bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data) {
-    if (mesh.vertices.empty() || mesh.triangles.empty()) {
+bool DSPData::toTerrain(TerrainData& terrain) const {
+    return terrain.fromDSP(*this);
+}
+
+bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
+    if (vertices.empty() || triangles.empty()) {
 	return false;
     }
 
     nmg_data.triangles.clear();
-    nmg_data.unique_vertices = mesh.vertices;  // Copy vertex data
-    nmg_data.surface_triangle_count = mesh.surface_triangle_count;
+    nmg_data.unique_vertices = vertices;  // Copy vertex data
+    nmg_data.surface_triangle_count = surface_triangle_count;
 
     // Convert triangles to NMG format
-    nmg_data.triangles.reserve(mesh.triangles.size());
+    nmg_data.triangles.reserve(triangles.size());
 
-    for (size_t i = 0; i < mesh.triangles.size(); ++i) {
-	const Triangle& tri = mesh.triangles[i];
+    for (size_t i = 0; i < triangles.size(); ++i) {
+	const Triangle& tri = triangles[i];
 
 	// Create triangle vertices with references to unique vertex array
-	NMGTriangleData::TriangleVertex v0(mesh.vertices[tri.vertices[0]], tri.vertices[0]);
-	NMGTriangleData::TriangleVertex v1(mesh.vertices[tri.vertices[1]], tri.vertices[1]);
-	NMGTriangleData::TriangleVertex v2(mesh.vertices[tri.vertices[2]], tri.vertices[2]);
+	NMGTriangleData::TriangleVertex v0(vertices[tri.vertices[0]], tri.vertices[0]);
+	NMGTriangleData::TriangleVertex v1(vertices[tri.vertices[1]], tri.vertices[1]);
+	NMGTriangleData::TriangleVertex v2(vertices[tri.vertices[2]], tri.vertices[2]);
 
 	// Determine if this is a surface triangle (first N triangles are surface)
-	bool is_surface = (i < mesh.surface_triangle_count);
+	bool is_surface = (i < surface_triangle_count);
 
 	// Create NMG triangle
 	NMGTriangleData::NMGTriangle nmg_tri(v0, v1, v2, is_surface);
@@ -2363,7 +2418,7 @@ bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data) {
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) {
     // Step 1: Convert DSP to TerraScape format
     TerrainData terrain;
-    if (!convertDSPToTerrain(dsp, terrain)) {
+    if (!terrain.fromDSP(dsp)) {
 	return false;
     }
 
@@ -2372,7 +2427,7 @@ bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) 
     triangulateVolume(terrain, mesh);
 
     // Step 3: Convert mesh to NMG format
-    return convertMeshToNMG(mesh, nmg_data);
+    return mesh.toNMG(nmg_data);
 }
 
 
