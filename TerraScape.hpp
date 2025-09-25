@@ -388,6 +388,12 @@ namespace TerraScape {
                             std::vector<std::pair<double, double>>& hole_boundary,
                             std::vector<size_t>& vertex_indices);
 
+    // Triangle quality improvement functions
+    double calculateTriangleAspectRatio(const Triangle& tri, const std::vector<Point3D>& vertices);
+    double calculateEdgeLength(const Point3D& p1, const Point3D& p2);
+    void improveBottomFaceTriangleQuality(TerrainMesh& mesh, size_t bottom_triangle_start_idx, 
+                                         double max_aspect_ratio = 10.0, int max_iterations = 100);
+
     // Implementation
 
     // Helper function to check file extension
@@ -1404,6 +1410,9 @@ namespace TerraScape {
         try {
             std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon_rings);
             
+            // Record starting index of bottom face triangles for quality improvement
+            size_t bottom_triangle_start_idx = mesh.triangles.size();
+            
             // Add triangles with correct bottom face orientation
             for (size_t i = 0; i < indices.size(); i += 3) {
                 if (i + 2 < indices.size() && indices[i] < vertex_indices.size() && 
@@ -1417,6 +1426,19 @@ namespace TerraScape {
                     mesh.addTriangle(v0, v2, v1);
                 }
             }
+            
+            // Improve triangle quality by splitting long, thin triangles
+            size_t initial_triangle_count = mesh.triangles.size();
+            size_t initial_vertex_count = mesh.vertices.size();
+            improveBottomFaceTriangleQuality(mesh, bottom_triangle_start_idx, 10.0, 5); // Only 5 iterations
+            size_t final_triangle_count = mesh.triangles.size();
+            size_t final_vertex_count = mesh.vertices.size();
+            size_t bottom_triangles_added = final_triangle_count - initial_triangle_count;
+            size_t vertices_added = final_vertex_count - initial_vertex_count;
+            if (bottom_triangles_added > 0) {
+                // Debug would show: added X triangles and Y vertices to improve bottom face quality
+            }
+            
         } catch (const std::exception&) {
             fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
         }
@@ -1499,6 +1521,115 @@ namespace TerraScape {
         }
         
         return hole_boundary.size() >= 3;
+    }
+
+    // Triangle quality improvement functions
+    
+    // Calculate aspect ratio of a triangle (longest edge / shortest edge)
+    double calculateTriangleAspectRatio(const Triangle& tri, const std::vector<Point3D>& vertices) {
+        const Point3D& p0 = vertices[tri.vertices[0]];
+        const Point3D& p1 = vertices[tri.vertices[1]];
+        const Point3D& p2 = vertices[tri.vertices[2]];
+        
+        double edge1 = calculateEdgeLength(p0, p1);
+        double edge2 = calculateEdgeLength(p1, p2);
+        double edge3 = calculateEdgeLength(p2, p0);
+        
+        double min_edge = std::min(edge1, std::min(edge2, edge3));
+        double max_edge = std::max(edge1, std::max(edge2, edge3));
+        
+        if (min_edge < 1e-12) return 1e6; // Very thin triangle
+        return max_edge / min_edge;
+    }
+    
+    // Calculate distance between two points
+    double calculateEdgeLength(const Point3D& p1, const Point3D& p2) {
+        Point3D diff = p1 - p2;
+        return diff.length();
+    }
+    
+    // Improve triangle quality by splitting longest edges of poor-aspect-ratio triangles
+    void improveBottomFaceTriangleQuality(TerrainMesh& mesh, size_t bottom_triangle_start_idx, 
+                                         double max_aspect_ratio, int max_iterations) {
+        if (bottom_triangle_start_idx >= mesh.triangles.size()) {
+            return;
+        }
+        
+        // Extract bottom face triangles into separate lists for processing
+        std::vector<Triangle> bottom_triangles;
+        for (size_t i = bottom_triangle_start_idx; i < mesh.triangles.size(); ++i) {
+            bottom_triangles.push_back(mesh.triangles[i]);
+        }
+        
+        // Remove original bottom triangles from mesh
+        mesh.triangles.erase(mesh.triangles.begin() + bottom_triangle_start_idx, mesh.triangles.end());
+        
+        // Iteratively improve triangle quality
+        for (int iter = 0; iter < max_iterations; ++iter) {
+            std::vector<Triangle> new_triangles;
+            bool any_splits = false;
+            
+            for (const Triangle& tri : bottom_triangles) {
+                double aspect_ratio = calculateTriangleAspectRatio(tri, mesh.vertices);
+                
+                if (aspect_ratio > max_aspect_ratio) {
+                    // Split this triangle
+                    const Point3D& p0 = mesh.vertices[tri.vertices[0]];
+                    const Point3D& p1 = mesh.vertices[tri.vertices[1]];
+                    const Point3D& p2 = mesh.vertices[tri.vertices[2]];
+                    
+                    // Find the longest edge
+                    double edge1 = calculateEdgeLength(p0, p1);
+                    double edge2 = calculateEdgeLength(p1, p2);
+                    double edge3 = calculateEdgeLength(p2, p0);
+                    
+                    size_t v_a, v_b, v_c; // v_a and v_b are endpoints of longest edge, v_c is opposite
+                    if (edge1 >= edge2 && edge1 >= edge3) {
+                        v_a = tri.vertices[0];
+                        v_b = tri.vertices[1];
+                        v_c = tri.vertices[2];
+                    } else if (edge2 >= edge1 && edge2 >= edge3) {
+                        v_a = tri.vertices[1];
+                        v_b = tri.vertices[2];
+                        v_c = tri.vertices[0];
+                    } else {
+                        v_a = tri.vertices[2];
+                        v_b = tri.vertices[0];
+                        v_c = tri.vertices[1];
+                    }
+                    
+                    // Create midpoint of longest edge
+                    const Point3D& pa = mesh.vertices[v_a];
+                    const Point3D& pb = mesh.vertices[v_b];
+                    Point3D midpoint((pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5, (pa.z + pb.z) * 0.5);
+                    size_t mid_vertex = mesh.addVertex(midpoint);
+                    
+                    // Create two new triangles maintaining bottom face winding order
+                    Triangle tri1(v_a, mid_vertex, v_c);
+                    tri1.computeNormal(mesh.vertices);
+                    Triangle tri2(mid_vertex, v_b, v_c);
+                    tri2.computeNormal(mesh.vertices);
+                    
+                    new_triangles.push_back(tri1);
+                    new_triangles.push_back(tri2);
+                    any_splits = true;
+                } else {
+                    // Keep triangle as is
+                    new_triangles.push_back(tri);
+                }
+            }
+            
+            bottom_triangles = std::move(new_triangles);
+            
+            if (!any_splits) {
+                break; // No more improvement possible
+            }
+        }
+        
+        // Add improved triangles back to mesh
+        for (const Triangle& tri : bottom_triangles) {
+            mesh.triangles.push_back(tri);
+        }
     }
 
     // Fallback triangulation method (original grid-based approach) 
