@@ -354,6 +354,8 @@ namespace TerraScape {
     // Forward declarations
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
+    bool readDSPBinaryFile(const std::string& filename, TerrainData& terrain, int width, int height, double cell_size = 1.0);
+    bool readDSPBinaryFile(const std::string& filename, DSPData& dsp, int width, int height);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
@@ -546,6 +548,105 @@ namespace TerraScape {
             }
         }
 
+        file.close();
+        return true;
+    }
+
+    // Read BRL-CAD DSP binary file directly to TerrainData
+    bool readDSPBinaryFile(const std::string& filename, TerrainData& terrain, int width, int height, double cell_size) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        // Calculate expected file size
+        size_t expected_size = static_cast<size_t>(width) * height * sizeof(unsigned short);
+        
+        // Get actual file size
+        file.seekg(0, std::ios::end);
+        size_t file_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        
+        if (file_size != expected_size) {
+            file.close();
+            return false; // File size doesn't match expected dimensions
+        }
+        
+        terrain.width = width;
+        terrain.height = height;
+        terrain.cell_size = cell_size;
+        terrain.origin = Point3D(0, 0, 0);
+        
+        // Initialize height data
+        terrain.heights.resize(terrain.height);
+        terrain.min_height = std::numeric_limits<double>::max();
+        terrain.max_height = std::numeric_limits<double>::lowest();
+        
+        // Read binary data
+        std::vector<unsigned short> buffer(width * height);
+        file.read(reinterpret_cast<char*>(buffer.data()), width * height * sizeof(unsigned short));
+        
+        if (!file.good()) {
+            file.close();
+            return false;
+        }
+        
+        // Convert to terrain height data
+        for (int y = 0; y < terrain.height; ++y) {
+            terrain.heights[y].resize(terrain.width);
+            for (int x = 0; x < terrain.width; ++x) {
+                double height = static_cast<double>(buffer[y * width + x]);
+                terrain.heights[y][x] = height;
+                terrain.min_height = std::min(terrain.min_height, height);
+                terrain.max_height = std::max(terrain.max_height, height);
+            }
+        }
+        
+        file.close();
+        return true;
+    }
+    
+    // Read BRL-CAD DSP binary file directly to DSPData structure  
+    bool readDSPBinaryFile(const std::string& filename, DSPData& dsp, int width, int height) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        // Calculate expected file size
+        size_t expected_size = static_cast<size_t>(width) * height * sizeof(unsigned short);
+        
+        // Get actual file size
+        file.seekg(0, std::ios::end);
+        size_t file_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        
+        if (file_size != expected_size) {
+            file.close();
+            return false; // File size doesn't match expected dimensions
+        }
+        
+        // Set up DSP structure
+        dsp.dsp_xcnt = static_cast<uint32_t>(width);
+        dsp.dsp_ycnt = static_cast<uint32_t>(height);
+        dsp.cell_size = 1.0;
+        dsp.origin = Point3D(0, 0, 0);
+        
+        // Allocate buffer
+        if (dsp.owns_buffer && dsp.dsp_buf) {
+            delete[] dsp.dsp_buf;
+        }
+        dsp.dsp_buf = new unsigned short[width * height];
+        dsp.owns_buffer = true;
+        
+        // Read binary data directly
+        file.read(reinterpret_cast<char*>(dsp.dsp_buf), width * height * sizeof(unsigned short));
+        
+        if (!file.good()) {
+            file.close();
+            return false;
+        }
+        
         file.close();
         return true;
     }
