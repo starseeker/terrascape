@@ -27,6 +27,7 @@ int main(int argc, char* argv[])
         ("width", "Width for DSP binary file", cxxopts::value<int>()->default_value("256"))
         ("height", "Height for DSP binary file", cxxopts::value<int>()->default_value("256"))
         ("cell-size", "Physical cell size for DSP", cxxopts::value<double>()->default_value("1.0"))
+        ("height-scale", "Height scaling factor for DSP (default: auto-scale to 0-100 range)", cxxopts::value<double>()->default_value("0.0"))
         ("manifold-validation", "Validate mesh using @elalish/manifold library")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
@@ -52,6 +53,7 @@ int main(int argc, char* argv[])
     int dsp_width = result["width"].as<int>();
     int dsp_height = result["height"].as<int>();
     double dsp_cell_size = result["cell-size"].as<double>();
+    double height_scale = result["height-scale"].as<double>();
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
@@ -146,7 +148,16 @@ int main(int argc, char* argv[])
         
         // Test 1: Read as TerrainData
         TerraScape::TerrainData terrain;
-        if (!TerraScape::readDSPBinaryFile(input_file, terrain, dsp_width, dsp_height, dsp_cell_size)) {
+        bool success;
+        if (height_scale > 0.0) {
+            success = TerraScape::readDSPBinaryFile(input_file, terrain, dsp_width, dsp_height, dsp_cell_size, height_scale);
+            std::cout << "Using custom height scale: " << height_scale << std::endl;
+        } else {
+            success = TerraScape::readDSPBinaryFile(input_file, terrain, dsp_width, dsp_height, dsp_cell_size, height_scale);
+            std::cout << "Using auto-scaling (0-100 range)" << std::endl;
+        }
+        
+        if (!success) {
             std::cerr << "Error: Failed to read DSP binary file: " << input_file << std::endl;
             return 1;
         }

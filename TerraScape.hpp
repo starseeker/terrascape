@@ -355,6 +355,7 @@ namespace TerraScape {
     bool readTerrainFile(const std::string& filename, TerrainData& terrain);
     bool readPGMFile(const std::string& filename, TerrainData& terrain);
     bool readDSPBinaryFile(const std::string& filename, TerrainData& terrain, int width, int height, double cell_size = 1.0);
+    bool readDSPBinaryFile(const std::string& filename, TerrainData& terrain, int width, int height, double cell_size, double height_scale);
     bool readDSPBinaryFile(const std::string& filename, DSPData& dsp, int width, int height);
     void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
@@ -591,11 +592,77 @@ namespace TerraScape {
             return false;
         }
         
-        // Convert to terrain height data
+        // Convert to terrain height data with reasonable scaling
+        // Scale 16-bit values (0-65535) to a reasonable height range (0-100)
+        double height_scale = 100.0 / 65535.0;
+        
         for (int y = 0; y < terrain.height; ++y) {
             terrain.heights[y].resize(terrain.width);
             for (int x = 0; x < terrain.width; ++x) {
-                double height = static_cast<double>(buffer[y * width + x]);
+                double height = static_cast<double>(buffer[y * width + x]) * height_scale;
+                terrain.heights[y][x] = height;
+                terrain.min_height = std::min(terrain.min_height, height);
+                terrain.max_height = std::max(terrain.max_height, height);
+            }
+        }
+        
+        file.close();
+        return true;
+    }
+    
+    // Read BRL-CAD DSP binary file with custom height scaling
+    bool readDSPBinaryFile(const std::string& filename, TerrainData& terrain, int width, int height, double cell_size, double height_scale) {
+        std::ifstream file(filename, std::ios::binary);
+        if (!file.is_open()) {
+            return false;
+        }
+        
+        // Calculate expected file size
+        size_t expected_size = static_cast<size_t>(width) * height * sizeof(unsigned short);
+        
+        // Get actual file size
+        file.seekg(0, std::ios::end);
+        size_t file_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        
+        if (file_size != expected_size) {
+            file.close();
+            return false; // File size doesn't match expected dimensions
+        }
+        
+        terrain.width = width;
+        terrain.height = height;
+        terrain.cell_size = cell_size;
+        terrain.origin = Point3D(0, 0, 0);
+        
+        // Initialize height data
+        terrain.heights.resize(terrain.height);
+        terrain.min_height = std::numeric_limits<double>::max();
+        terrain.max_height = std::numeric_limits<double>::lowest();
+        
+        // Read binary data
+        std::vector<unsigned short> buffer(width * height);
+        file.read(reinterpret_cast<char*>(buffer.data()), width * height * sizeof(unsigned short));
+        
+        if (!file.good()) {
+            file.close();
+            return false;
+        }
+        
+        // Determine scaling
+        double scale_factor;
+        if (height_scale <= 0.0) {
+            // Auto-scale: Scale 16-bit values (0-65535) to a reasonable height range (0-100)
+            scale_factor = 100.0 / 65535.0;
+        } else {
+            scale_factor = height_scale / 65535.0;
+        }
+        
+        // Convert to terrain height data with scaling
+        for (int y = 0; y < terrain.height; ++y) {
+            terrain.heights[y].resize(terrain.width);
+            for (int x = 0; x < terrain.width; ++x) {
+                double height = static_cast<double>(buffer[y * width + x]) * scale_factor;
                 terrain.heights[y][x] = height;
                 terrain.min_height = std::min(terrain.min_height, height);
                 terrain.max_height = std::max(terrain.max_height, height);
