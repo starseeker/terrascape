@@ -261,15 +261,6 @@ class TerrainMesh {
 
 // Mesh validation statistics
 class MeshStats {
-    private:
-	double volume;
-	double surface_area;
-	double expected_volume;
-	double expected_surface_area;
-	bool is_manifold;
-	bool is_ccw_oriented;
-	int non_manifold_edges;
-
     public:
 	MeshStats() : volume(0), surface_area(0), expected_volume(0), expected_surface_area(0),
 	is_manifold(true), is_ccw_oriented(true), non_manifold_edges(0) {}
@@ -291,16 +282,19 @@ class MeshStats {
 	void setIsManifold(bool val) { is_manifold = val; }
 	void setIsCCWOriented(bool val) { is_ccw_oriented = val; }
 	void setNonManifoldEdges(int val) { non_manifold_edges = val; }
+
+    private:
+	double volume;
+	double surface_area;
+	double expected_volume;
+	double expected_surface_area;
+	bool is_manifold;
+	bool is_ccw_oriented;
+	int non_manifold_edges;
 };
 
 // Terrain simplification parameters based on Terra/Scape concepts
 class SimplificationParams {
-    private:
-	double error_tol;      // Maximum allowed geometric error
-	double slope_tol;      // Slope threshold for feature preservation
-	int min_reduction;     // Minimum percentage of triangles to remove
-	bool preserve_bounds;  // Whether to preserve terrain boundaries
-
     public:
 	SimplificationParams() :
 	    error_tol(0.1),
@@ -319,17 +313,16 @@ class SimplificationParams {
 	void setSlopeTol(double val) { slope_tol = val; }
 	void setMinReduction(int val) { min_reduction = val; }
 	void setPreserveBounds(bool val) { preserve_bounds = val; }
+
+    private:
+	double error_tol;      // Maximum allowed geometric error
+	double slope_tol;      // Slope threshold for feature preservation
+	int min_reduction;     // Minimum percentage of triangles to remove
+	bool preserve_bounds;  // Whether to preserve terrain boundaries
 };
 
 // Local terrain analysis for adaptive simplification
 class TerrainFeature {
-    private:
-	double curvature;          // Local surface curvature
-	double slope;              // Local slope magnitude
-	double roughness;          // Local height variation
-	bool is_boundary;          // Whether this is a boundary vertex
-	double importance;   // Combined importance metric
-
     public:
 	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
 
@@ -346,13 +339,17 @@ class TerrainFeature {
 	void setRoughness(double val) { roughness = val; }
 	void setIsBoundary(bool val) { is_boundary = val; }
 	void setImportance(double val) { importance = val; }
+
+    private:
+	double curvature;          // Local surface curvature
+	double slope;              // Local slope magnitude
+	double roughness;          // Local height variation
+	bool is_boundary;          // Whether this is a boundary vertex
+	double importance;   // Combined importance metric
 };
 
 // Edge structure for manifold checking
 class Edge {
-    private:
-	size_t v0, v1;
-
     public:
 	Edge(size_t a, size_t b) {
 	    if (a < b) {
@@ -374,6 +371,8 @@ class Edge {
 	bool operator==(const Edge& other) const {
 	    return v0 == other.v0 && v1 == other.v1;
 	}
+    private:
+	size_t v0, v1;
 };
 
 // Hash function for Edge
@@ -2133,8 +2132,8 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
 
 	// Volume contribution from this triangle
 	stats.setVolume(stats.getVolume() + (p0.x * (p1.y * p2.z - p2.y * p1.z) +
-		p1.x * (p2.y * p0.z - p0.y * p2.z) +
-		p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0);
+		    p1.x * (p2.y * p0.z - p0.y * p2.z) +
+		    p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0);
     }
     stats.setVolume(std::abs(stats.getVolume()));
 
