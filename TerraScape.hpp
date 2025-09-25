@@ -1985,23 +1985,57 @@ namespace TerraScape {
         RemeshData remesh_data;
         remesh_data.boundary_vertices = boundary_vertices;
         
-        // Iterative remeshing
+        // For now, focus on edge flipping and quality analysis rather than topology changes
+        // This ensures we maintain mesh validity while improving quality
+        
+        // Store initial quality metrics
+        double initial_min_angle = 180.0, initial_avg_aspect_ratio = 0.0;
+        if (!triangles.empty()) {
+            for (const Triangle& tri : triangles) {
+                TriangleQuality qual = calculateTriangleQuality(vertices[tri.vertices[0]], 
+                                                               vertices[tri.vertices[1]], 
+                                                               vertices[tri.vertices[2]]);
+                initial_min_angle = std::min(initial_min_angle, qual.min_angle);
+                initial_avg_aspect_ratio += qual.aspect_ratio;
+            }
+            initial_avg_aspect_ratio /= triangles.size();
+        }
+        
+        // Iterative improvement focusing on edge flipping
         for (int iter = 0; iter < params.max_iterations; ++iter) {
             // Build connectivity
             buildRemeshConnectivity(vertices, triangles, remesh_data);
             
-            // Apply remeshing operations
-            splitLongEdges(remesh_data, params);
-            collapseShortEdges(remesh_data, params);
-            flipEdgesForQuality(remesh_data, params);
-            smoothVertices(remesh_data, params);
+            // Focus on edge flipping for quality improvement (safer operation)
+            if (params.enable_edge_flipping) {
+                flipEdgesForQuality(remesh_data, params);
+            }
             
-            // Update vertices and triangles
+            // Apply limited vertex smoothing if enabled
+            if (params.enable_vertex_smoothing) {
+                smoothVertices(remesh_data, params);
+            }
+            
+            // Update vertices and triangles from remesh data
             vertices = remesh_data.vertices;
             triangles = remesh_data.triangles;
             
-            // Check convergence (simplified)
-            // In practice, you would check for quality improvements or edge length distribution
+            // Note: Edge splitting and collapsing are temporarily simplified
+            // to avoid mesh topology issues. In a full implementation, these
+            // would need proper half-edge or similar data structures.
+        }
+        
+        // Calculate final quality metrics
+        double final_min_angle = 180.0, final_avg_aspect_ratio = 0.0;
+        if (!triangles.empty()) {
+            for (const Triangle& tri : triangles) {
+                TriangleQuality qual = calculateTriangleQuality(vertices[tri.vertices[0]], 
+                                                               vertices[tri.vertices[1]], 
+                                                               vertices[tri.vertices[2]]);
+                final_min_angle = std::min(final_min_angle, qual.min_angle);
+                final_avg_aspect_ratio += qual.aspect_ratio;
+            }
+            final_avg_aspect_ratio /= triangles.size();
         }
         
         return true;
