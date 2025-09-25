@@ -1537,7 +1537,6 @@ std::vector<std::pair<double, double>> calculateMedialAxisPoints(
     // but not so high as to exclude all points in smaller regions
     double medial_threshold = std::max(cell_size * 2.0, std::min(cell_size * 10.0, min_dimension / 8.0));
 
-    std::cout << "Medial axis calculation: region " << width << "x" << height << " cells, threshold=" << medial_threshold << std::endl;
     
     int points_tested = 0;
     int points_inside = 0;
@@ -1562,9 +1561,12 @@ std::vector<std::pair<double, double>> calculateMedialAxisPoints(
 
 	    // Try several points stepping inward (but adjust step size based on available space)
 	    double effective_step = std::min(inward_step, inward_len * 0.8); // Don't step too far
-	    for (int step = 1; step <= 6; ++step) {
-		double test_x = boundary_point.first + inward_dx * effective_step * step * 0.25; // Smaller steps
-		double test_y = boundary_point.second + inward_dy * effective_step * step * 0.25;
+	    double max_step_distance = medial_threshold * 1.5; // Step far enough to reach potential medial axis
+	    for (int step = 1; step <= 12; ++step) { // More steps
+		double step_distance = effective_step * step * 0.5; // Larger steps
+		if (step_distance > max_step_distance) break; // Don't go too far
+		double test_x = boundary_point.first + inward_dx * step_distance;
+		double test_y = boundary_point.second + inward_dy * step_distance;
 
 		if (pointInPolygon(test_x, test_y, boundary)) {
 		    points_inside++;
@@ -2117,8 +2119,8 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 	    outer_boundary, holes, active_cells, terrain,
 	    min_x * terrain.cell_size + terrain.origin.x,
 	    max_x * terrain.cell_size + terrain.origin.x,
-	    min_y * terrain.cell_size + terrain.origin.y,
-	    max_y * terrain.cell_size + terrain.origin.y
+	    terrain.origin.y - max_y * terrain.cell_size,  // Corrected for y-flip
+	    terrain.origin.y - min_y * terrain.cell_size   // Corrected for y-flip
 	    );
 
     // Try detria triangulation first
