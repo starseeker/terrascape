@@ -94,7 +94,7 @@ int main(int argc, char* argv[])
         }
         
         // Validate the mesh
-        TerraScape::MeshStats stats = TerraScape::validateMesh(mesh, terrain);
+        TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
         std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
         std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
@@ -165,7 +165,7 @@ int main(int argc, char* argv[])
                   << mesh.triangles.size() << " triangles" << std::endl;
         
         // Validate mesh properties
-        TerraScape::MeshStats stats = TerraScape::validateMesh(mesh, terrain);
+        TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
         std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
         std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
