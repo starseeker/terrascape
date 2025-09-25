@@ -247,10 +247,10 @@ class TerrainMesh {
 	void triangulateVolumeSimplified(const TerrainData& terrain, const SimplificationParams& params);
 	void triangulateSurfaceOnly(const TerrainData& terrain, const SimplificationParams& params);
 	void triangulateVolumeWithComponents(const TerrainData& terrain);
+	void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component);
 
     private:
 	// Helper methods for triangulation
-	void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component);
 	void triangulateBottomFaceWithEarcut(const std::vector<std::vector<size_t>>& bottom_vertices,
 		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 	void triangulateBottomFaceWithDetria(const std::vector<std::vector<size_t>>& bottom_vertices,
@@ -739,8 +739,21 @@ TerrainComponents TerrainData::analyzeComponents(double height_threshold) const 
     return result;
 }
 
-// Triangulate a single connected component as a separate volumetric mesh
+// Wrapper functions for backwards compatibility
+void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolume(terrain);
+}
+
+void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolumeWithComponents(terrain);
+}
+
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh) {
+    mesh.triangulateComponentVolume(terrain, component);
+}
+
+// Triangulate a single connected component as a separate volumetric mesh
+void TerrainMesh::triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component) {
     if (component.cells.empty()) {
 	return;
     }
@@ -758,8 +771,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 	double world_y = terrain.origin.y - y * terrain.cell_size;
 	double height = terrain.getHeight(x, y);
 
-	top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-	bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+	top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+	bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
     }
 
     // Create a set for quick lookup of component cells
@@ -780,15 +793,15 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t v11 = top_vertices[y+1][x+1];
 
 		// Add two triangles with CCW orientation (viewed from above)
-		mesh.addSurfaceTriangle(v00, v01, v10);
-		mesh.addSurfaceTriangle(v10, v01, v11);
+		addSurfaceTriangle(v00, v01, v10);
+		addSurfaceTriangle(v10, v01, v11);
 	    }
 	}
     }
 
     // Add bottom surface triangles using earcut for more efficient triangulation
     std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, &component_cells_set);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &component_cells_set);
 
     // Generate walls by examining each potential wall edge
     // For each cell, check its 4 neighbors and create walls where needed
@@ -807,8 +820,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y+1][x];
 
 		// Right wall facing outward
-		mesh.addTriangle(t1, t2, b1);
-		mesh.addTriangle(t2, b2, b1);
+		addTriangle(t1, t2, b1);
+		addTriangle(t2, b2, b1);
 	    }
 	}
 
@@ -822,8 +835,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y][x+1];
 
 		// Bottom wall facing outward
-		mesh.addTriangle(t1, b1, t2);
-		mesh.addTriangle(t2, b1, b2);
+		addTriangle(t1, b1, t2);
+		addTriangle(t2, b1, b2);
 	    }
 	}
 
@@ -837,8 +850,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y+1][x];
 
 		// Left wall facing outward
-		mesh.addTriangle(t1, b1, t2);
-		mesh.addTriangle(t2, b1, b2);
+		addTriangle(t1, b1, t2);
+		addTriangle(t2, b1, b2);
 	    }
 	}
 
@@ -852,8 +865,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y][x+1];
 
 		// Top wall facing outward
-		mesh.addTriangle(t1, t2, b1);
-		mesh.addTriangle(t2, b2, b1);
+		addTriangle(t1, t2, b1);
+		addTriangle(t2, b2, b1);
 	    }
 	}
     }
