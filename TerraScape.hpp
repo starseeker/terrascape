@@ -182,7 +182,36 @@ class TerrainData {
 	bool fromDSP(const DSPData& dsp);
 	bool toDSP(DSPData& dsp) const;
 
+	// Generate interior Steiner points to use for triangulation
+	std::vector<std::pair<double, double>> generateSteinerPoints(
+		const std::vector<std::pair<double, double>>& boundary,
+		const std::vector<std::vector<std::pair<double, double>>>& holes,
+		const std::set<std::pair<int, int>>& active_cells,
+		double min_x_in, double max_x_in, double min_y_in, double max_y_in) const;
+
     private:
+	bool addSteinerPointIfValid(double x, double y,
+		const std::vector<std::pair<double, double>>& boundary,
+		const std::vector<std::vector<std::pair<double, double>>>& holes,
+		const std::set<std::pair<int, int>>& active_cells,
+		double min_distance,
+		const std::function<double(double, double)>& distanceToEdges,
+		std::vector<std::pair<double, double>>& steiner_points) const;
+
+	void processGuideLines(const std::vector<std::pair<double, double>>& edge_points,
+		double center_x, double center_y,
+		double min_viable_len,
+		const std::vector<double>& step_probabilities,
+		const std::function<double()>& next_random,
+		const std::vector<std::pair<double, double>>& boundary,
+		const std::vector<std::vector<std::pair<double, double>>>& holes,
+		const std::set<std::pair<int, int>>& active_cells,
+		double min_distance,
+		const std::function<double(double, double)>& distanceToEdges,
+		std::vector<std::pair<double, double>>& steiner_points,
+		size_t sample_step,
+		double step_divisor) const;
+
 	void floodFill(std::vector<std::vector<bool>>& visited,
 		ConnectedComponent& component, int start_x, int start_y, double height_threshold) const;
 };
@@ -217,7 +246,7 @@ class TerrainMesh {
 	}
 
 	// Validate mesh properties
-	MeshStats validate(const TerrainData& terrain) const;
+	MeshStats validate(TerrainData& terrain) const;
 
 	// Calculate total surface area of all triangles
 	double calculateTotalArea() const {
@@ -254,6 +283,11 @@ class TerrainMesh {
 		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 	void fallbackBottomTriangulation(const std::vector<std::vector<size_t>>& bottom_vertices,
 		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+	bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
+		const std::set<std::pair<int, int>>& active_cells,
+		const std::vector<std::vector<size_t>>& bottom_vertices,
+		std::vector<std::pair<double, double>>& hole_boundary,
+		std::vector<size_t>& vertex_indices);
 };
 
 // Mesh validation statistics
@@ -482,33 +516,6 @@ class NMGTriangleData {
 
 	NMGTriangleData() : surface_triangle_count(0) {}
 };
-
-// Triangulation functions (these will eventually be moved to TerrainMesh class)
-void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
-void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
-
-// Detria-based high-quality bottom face triangulation
-void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
-
-void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
-
-// Helper for hole boundary extraction
-bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
-	const std::set<std::pair<int, int>>& active_cells,
-	const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainMesh& mesh,
-	std::vector<std::pair<double, double>>& hole_boundary,
-	std::vector<size_t>& vertex_indices);
-
-// Steiner point generation for improved triangle quality
-std::vector<std::pair<double, double>> generateSteinerPoints(
-	const std::vector<std::pair<double, double>>& boundary,
-	const std::vector<std::vector<std::pair<double, double>>>& holes,
-	const std::set<std::pair<int, int>>& active_cells,
-	const TerrainData& terrain,
-	double min_x, double max_x, double min_y, double max_y);
 
 // Point-in-polygon test
 bool pointInPolygon(double x, double y, const std::vector<std::pair<double, double>>& polygon);
@@ -776,7 +783,7 @@ void TerrainMesh::triangulateComponentVolume(const TerrainData& terrain, const C
 
     // Add bottom surface triangles using earcut for more efficient triangulation
     std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &component_cells_set);
+    triangulateBottomFaceWithDetria(bottom_vertices, terrain, &component_cells_set);
 
     // Generate walls by examining each potential wall edge
     // For each cell, check its 4 neighbors and create walls where needed
@@ -915,7 +922,7 @@ void TerrainMesh::triangulateVolumeLegacy(const TerrainData& terrain) {
     }
 
     // Add bottom surface triangles using detria for high-quality triangulation
-    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, nullptr);
+    triangulateBottomFaceWithDetria(bottom_vertices, terrain, nullptr);
 
     // Add side walls
     // Left wall (x = 0)
@@ -1084,7 +1091,7 @@ void TerrainMesh::triangulateVolumeSimplified(const TerrainData& terrain, const 
 	    }
 	}
     }
-    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &keep_cells);
+    triangulateBottomFaceWithDetria(bottom_vertices, terrain, &keep_cells);
 
     // Left Wall (x = 0)
     {
@@ -1267,10 +1274,10 @@ void TerrainMesh::triangulateSurfaceOnly(const TerrainData& terrain, const Simpl
 }
 
 // Extract hole boundary vertices (clockwise for earcut holes)
-bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
+bool
+TerrainMesh::extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
 	const std::set<std::pair<int, int>>& active_cells,
 	const std::vector<std::vector<size_t>>& bottom_vertices,
-	const TerrainMesh& mesh,
 	std::vector<std::pair<double, double>>& hole_boundary,
 	std::vector<size_t>& vertex_indices) {
 
@@ -1337,7 +1344,7 @@ bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
 
     // Convert to vertex coordinates and indices
     for (const auto& cell : ordered_boundary) {
-	const Point3D& vertex = mesh.vertices[bottom_vertices[cell.second][cell.first]];
+	const Point3D& vertex = vertices[bottom_vertices[cell.second][cell.first]];
 	hole_boundary.push_back({vertex.x, vertex.y});
 	vertex_indices.push_back(bottom_vertices[cell.second][cell.first]);
     }
@@ -1362,14 +1369,13 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
 }
 
 // Helper function to validate and add a Steiner point candidate
-bool addSteinerPointIfValid(double x, double y,
+bool TerrainData::addSteinerPointIfValid(double x, double y,
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
 	const std::set<std::pair<int, int>>& active_cells,
-	const TerrainData& terrain,
 	double min_distance,
 	const std::function<double(double, double)>& distanceToEdges,
-	std::vector<std::pair<double, double>>& steiner_points) {
+	std::vector<std::pair<double, double>>& steiner_points) const {
     // Check if point is valid (inside boundary, not in holes)
     if (!pointInPolygon(x, y, boundary)) {
 	return false;
@@ -1389,11 +1395,11 @@ bool addSteinerPointIfValid(double x, double y,
     }
 
     // Check terrain coordinates and active region
-    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+    int terrain_x = static_cast<int>((x - origin.x) / cell_size);
+    int terrain_y = static_cast<int>((origin.y - y) / cell_size);
 
-    if (terrain_x < 0 || terrain_x >= terrain.width ||
-	    terrain_y < 0 || terrain_y >= terrain.height) {
+    if (terrain_x < 0 || terrain_x >= width ||
+	    terrain_y < 0 || terrain_y >= height) {
 	return false;
     }
 
@@ -1416,7 +1422,8 @@ bool addSteinerPointIfValid(double x, double y,
 }
 
 // Helper function to process guide lines from edge points to center
-void processGuideLines(const std::vector<std::pair<double, double>>& edge_points,
+void
+TerrainData::processGuideLines(const std::vector<std::pair<double, double>>& edge_points,
 	double center_x, double center_y,
 	double min_viable_len,
 	const std::vector<double>& step_probabilities,
@@ -1424,12 +1431,11 @@ void processGuideLines(const std::vector<std::pair<double, double>>& edge_points
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
 	const std::set<std::pair<int, int>>& active_cells,
-	const TerrainData& terrain,
 	double min_distance,
 	const std::function<double(double, double)>& distanceToEdges,
 	std::vector<std::pair<double, double>>& steiner_points,
 	size_t sample_step,
-	double step_divisor = 1.0) {
+	double step_divisor = 1.0) const {
     for (size_t i = 0; i < edge_points.size(); i += sample_step) {
 	const auto& edge_point = edge_points[i];
 
@@ -1455,7 +1461,7 @@ void processGuideLines(const std::vector<std::pair<double, double>>& edge_points
 		double x = edge_point.first + dx * step_distance;
 		double y = edge_point.second + dy * step_distance;
 
-		addSteinerPointIfValid(x, y, boundary, holes, active_cells, terrain,
+		addSteinerPointIfValid(x, y, boundary, holes, active_cells,
 			min_distance, distanceToEdges, steiner_points);
 	    }
 	}
@@ -1463,12 +1469,18 @@ void processGuideLines(const std::vector<std::pair<double, double>>& edge_points
 }
 
 // Generate Steiner points using simple guide lines to average center point
-std::vector<std::pair<double, double>> generateSteinerPoints(
+std::vector<std::pair<double, double>>
+TerrainData::generateSteinerPoints (
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
 	const std::set<std::pair<int, int>>& active_cells,
-	const TerrainData& terrain,
-	double min_x, double max_x, double min_y, double max_y) {
+	double min_x_in, double max_x_in, double min_y_in, double max_y_in) const {
+
+    double min_x = min_x_in * cell_size + origin.x;
+    double max_x = max_x_in * cell_size + origin.x;
+    double min_y = origin.y - max_y_in * cell_size;  // Corrected for y-flip
+    double max_y = origin.y - min_y_in * cell_size;  // Corrected for y-flip
+
 
     std::vector<std::pair<double, double>> steiner_points;
 
@@ -1498,13 +1510,13 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	center_y /= total_points;
     } else {
 	// Fallback to bounding box center
-	center_x = (min_x + max_x) * 0.5 * terrain.cell_size + terrain.origin.x;
-	center_y = (min_y + max_y) * 0.5 * terrain.cell_size + terrain.origin.y;
+	center_x = (min_x + max_x) * 0.5 * cell_size + origin.x;
+	center_y = (min_y + max_y) * 0.5 * cell_size + origin.y;
     }
 
     // Parameters for simplified Steiner point generation
-    double min_distance = terrain.cell_size * 3.0;
-    double min_viable_len = terrain.cell_size * 4.0; // minimum viable length
+    double min_distance = cell_size * 3.0;
+    double min_viable_len = cell_size * 4.0; // minimum viable length
 
     // Distance function to edges
     auto distanceToEdges = [&](double x, double y) -> double {
@@ -1564,7 +1576,7 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
     size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 100));
     std::vector<double> boundary_probabilities = {0.9, 0.7, 0.5, 0.3}; // step probabilities
     processGuideLines(boundary, center_x, center_y, min_viable_len, boundary_probabilities,
-	    next_random, boundary, holes, active_cells, terrain, min_distance,
+	    next_random, boundary, holes, active_cells, min_distance,
 	    distanceToEdges, steiner_points, boundary_sample_step);
 
     // Process hole guide lines
@@ -1572,12 +1584,12 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	size_t hole_sample_step = std::max(1, (int)(hole.size() / 50));
 	std::vector<double> hole_probabilities = {1.0, 0.3, 0.1, 0.01}; // different probabilities for holes
 	processGuideLines(hole, center_x, center_y, min_viable_len, hole_probabilities,
-		next_random, boundary, holes, active_cells, terrain, min_distance,
+		next_random, boundary, holes, active_cells, min_distance,
 		distanceToEdges, steiner_points, hole_sample_step, 5.0); // step_divisor = 5.0 for holes
     }
 
     // Add center point (only once, outside the loops)
-    addSteinerPointIfValid(center_x, center_y, boundary, holes, active_cells, terrain,
+    addSteinerPointIfValid(center_x, center_y, boundary, holes, active_cells,
 	    min_distance, distanceToEdges, steiner_points);
 
     std::cout << "Generated " << steiner_points.size() << " Steiner points using guide lines to average center point" << std::endl;
@@ -1586,7 +1598,8 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 }
 
 // Detria-based high-quality triangulation of coplanar bottom face
-void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
+void
+TerrainMesh::triangulateBottomFaceWithDetria(const std::vector<std::vector<size_t>>& bottom_vertices,
 	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
 
     // Build set of cells that should have bottom faces (same as earcut version)
@@ -1621,7 +1634,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
     // Bottom edge (left to right)
     for (int x = min_x; x <= max_x; ++x) {
 	if (active_cells.count({x, min_y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[min_y][x]];
+	    const Point3D& vertex = vertices[bottom_vertices[min_y][x]];
 	    outer_boundary.push_back({vertex.x, vertex.y});
 	    vertex_indices.push_back(bottom_vertices[min_y][x]);
 	}
@@ -1630,7 +1643,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
     // Right edge (bottom to top, skip corners)
     for (int y = min_y + 1; y <= max_y; ++y) {
 	if (active_cells.count({max_x, y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[y][max_x]];
+	    const Point3D& vertex = vertices[bottom_vertices[y][max_x]];
 	    outer_boundary.push_back({vertex.x, vertex.y});
 	    vertex_indices.push_back(bottom_vertices[y][max_x]);
 	}
@@ -1639,7 +1652,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
     // Top edge (right to left, skip corners)
     for (int x = max_x - 1; x >= min_x; --x) {
 	if (active_cells.count({x, max_y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[max_y][x]];
+	    const Point3D& vertex = vertices[bottom_vertices[max_y][x]];
 	    outer_boundary.push_back({vertex.x, vertex.y});
 	    vertex_indices.push_back(bottom_vertices[max_y][x]);
 	}
@@ -1648,14 +1661,14 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
     // Left edge (top to bottom, skip corners)
     for (int y = max_y - 1; y > min_y; --y) {
 	if (active_cells.count({min_x, y})) {
-	    const Point3D& vertex = mesh.vertices[bottom_vertices[y][min_x]];
+	    const Point3D& vertex = vertices[bottom_vertices[y][min_x]];
 	    outer_boundary.push_back({vertex.x, vertex.y});
 	    vertex_indices.push_back(bottom_vertices[y][min_x]);
 	}
     }
 
     if (outer_boundary.size() < 3) {
-	fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+	fallbackBottomTriangulation(bottom_vertices, terrain, filter_cells);
 	return;
     }
 
@@ -1713,7 +1726,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 		if (!touches_boundary && hole_cells.size() > 0) {
 		    std::vector<std::pair<double, double>> hole_boundary;
 
-		    if (extractHoleBoundary(hole_cells, active_cells, bottom_vertices, mesh, hole_boundary, vertex_indices)) {
+		    if (extractHoleBoundary(hole_cells, active_cells, bottom_vertices, hole_boundary, vertex_indices)) {
 			holes.push_back(hole_boundary);
 		    }
 		}
@@ -1722,13 +1735,8 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
     }
 
     // Generate Steiner points for better triangle quality
-    std::vector<std::pair<double, double>> steiner_points = generateSteinerPoints(
-	    outer_boundary, holes, active_cells, terrain,
-	    min_x * terrain.cell_size + terrain.origin.x,
-	    max_x * terrain.cell_size + terrain.origin.x,
-	    terrain.origin.y - max_y * terrain.cell_size,  // Corrected for y-flip
-	    terrain.origin.y - min_y * terrain.cell_size   // Corrected for y-flip
-	    );
+    std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
+	    outer_boundary, holes, active_cells, min_x, max_x, min_y, max_y);
 
     // Try detria triangulation first
     try {
@@ -1755,7 +1763,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 	// Add Steiner points as vertices and to the point list
 	for (const auto& point : steiner_points) {
 	    double world_z = 0.0; // Bottom face is planar at z=0
-	    size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
+	    size_t vertex_index = addVertex(Point3D(point.first, point.second, world_z));
 	    all_vertex_indices.push_back(vertex_index);
 	    all_points.push_back({point.first, point.second});
 	}
@@ -1806,21 +1814,22 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 		    } else return;
 
 		    // Add triangle with correct bottom face orientation (reversed winding)
-		    mesh.addTriangle(v0, v2, v1);
+		    addTriangle(v0, v2, v1);
 
 		    }, cwTriangles);
 	} else {
 	    // If detria fails, use fallback
-	    fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+	    fallbackBottomTriangulation(bottom_vertices, terrain, filter_cells);
 	}
     } catch (const std::exception&) {
 	// Fall back to dense fallback if detria fails
-	fallbackBottomTriangulation(mesh, bottom_vertices, terrain, filter_cells);
+	fallbackBottomTriangulation(bottom_vertices, terrain, filter_cells);
     }
 }
 
 // Fallback triangulation method (original grid-based approach)
-void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
+void
+TerrainMesh::fallbackBottomTriangulation(const std::vector<std::vector<size_t>>& bottom_vertices,
 	const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr) {
 
     for (int y = 0; y < terrain.height - 1; ++y) {
@@ -1839,15 +1848,15 @@ void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vecto
 
 		if (include_cell) {
 		    // Add two triangles with CCW orientation (viewed from below, so reversed)
-		    mesh.addTriangle(v00, v10, v01);
-		    mesh.addTriangle(v10, v11, v01);
+		    addTriangle(v00, v10, v01);
+		    addTriangle(v10, v11, v01);
 		}
 	    }
 	}
     }
 }
 
-MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
+MeshStats TerrainMesh::validate(TerrainData& terrain) const {
     MeshStats stats;
 
     // Check edge manifold property
