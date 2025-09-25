@@ -761,6 +761,14 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
     mesh.triangulateVolumeLegacy(terrain);
 }
 
+void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+    mesh.triangulateVolumeSimplified(terrain, params);
+}
+
+void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+    mesh.triangulateSurfaceOnly(terrain, params);
+}
+
 // Triangulate a single connected component as a separate volumetric mesh
 void TerrainMesh::triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component) {
     if (component.cells.empty()) {
@@ -1006,8 +1014,8 @@ void TerrainMesh::triangulateVolume(const TerrainData& terrain) {
 }
 
 // Generate a simplified volumetric triangle mesh using Terra/Scape concepts
-void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.clear();
+void TerrainMesh::triangulateVolumeSimplified(const TerrainData& terrain, const SimplificationParams& params) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -1058,8 +1066,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 		double world_y = terrain.origin.y - y * terrain.cell_size;
 		double height = terrain.getHeight(x, y);
 
-		top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-		bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+		top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+		bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
 	    }
 	}
     }
@@ -1082,8 +1090,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 		size_t v11_top = top_vertices[y+1][x+1];
 
 		// Top surface triangles
-		mesh.addSurfaceTriangle(v00_top, v01_top, v10_top);
-		mesh.addSurfaceTriangle(v10_top, v01_top, v11_top);
+		addSurfaceTriangle(v00_top, v01_top, v10_top);
+		addSurfaceTriangle(v10_top, v01_top, v11_top);
 	    }
 	    // Handle cases where we have 3 vertices (create 1 triangle)
 	    else if (quad_corners.size() == 3) {
@@ -1100,7 +1108,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 			//size_t v1_bot = bottom_vertices[quad_corners[1].second][quad_corners[1].first];
 			//size_t v2_bot = bottom_vertices[quad_corners[2].second][quad_corners[2].first];
 
-			mesh.addSurfaceTriangle(v_top, v1_top, v2_top);
+			addSurfaceTriangle(v_top, v1_top, v2_top);
 			break;
 		    }
 		}
@@ -1118,7 +1126,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    }
 	}
     }
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, &keep_cells);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &keep_cells);
 
     // Left Wall (x = 0)
     {
@@ -1135,8 +1143,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t top_1 = top_vertices[y1][0];
 	    size_t bot_0 = bottom_vertices[y0][0];
 	    size_t bot_1 = bottom_vertices[y1][0];
-	    mesh.addTriangle(top_0, bot_0, top_1);
-	    mesh.addTriangle(top_1, bot_0, bot_1);
+	    addTriangle(top_0, bot_0, top_1);
+	    addTriangle(top_1, bot_0, bot_1);
 	}
     }
 
@@ -1158,8 +1166,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t bot_0 = bottom_vertices[y0][x];
 	    size_t bot_1 = bottom_vertices[y1][x];
 
-	    mesh.addTriangle(top_0, top_1, bot_0);
-	    mesh.addTriangle(top_1, bot_1, bot_0);
+	    addTriangle(top_0, top_1, bot_0);
+	    addTriangle(top_1, bot_1, bot_0);
 	}
     }
 
@@ -1178,8 +1186,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t top_1 = top_vertices[0][x1];
 	    size_t bot_0 = bottom_vertices[0][x0];
 	    size_t bot_1 = bottom_vertices[0][x1];
-	    mesh.addTriangle(top_0, top_1, bot_0);
-	    mesh.addTriangle(top_1, bot_1, bot_0);
+	    addTriangle(top_0, top_1, bot_0);
+	    addTriangle(top_1, bot_1, bot_0);
 	}
     }
 
@@ -1201,15 +1209,15 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t bot_0 = bottom_vertices[y][x0];
 	    size_t bot_1 = bottom_vertices[y][x1];
 
-	    mesh.addTriangle(top_0, bot_0, top_1);
-	    mesh.addTriangle(top_1, bot_0, bot_1);
+	    addTriangle(top_0, bot_0, top_1);
+	    addTriangle(top_1, bot_0, bot_1);
 	}
     }
 }
 
 // Generate terrain surface-only mesh with Terra/Scape simplification (no volume)
-void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.clear();
+void TerrainMesh::triangulateSurfaceOnly(const TerrainData& terrain, const SimplificationParams& params) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -1258,7 +1266,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		double world_y = terrain.origin.y - y * terrain.cell_size;
 		double height = terrain.getHeight(x, y);
 
-		surface_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
+		surface_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
 	    }
 	}
     }
@@ -1280,8 +1288,8 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		size_t v01 = surface_vertices[y+1][x];
 		size_t v11 = surface_vertices[y+1][x+1];
 
-		mesh.addSurfaceTriangle(v00, v01, v10);
-		mesh.addSurfaceTriangle(v10, v01, v11);
+		addSurfaceTriangle(v00, v01, v10);
+		addSurfaceTriangle(v10, v01, v11);
 	    }
 	    // Handle partial quads
 	    else if (corners.size() == 3) {
@@ -1294,7 +1302,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		size_t v1 = surface_vertices[p1.second][p1.first];
 		size_t v2 = surface_vertices[p2.second][p2.first];
 
-		mesh.addSurfaceTriangle(v0, v1, v2);
+		addSurfaceTriangle(v0, v1, v2);
 	    }
 	}
     }
