@@ -33,4 +33,6 @@ Thumbs.db
 # Test artifacts
 /tmp/
 *test*
+test_remeshing.cpp
+test_remeshing
 
