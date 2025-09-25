@@ -1752,7 +1752,12 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 
     // Create guidance lines from boundary vertices to medial axis polyline
     if (!medial_polyline.empty()) {
-	for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / (max_lines_per_vertex * 4)))) {
+	// Calculate diagonal of a cell for minimum guideline length check
+	double cell_diagonal = terrain.cell_size * std::sqrt(2.0);
+	double min_guideline_length = 4.0 * cell_diagonal;
+	
+	// Process ALL boundary vertices (not just a subset) to ensure sampling from short edges too
+	for (size_t i = 0; i < boundary.size(); ++i) {
 	    const auto& vertex = boundary[i];
 
 	    // Find closest point on medial axis polyline
@@ -1763,68 +1768,77 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 	    double dy = closest_medial.second - vertex.second;
 	    double line_length = std::sqrt(dx * dx + dy * dy);
 
-	    if (line_length > min_distance * 2.0) {
-		// Normalize direction
-		dx /= line_length;
-		dy /= line_length;
+	    // Skip lines shorter than 4x diagonal of a cell
+	    if (line_length < min_guideline_length) {
+		continue;
+	    }
 
-		// Place points along this guidance line with adaptive density
-		int num_steps = std::max(2, (int)(line_length / step_size));
+	    // Normalize direction
+	    dx /= line_length;
+	    dy /= line_length;
 
-		for (int step = 1; step < num_steps; ++step) {
-		    // Use pseudo-random sampling to avoid clustering
-		    if (next_random() > 0.4) continue; // Skip some points randomly
+	    // Divide guideline into 5 equal segments, creating up to 4 interior points
+	    // Point probabilities: 1st (closest to edge): 100%, 2nd: 30%, 3rd: 10%, 4th: 1%
+	    double segment_length = line_length / 5.0;
+	    
+	    for (int step = 1; step <= 4; ++step) {
+		// Determine probability for this step
+		double probability;
+		if (step == 1) probability = 1.0;        // Always add closest point to edge
+		else if (step == 2) probability = 0.3;   // 30% probability for second point
+		else if (step == 3) probability = 0.1;   // 10% probability for third point
+		else probability = 0.01;                 // 1% probability for fourth point
+		
+		// Use pseudo-random sampling with specific probabilities
+		if (next_random() > probability) continue;
 
-		    double t = (double)step / num_steps;
-		    double x = vertex.first + t * dx * line_length;
-		    double y = vertex.second + t * dy * line_length;
+		double t = (double)step / 5.0;
+		double x = vertex.first + t * dx * line_length;
+		double y = vertex.second + t * dy * line_length;
 
-		    // Check if point is valid
-		    if (pointInPolygon(x, y, boundary)) {
-			// Check not in holes
-			bool in_hole = false;
-			for (const auto& hole : holes) {
-			    if (pointInPolygon(x, y, hole)) {
-				in_hole = true;
-				break;
-			    }
+		// Check if point is valid
+		if (pointInPolygon(x, y, boundary)) {
+		    // Check not in holes
+		    bool in_hole = false;
+		    for (const auto& hole : holes) {
+			if (pointInPolygon(x, y, hole)) {
+			    in_hole = true;
+			    break;
 			}
+		    }
 
-			if (!in_hole) {
-			    double edge_distance = distanceToEdges(x, y);
+		    if (!in_hole) {
+			double edge_distance = distanceToEdges(x, y);
 
-			    // Closer to medial axis = fewer points (tapering effect)
-			    double distance_to_medial = std::sqrt((x - closest_medial.first) * (x - closest_medial.first) + 
-				    (y - closest_medial.second) * (y - closest_medial.second));
-			    double taper_factor = 1.0 - (distance_to_medial / line_length);
-			    double required_distance = min_distance * (1.0 + taper_factor);
+			// Use a fixed minimum distance for the new approach
+			// (simpler than the tapering effect for the probabilistic approach)
+			double required_distance = min_distance;
 
-			    if (edge_distance > required_distance) {
-				// Check terrain coordinates
-				int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-				int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+			if (edge_distance > required_distance) {
+			    // Check terrain coordinates
+			    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+			    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
 
-				bool is_in_active_region = false;
-				if (terrain_x >= 0 && terrain_x < terrain.width && 
-					terrain_y >= 0 && terrain_y < terrain.height) {
-				    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+			    bool is_in_active_region = false;
+			    if (terrain_x >= 0 && terrain_x < terrain.width && 
+				    terrain_y >= 0 && terrain_y < terrain.height) {
+				is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+			    }
+
+			    if (is_in_active_region) {
+				// Check distance to existing points
+				bool too_close = false;
+				for (const auto& existing : steiner_points) {
+				    double dx_check = x - existing.first;
+				    double dy_check = y - existing.second;
+				    if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < required_distance) {
+					too_close = true;
+					break;
+				    }
 				}
 
-				if (is_in_active_region) {
-				    // Check distance to existing points
-				    bool too_close = false;
-				    for (const auto& existing : steiner_points) {
-					double dx_check = x - existing.first;
-					double dy_check = y - existing.second;
-					if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < required_distance) {
-					    too_close = true;
-					    break;
-					}
-				    }
-
-				    if (!too_close) {
-					steiner_points.push_back({x, y});
-				    }
+				if (!too_close) {
+				    steiner_points.push_back({x, y});
 				}
 			    }
 			}
