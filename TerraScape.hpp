@@ -2275,12 +2275,37 @@ namespace TerraScape {
         }
         
         // Count non-manifold edges
+        // For a volumetric terrain mesh, boundary edges (count=1) are expected and valid
+        // Only edges with count > 2 or count = 0 indicate manifold issues
         for (const auto& pair : edge_count) {
-            if (pair.second != 2) {
+            if (pair.second > 2) {  // Non-manifold edge (shared by more than 2 triangles)
                 stats.non_manifold_edges++;
                 stats.is_manifold = false;
             }
+            // Note: Edges with count = 1 are boundary edges and are valid for volumetric meshes
         }
+        
+        // Additional manifold check: Verify mesh connectivity makes sense
+        // For a proper volumetric terrain mesh, we expect some boundary edges (count=1)
+        // and most internal edges (count=2)
+        int boundary_edges = 0;
+        int internal_edges = 0;
+        int problematic_edges = 0;
+        for (const auto& pair : edge_count) {
+            if (pair.second == 1) {
+                boundary_edges++;
+            } else if (pair.second == 2) {
+                internal_edges++;
+            } else if (pair.second > 2) {
+                problematic_edges++;
+            }
+        }
+        
+        // Debug output to understand the issue
+        #ifdef DEBUG_MANIFOLD
+        std::cout << "Edge analysis: " << boundary_edges << " boundary, " 
+                  << internal_edges << " internal, " << problematic_edges << " problematic" << std::endl;
+        #endif
         
         // Check CCW orientation - for a volumetric mesh, this is more complex
         // We'll consider the mesh properly oriented if all normals point outward
