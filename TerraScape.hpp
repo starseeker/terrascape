@@ -57,6 +57,7 @@ struct TerrainComponents;
 struct ConnectedComponent;
 struct MeshStats;
 struct TerrainData;
+struct DSPData;
 
 // Basic 3D point structure
 struct Point3D {
@@ -173,6 +174,10 @@ struct TerrainData {
     TerrainFeature analyzePoint(int x, int y) const;
     std::vector<std::vector<bool>> generateSampleMask(const SimplificationParams& params) const;
     TerrainComponents analyzeComponents(double height_threshold = 1e-6) const;
+    
+    // DSP conversion methods
+    bool fromDSP(const DSPData& dsp);
+    bool toDSP(DSPData& dsp) const;
 
 private:
     void floodFill(std::vector<std::vector<bool>>& visited,
@@ -359,6 +364,9 @@ struct DSPData {
 	    dsp_buf[y * dsp_xcnt + x] = height;
 	}
     }
+
+    // Convert to TerrainData format
+    bool toTerrain(TerrainData& terrain) const;
 };
 
 // NMG-compatible triangle output
@@ -398,8 +406,6 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
 
 // BRL-CAD DSP integration functions
-bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain);
-bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp);
 bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data);
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
 
@@ -2308,49 +2314,47 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     return stats;
 }
 
-// Convert DSP data to TerraScape TerrainData format
-bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain) {
+bool TerrainData::fromDSP(const DSPData& dsp) {
     if (!dsp.dsp_buf || dsp.dsp_xcnt == 0 || dsp.dsp_ycnt == 0) {
 	return false;
     }
 
-    terrain.width = static_cast<int>(dsp.dsp_xcnt);
-    terrain.height = static_cast<int>(dsp.dsp_ycnt);
-    terrain.cell_size = dsp.cell_size;
-    terrain.origin = dsp.origin;
+    width = static_cast<int>(dsp.dsp_xcnt);
+    height = static_cast<int>(dsp.dsp_ycnt);
+    cell_size = dsp.cell_size;
+    origin = dsp.origin;
 
     // Initialize height array
-    terrain.heights.resize(terrain.height);
-    for (int y = 0; y < terrain.height; ++y) {
-	terrain.heights[y].resize(terrain.width);
+    heights.resize(height);
+    for (int y = 0; y < height; ++y) {
+	heights[y].resize(width);
     }
 
     // Convert unsigned short data to double and find min/max
-    terrain.min_height = std::numeric_limits<double>::max();
-    terrain.max_height = std::numeric_limits<double>::lowest();
+    min_height = std::numeric_limits<double>::max();
+    max_height = std::numeric_limits<double>::lowest();
 
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    double height = static_cast<double>(dsp.dsp_buf[y * dsp.dsp_xcnt + x]);
-	    terrain.heights[y][x] = height;
-	    terrain.min_height = std::min(terrain.min_height, height);
-	    terrain.max_height = std::max(terrain.max_height, height);
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    double height_val = static_cast<double>(dsp.dsp_buf[y * dsp.dsp_xcnt + x]);
+	    heights[y][x] = height_val;
+	    min_height = std::min(min_height, height_val);
+	    max_height = std::max(max_height, height_val);
 	}
     }
 
     return true;
 }
 
-// Convert TerraScape TerrainData to DSP format
-bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp) {
-    if (terrain.width <= 0 || terrain.height <= 0 || terrain.heights.empty()) {
+bool TerrainData::toDSP(DSPData& dsp) const {
+    if (width <= 0 || height <= 0 || heights.empty()) {
 	return false;
     }
 
-    dsp.dsp_xcnt = static_cast<uint32_t>(terrain.width);
-    dsp.dsp_ycnt = static_cast<uint32_t>(terrain.height);
-    dsp.cell_size = terrain.cell_size;
-    dsp.origin = terrain.origin;
+    dsp.dsp_xcnt = static_cast<uint32_t>(width);
+    dsp.dsp_ycnt = static_cast<uint32_t>(height);
+    dsp.cell_size = cell_size;
+    dsp.origin = origin;
 
     // Allocate buffer if not already allocated
     if (!dsp.dsp_buf) {
@@ -2359,17 +2363,21 @@ bool convertTerrainToDSP(const TerrainData& terrain, DSPData& dsp) {
     }
 
     // Convert double data to unsigned short
-    for (int y = 0; y < terrain.height; ++y) {
-	for (int x = 0; x < terrain.width; ++x) {
-	    double height = terrain.getHeight(x, y);
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    double height_val = getHeight(x, y);
 	    // Clamp to unsigned short range
-	    if (height < 0) height = 0;
-	    if (height > 65535) height = 65535;
-	    dsp.dsp_buf[y * dsp.dsp_xcnt + x] = static_cast<unsigned short>(height);
+	    if (height_val < 0) height_val = 0;
+	    if (height_val > 65535) height_val = 65535;
+	    dsp.dsp_buf[y * dsp.dsp_xcnt + x] = static_cast<unsigned short>(height_val);
 	}
     }
 
     return true;
+}
+
+bool DSPData::toTerrain(TerrainData& terrain) const {
+    return terrain.fromDSP(*this);
 }
 
 // Convert TerrainMesh to NMG-compatible triangle data
@@ -2408,7 +2416,7 @@ bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data) {
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) {
     // Step 1: Convert DSP to TerraScape format
     TerrainData terrain;
-    if (!convertDSPToTerrain(dsp, terrain)) {
+    if (!terrain.fromDSP(dsp)) {
 	return false;
     }
 

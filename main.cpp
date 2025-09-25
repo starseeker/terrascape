@@ -62,7 +62,7 @@ int main(int argc, char* argv[])
         
         // Convert to DSP format
         TerraScape::DSPData dsp;
-        if (!TerraScape::convertTerrainToDSP(terrain, dsp)) {
+        if (!terrain.toDSP(dsp)) {
             std::cerr << "Error: Failed to convert terrain to DSP format" << std::endl;
             return 1;
         }
