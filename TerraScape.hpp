@@ -269,6 +269,8 @@ namespace TerraScape {
         double max_angle_threshold;   // Maximum angle threshold for quality
         bool enable_edge_flipping;    // Whether to perform edge flipping
         bool enable_vertex_smoothing; // Whether to perform vertex smoothing
+        bool enable_edge_splitting;   // Whether to perform edge splitting
+        bool enable_edge_collapse;    // Whether to perform edge collapse
         
         RemeshingParams() : 
             target_edge_length(1.0),
@@ -277,7 +279,9 @@ namespace TerraScape {
             min_angle_threshold(30.0),
             max_angle_threshold(120.0),
             enable_edge_flipping(true),
-            enable_vertex_smoothing(true) {}
+            enable_vertex_smoothing(true),
+            enable_edge_splitting(true),
+            enable_edge_collapse(true) {}
     };
 
     // Triangle quality metrics
@@ -1819,16 +1823,62 @@ namespace TerraScape {
             }
         }
         
-        // Perform edge splits (simplified implementation)
-        // In a full implementation, this would properly split triangles and update connectivity
+        // Perform edge splits with proper triangle subdivision
+        std::vector<Triangle> new_triangles;
+        std::set<size_t> triangles_to_remove;
+        
         for (const auto& split_pair : edges_to_split) {
+            const Edge& edge = split_pair.first;
+            const Point3D& midpoint = split_pair.second;
+            
             // Add the new vertex
             size_t new_vertex_idx = remesh_data.vertices.size();
-            remesh_data.vertices.push_back(split_pair.second);
+            remesh_data.vertices.push_back(midpoint);
             
-            // Note: Full triangle splitting would require more complex mesh operations
-            // For now, we mark this as a simplified implementation
+            // Find the two triangles adjacent to this edge
+            const std::vector<size_t>& adjacent_triangles = remesh_data.edge_to_triangles.at(edge);
+            
+            for (size_t tri_idx : adjacent_triangles) {
+                const Triangle& original_tri = remesh_data.triangles[tri_idx];
+                
+                // Find the vertex opposite to the edge being split
+                size_t opposite_vertex = SIZE_MAX;
+                for (int i = 0; i < 3; ++i) {
+                    if (original_tri.vertices[i] != edge.v0 && original_tri.vertices[i] != edge.v1) {
+                        opposite_vertex = original_tri.vertices[i];
+                        break;
+                    }
+                }
+                
+                if (opposite_vertex == SIZE_MAX) continue;
+                
+                // Create two new triangles by connecting the midpoint to the opposite vertex
+                Triangle tri1(edge.v0, new_vertex_idx, opposite_vertex);
+                Triangle tri2(new_vertex_idx, edge.v1, opposite_vertex);
+                
+                // Compute normals
+                tri1.computeNormal(remesh_data.vertices);
+                tri2.computeNormal(remesh_data.vertices);
+                
+                new_triangles.push_back(tri1);
+                new_triangles.push_back(tri2);
+                
+                // Mark original triangle for removal
+                triangles_to_remove.insert(tri_idx);
+            }
         }
+        
+        // Remove original triangles and add new ones
+        std::vector<Triangle> updated_triangles;
+        for (size_t i = 0; i < remesh_data.triangles.size(); ++i) {
+            if (triangles_to_remove.find(i) == triangles_to_remove.end()) {
+                updated_triangles.push_back(remesh_data.triangles[i]);
+            }
+        }
+        
+        // Add the new triangles
+        updated_triangles.insert(updated_triangles.end(), new_triangles.begin(), new_triangles.end());
+        remesh_data.triangles = updated_triangles;
     }
     
     // Collapse short edges to improve mesh uniformity  
@@ -1861,8 +1911,72 @@ namespace TerraScape {
             }
         }
         
-        // Note: Full edge collapse implementation would require careful mesh topology updates
-        // This is a simplified placeholder for the concept
+        // Perform edge collapse operations
+        std::set<size_t> vertices_to_remove;
+        std::set<size_t> triangles_to_remove;
+        
+        for (const Edge& edge : edges_to_collapse) {
+            // Skip if either vertex has already been marked for removal
+            if (vertices_to_remove.count(edge.v0) || vertices_to_remove.count(edge.v1)) {
+                continue;
+            }
+            
+            // Choose collapse target (keep v0, remove v1)
+            size_t keep_vertex = edge.v0;
+            size_t remove_vertex = edge.v1;
+            
+            // Calculate new position for the kept vertex (midpoint)
+            const Point3D& p0 = remesh_data.vertices[keep_vertex];
+            const Point3D& p1 = remesh_data.vertices[remove_vertex];
+            Point3D new_pos((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5, (p0.z + p1.z) * 0.5);
+            
+            // Update position of kept vertex
+            remesh_data.vertices[keep_vertex] = new_pos;
+            
+            // Find all triangles adjacent to the vertex being removed
+            const std::vector<size_t>& adjacent_triangles = remesh_data.vertex_to_triangles[remove_vertex];
+            
+            for (size_t tri_idx : adjacent_triangles) {
+                Triangle& tri = remesh_data.triangles[tri_idx];
+                bool contains_both = false;
+                
+                // Check if triangle contains both vertices (these triangles will be degenerate)
+                for (int i = 0; i < 3; ++i) {
+                    if (tri.vertices[i] == remove_vertex) {
+                        // Replace with kept vertex
+                        tri.vertices[i] = keep_vertex;
+                        
+                        // Check if triangle now has duplicate vertices
+                        std::set<size_t> unique_vertices(tri.vertices.begin(), tri.vertices.end());
+                        if (unique_vertices.size() < 3) {
+                            triangles_to_remove.insert(tri_idx);
+                            contains_both = true;
+                        }
+                        break;
+                    }
+                }
+                
+                // If triangle is not degenerate, recompute its normal
+                if (!contains_both) {
+                    tri.computeNormal(remesh_data.vertices);
+                }
+            }
+            
+            // Mark vertex for removal
+            vertices_to_remove.insert(remove_vertex);
+        }
+        
+        // Remove degenerate triangles
+        std::vector<Triangle> new_triangles;
+        for (size_t i = 0; i < remesh_data.triangles.size(); ++i) {
+            if (triangles_to_remove.find(i) == triangles_to_remove.end()) {
+                new_triangles.push_back(remesh_data.triangles[i]);
+            }
+        }
+        remesh_data.triangles = new_triangles;
+        
+        // Note: For simplicity, we don't compact the vertex array to remove unused vertices
+        // In a full implementation, this would require updating all vertex indices
     }
     
     // Flip edges to improve triangle quality
@@ -1871,7 +1985,7 @@ namespace TerraScape {
             return;
         }
         
-        std::vector<Edge> edges_to_flip;
+        std::vector<std::pair<Edge, std::pair<size_t, size_t>>> edges_to_flip; // edge, (tri1_idx, tri2_idx)
         
         // Find edges where flipping would improve quality
         for (const auto& edge_pair : remesh_data.edge_to_triangles) {
@@ -1925,12 +2039,54 @@ namespace TerraScape {
             
             // Flip if it improves the minimum angle
             if (min_angle_after > min_angle_before + 1.0) { // 1 degree improvement threshold
-                edges_to_flip.push_back(edge);
+                edges_to_flip.push_back({edge, {tri1_idx, tri2_idx}});
             }
         }
         
-        // Note: Actual edge flipping would require updating triangle connectivity
-        // This is a simplified implementation showing the concept
+        // Perform actual edge flipping with proper triangle connectivity updates
+        for (const auto& flip_data : edges_to_flip) {
+            const Edge& edge = flip_data.first;
+            size_t tri1_idx = flip_data.second.first;
+            size_t tri2_idx = flip_data.second.second;
+            
+            Triangle& tri1 = remesh_data.triangles[tri1_idx];
+            Triangle& tri2 = remesh_data.triangles[tri2_idx];
+            
+            // Find the vertices opposite to the shared edge
+            size_t opposite1 = SIZE_MAX, opposite2 = SIZE_MAX;
+            
+            for (int i = 0; i < 3; ++i) {
+                if (tri1.vertices[i] != edge.v0 && tri1.vertices[i] != edge.v1) {
+                    opposite1 = tri1.vertices[i];
+                    break;
+                }
+            }
+            
+            for (int i = 0; i < 3; ++i) {
+                if (tri2.vertices[i] != edge.v0 && tri2.vertices[i] != edge.v1) {
+                    opposite2 = tri2.vertices[i];
+                    break;
+                }
+            }
+            
+            if (opposite1 == SIZE_MAX || opposite2 == SIZE_MAX) {
+                continue;
+            }
+            
+            // Create the new triangles after flipping the edge
+            // Old edge: (edge.v0, edge.v1)
+            // New edge: (opposite1, opposite2)
+            Triangle new_tri1(opposite1, opposite2, edge.v0);
+            Triangle new_tri2(opposite1, opposite2, edge.v1);
+            
+            // Compute normals for the new triangles
+            new_tri1.computeNormal(remesh_data.vertices);
+            new_tri2.computeNormal(remesh_data.vertices);
+            
+            // Replace the triangles
+            tri1 = new_tri1;
+            tri2 = new_tri2;
+        }
     }
     
     // Smooth vertex positions to improve mesh quality
@@ -1985,9 +2141,6 @@ namespace TerraScape {
         RemeshData remesh_data;
         remesh_data.boundary_vertices = boundary_vertices;
         
-        // For now, focus on edge flipping and quality analysis rather than topology changes
-        // This ensures we maintain mesh validity while improving quality
-        
         // Store initial quality metrics
         double initial_min_angle = 180.0, initial_avg_aspect_ratio = 0.0;
         if (!triangles.empty()) {
@@ -2001,17 +2154,29 @@ namespace TerraScape {
             initial_avg_aspect_ratio /= triangles.size();
         }
         
-        // Iterative improvement focusing on edge flipping
+        // Iterative improvement using complete remeshing operations
         for (int iter = 0; iter < params.max_iterations; ++iter) {
-            // Build connectivity
+            // Build connectivity at the beginning of each iteration
             buildRemeshConnectivity(vertices, triangles, remesh_data);
             
-            // Focus on edge flipping for quality improvement (safer operation)
+            // Apply all remeshing operations for comprehensive mesh improvement
+            
+            // 1. Split long edges to add more detail where needed
+            if (params.enable_edge_splitting) {
+                splitLongEdges(remesh_data, params);
+            }
+            
+            // 2. Collapse short edges to remove unnecessary detail
+            if (params.enable_edge_collapse) {
+                collapseShortEdges(remesh_data, params);
+            }
+            
+            // 3. Flip edges to improve triangle quality
             if (params.enable_edge_flipping) {
                 flipEdgesForQuality(remesh_data, params);
             }
             
-            // Apply limited vertex smoothing if enabled
+            // 4. Apply vertex smoothing to improve geometry
             if (params.enable_vertex_smoothing) {
                 smoothVertices(remesh_data, params);
             }
@@ -2019,10 +2184,6 @@ namespace TerraScape {
             // Update vertices and triangles from remesh data
             vertices = remesh_data.vertices;
             triangles = remesh_data.triangles;
-            
-            // Note: Edge splitting and collapsing are temporarily simplified
-            // to avoid mesh topology issues. In a full implementation, these
-            // would need proper half-edge or similar data structures.
         }
         
         // Calculate final quality metrics
