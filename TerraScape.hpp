@@ -1521,36 +1521,152 @@ std::vector<std::pair<double, double>> calculateMedialAxisPoints(
     };
     
     // Sample grid to find local maxima of distance function (approximate medial axis)
-    double sample_spacing = cell_size * 8.0; // Increase spacing for efficiency
-    double medial_threshold = cell_size * 0.5; // Very low threshold to find more points
+    double sample_spacing = cell_size * 2.0; // Much finer spacing to catch interior regions
+    double medial_threshold = cell_size * 0.1; // Very low threshold to ensure we find points
     
-    for (double y = min_y + sample_spacing; y < max_y - sample_spacing; y += sample_spacing) {
-        for (double x = min_x + sample_spacing; x < max_x - sample_spacing; x += sample_spacing) {
-            // Check if point is inside boundary
-            if (pointInPolygon(x, y, boundary)) {
-                // Check not inside holes
-                bool in_hole = false;
-                for (const auto& hole : holes) {
-                    if (pointInPolygon(x, y, hole)) {
-                        in_hole = true;
-                        break;
-                    }
-                }
+    int points_tested = 0;
+    int points_inside = 0;
+    
+    // Use boundary-guided approach to find medial axis points
+    // Instead of grid sampling, step inward from boundary points to find interior points
+    double inward_step = cell_size * 4.0;
+    
+    for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 100))) {
+        const auto& boundary_point = boundary[i];
+        
+        // Calculate inward direction (toward bounding box center as approximation)
+        double center_x = (min_x + max_x) * 0.5;
+        double center_y = (min_y + max_y) * 0.5;
+        double inward_dx = center_x - boundary_point.first;
+        double inward_dy = center_y - boundary_point.second;
+        double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
+        
+        if (inward_len > inward_step) {
+            inward_dx /= inward_len;
+            inward_dy /= inward_len;
+            
+            // Try several points stepping inward
+            for (int step = 2; step <= 6; ++step) {
+                double test_x = boundary_point.first + inward_dx * inward_step * step;
+                double test_y = boundary_point.second + inward_dy * inward_step * step;
                 
-                if (!in_hole) {
-                    double dist = distanceToEdges(x, y);
+                if (pointInPolygon(test_x, test_y, boundary)) {
+                    points_inside++;
+                    // Check not inside holes
+                    bool in_hole = false;
+                    for (const auto& hole : holes) {
+                        if (pointInPolygon(test_x, test_y, hole)) {
+                            in_hole = true;
+                            break;
+                        }
+                    }
                     
-                    // Only keep points that are reasonably far from edges
-                    if (dist > medial_threshold) {
-                        // Simplified check - just ensure we're not too close to edges
-                        medial_points.push_back({x, y});
+                    if (!in_hole) {
+                        double dist = distanceToEdges(test_x, test_y);
+                        
+                        // Only keep points that are reasonably far from edges
+                        if (dist > medial_threshold) {
+                            medial_points.push_back({test_x, test_y});
+                        }
                     }
                 }
+                points_tested++;
             }
         }
     }
     
+    std::cout << "Found " << medial_points.size() << " medial axis points" << std::endl;
+    
     return medial_points;
+}
+
+// Construct medial axis polyline from discrete points using minimum spanning tree approach
+std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> constructMedialAxisPolyline(
+    const std::vector<std::pair<double, double>>& medial_points) {
+    
+    std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> polyline_segments;
+    
+    if (medial_points.size() < 2) {
+        return polyline_segments;
+    }
+    
+    // Simple approach: connect each point to its nearest neighbor to form a connected polyline
+    std::vector<bool> used(medial_points.size(), false);
+    std::vector<int> connection_order;
+    
+    // Start with first point
+    connection_order.push_back(0);
+    used[0] = true;
+    
+    // Greedily connect to nearest unused point
+    for (size_t connected = 1; connected < medial_points.size(); ++connected) {
+        int last_point = connection_order.back();
+        double min_dist = std::numeric_limits<double>::max();
+        int next_point = -1;
+        
+        for (size_t i = 0; i < medial_points.size(); ++i) {
+            if (used[i]) continue;
+            
+            double dx = medial_points[i].first - medial_points[last_point].first;
+            double dy = medial_points[i].second - medial_points[last_point].second;
+            double dist = std::sqrt(dx * dx + dy * dy);
+            
+            if (dist < min_dist) {
+                min_dist = dist;
+                next_point = i;
+            }
+        }
+        
+        if (next_point != -1) {
+            // Add segment from last point to next point
+            polyline_segments.push_back({medial_points[last_point], medial_points[next_point]});
+            connection_order.push_back(next_point);
+            used[next_point] = true;
+        }
+    }
+    
+    return polyline_segments;
+}
+
+// Find closest point on medial axis polyline to a given point
+std::pair<double, double> closestPointOnMedialPolyline(
+    double x, double y,
+    const std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>>& polyline_segments) {
+    
+    if (polyline_segments.empty()) {
+        return {x, y}; // Return input point if no polyline
+    }
+    
+    double min_dist = std::numeric_limits<double>::max();
+    std::pair<double, double> closest_point = {x, y};
+    
+    for (const auto& segment : polyline_segments) {
+        const auto& p1 = segment.first;
+        const auto& p2 = segment.second;
+        
+        // Find closest point on line segment p1-p2 to point (x,y)
+        double dx = p2.first - p1.first;
+        double dy = p2.second - p1.second;
+        double len_sq = dx * dx + dy * dy;
+        
+        double t = 0.0;
+        if (len_sq > 0.0) {
+            double dot = (x - p1.first) * dx + (y - p1.second) * dy;
+            t = std::max(0.0, std::min(1.0, dot / len_sq));
+        }
+        
+        double closest_x = p1.first + t * dx;
+        double closest_y = p1.second + t * dy;
+        
+        double dist_sq = (x - closest_x) * (x - closest_x) + (y - closest_y) * (y - closest_y);
+        
+        if (dist_sq < min_dist) {
+            min_dist = dist_sq;
+            closest_point = {closest_x, closest_y};
+        }
+    }
+    
+    return closest_point;
 }
 
 // Generate Steiner points using medial axis guidance for better distribution
@@ -1565,6 +1681,10 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
     
     // Calculate medial axis points
     std::vector<std::pair<double, double>> medial_axis = calculateMedialAxisPoints(boundary, holes, terrain.cell_size, min_x, max_x, min_y, max_y);
+    
+    // Construct medial axis polyline from discrete points
+    std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> medial_polyline = 
+        constructMedialAxisPolyline(medial_axis);
     
     // Parameters for medial axis guided Steiner point generation
     double min_distance = terrain.cell_size * 3.0;
@@ -1625,26 +1745,15 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
         return (double)(rng_state % 1000) / 1000.0;
     };
     
-    // Create guidance lines from boundary vertices to medial axis points
-    if (!medial_axis.empty()) {
+    // Create guidance lines from boundary vertices to medial axis polyline
+    if (!medial_polyline.empty()) {
         for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / (max_lines_per_vertex * 4)))) {
             const auto& vertex = boundary[i];
             
-            // Find closest medial axis point
-            double closest_dist = std::numeric_limits<double>::max();
-            std::pair<double, double> closest_medial = medial_axis[0];
+            // Find closest point on medial axis polyline
+            std::pair<double, double> closest_medial = closestPointOnMedialPolyline(vertex.first, vertex.second, medial_polyline);
             
-            for (const auto& medial_pt : medial_axis) {
-                double dx = vertex.first - medial_pt.first;
-                double dy = vertex.second - medial_pt.second;
-                double dist = std::sqrt(dx * dx + dy * dy);
-                if (dist < closest_dist) {
-                    closest_dist = dist;
-                    closest_medial = medial_pt;
-                }
-            }
-            
-            // Create guidance line from vertex to closest medial axis point
+            // Create guidance line from vertex to closest point on medial axis polyline
             double dx = closest_medial.first - vertex.first;
             double dy = closest_medial.second - vertex.second;
             double line_length = std::sqrt(dx * dx + dy * dy);
@@ -1719,8 +1828,7 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
             }
         }
     } else {
-        // Fallback: generate points using boundary-guided approach if no medial axis found
-        // Generate points using boundary-guided approach for better distribution
+        // Fallback: generate points using boundary-guided approach if no medial axis polyline found
         std::cout << "Using boundary-guided approach for Steiner point generation" << std::endl;
         
         double sample_distance = terrain.cell_size * 8.0; // Distance to step inward from boundary
@@ -1832,8 +1940,8 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
         }
     }
 
-    std::cout << "Generated " << steiner_points.size() << " Steiner points using medial axis guidance" 
-              << (medial_axis.empty() ? " (boundary-guided fallback)" : "") << std::endl;
+    std::cout << "Generated " << steiner_points.size() << " Steiner points using medial axis polyline guidance" 
+              << (medial_polyline.empty() ? " (boundary-guided fallback)" : "") << std::endl;
     
     return steiner_points;
 }
