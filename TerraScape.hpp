@@ -35,8 +35,6 @@
 #endif
 #include <functional>
 #include <unordered_map>
-#include <fstream>
-#include <iomanip>
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -339,8 +337,6 @@ struct NMGTriangleData {
 };
 
 // Forward declarations
-bool readTerrainFile(const std::string& filename, TerrainData& terrain);
-bool readPGMFile(const std::string& filename, TerrainData& terrain);
 void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
@@ -348,7 +344,6 @@ void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh
 TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
 std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
 MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
-bool writeObjFile(const std::string& filename, const TerrainMesh& mesh);
 
 // BRL-CAD DSP integration functions
 bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain);
@@ -394,67 +389,6 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
 bool pointInPolygon(double x, double y, const std::vector<std::pair<double, double>>& polygon);
 
 // Implementation
-
-// Helper function to check file extension
-bool hasExtension(const std::string& filename, const std::string& ext) {
-    if (filename.length() >= ext.length()) {
-	return (0 == filename.compare(filename.length() - ext.length(), ext.length(), ext));
-    }
-    return false;
-}
-
-// Read terrain data from file using GDAL or custom PGM reader
-bool readTerrainFile(const std::string& filename, TerrainData& terrain) {
-    // Try PGM format first
-    if (hasExtension(filename, ".pgm") || hasExtension(filename, ".PGM")) {
-	return readPGMFile(filename, terrain);
-    }
-    return false;
-}
-
-// Simple PGM file reader
-bool readPGMFile(const std::string& filename, TerrainData& terrain) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-	return false;
-    }
-
-    std::string magic;
-    file >> magic;
-    if (magic != "P2") {
-	return false; // Only support ASCII PGM
-    }
-
-    int width, height, max_val;
-    file >> width >> height >> max_val;
-
-    terrain.width = width;
-    terrain.height = height;
-    terrain.cell_size = 1.0;
-    terrain.origin = Point3D(0, 0, 0);
-
-    // Read the height data
-    terrain.heights.resize(terrain.height);
-    terrain.min_height = std::numeric_limits<double>::max();
-    terrain.max_height = std::numeric_limits<double>::lowest();
-
-    for (int y = 0; y < terrain.height; ++y) {
-	terrain.heights[y].resize(terrain.width);
-	for (int x = 0; x < terrain.width; ++x) {
-	    int pixel_value;
-	    file >> pixel_value;
-
-	    // Convert pixel value to height (normalize to reasonable range)
-	    double height = static_cast<double>(pixel_value) / max_val * 100.0; // Scale to 0-100 range
-	    terrain.heights[y][x] = height;
-	    terrain.min_height = std::min(terrain.min_height, height);
-	    terrain.max_height = std::max(terrain.max_height, height);
-	}
-    }
-
-    file.close();
-    return true;
-}
 
 // Analyze terrain features at a specific point (Terra/Scape inspired)
 TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y) {
@@ -2326,37 +2260,6 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
     stats.expected_surface_area = terrain.width * terrain.height * terrain.cell_size * terrain.cell_size;
 
     return stats;
-}
-
-// Write mesh to OBJ file
-bool writeObjFile(const std::string& filename, const TerrainMesh& mesh) {
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-	return false;
-    }
-
-    file << "# TerraScape generated OBJ file" << std::endl;
-    file << "# Vertices: " << mesh.vertices.size() << std::endl;
-    file << "# Triangles: " << mesh.triangles.size() << std::endl;
-    file << std::endl;
-
-    // Write vertices
-    for (const auto& vertex : mesh.vertices) {
-	file << "v " << std::fixed << std::setprecision(6)
-	    << vertex.x << " " << vertex.y << " " << vertex.z << std::endl;
-    }
-
-    file << std::endl;
-
-    // Write triangles (OBJ uses 1-based indexing)
-    for (const auto& triangle : mesh.triangles) {
-	file << "f " << (triangle.vertices[0] + 1) << " "
-	    << (triangle.vertices[1] + 1) << " "
-	    << (triangle.vertices[2] + 1) << std::endl;
-    }
-
-    file.close();
-    return true;
 }
 
 // Convert DSP data to TerraScape TerrainData format

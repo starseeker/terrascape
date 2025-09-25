@@ -1,10 +1,8 @@
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <string>
-#include <sstream>
-#include <iomanip>
 #include "TerraScape.hpp"
+#include "file_io.hpp"
 #include "cxxopts.hpp"
 #ifdef HAVE_GDAL
 #include <gdal_priv.h>
@@ -55,7 +53,7 @@ int main(int argc, char* argv[])
         
         // Load terrain data first
         TerraScape::TerrainData terrain;
-        if (!TerraScape::readTerrainFile(input_file, terrain)) {
+        if (!TerraScapeIO::readTerrainFile(input_file, terrain)) {
             std::cerr << "Error: Failed to read terrain file: " << input_file << std::endl;
             return 1;
         }
@@ -103,7 +101,7 @@ int main(int argc, char* argv[])
         std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
         std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
         
-        if (TerraScape::writeObjFile(output_file, mesh)) {
+        if (TerraScapeIO::writeObjFile(output_file, mesh)) {
             std::cout << "Successfully wrote BRL-CAD compatible mesh to: " << output_file << std::endl;
         } else {
             std::cerr << "Failed to write output file: " << output_file << std::endl;
@@ -134,7 +132,7 @@ int main(int argc, char* argv[])
 #endif
         // Read terrain data
         TerraScape::TerrainData terrain;
-        if (!TerraScape::readTerrainFile(input_file, terrain)) {
+        if (!TerraScapeIO::readTerrainFile(input_file, terrain)) {
             std::cerr << "Error: Failed to read terrain file: " << input_file << std::endl;
             return 1;
         }
@@ -175,7 +173,7 @@ int main(int argc, char* argv[])
         std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
         
         // Write OBJ file
-        if (!TerraScape::writeObjFile(output_file, mesh)) {
+        if (!TerraScapeIO::writeObjFile(output_file, mesh)) {
             std::cerr << "Error: Failed to write OBJ file: " << output_file << std::endl;
             return 1;
         }
