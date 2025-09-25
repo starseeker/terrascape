@@ -1482,35 +1482,35 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
     double center_x = 0.0;
     double center_y = 0.0;
     size_t total_points = 0;
-    
+
     // Average all boundary points
     for (const auto& point : boundary) {
-        center_x += point.first;
-        center_y += point.second;
-        total_points++;
+	center_x += point.first;
+	center_y += point.second;
+	total_points++;
     }
-    
+
     // Average all hole points
     for (const auto& hole : holes) {
-        for (const auto& point : hole) {
-            center_x += point.first;
-            center_y += point.second;
-            total_points++;
-        }
+	for (const auto& point : hole) {
+	    center_x += point.first;
+	    center_y += point.second;
+	    total_points++;
+	}
     }
-    
+
     if (total_points > 0) {
-        center_x /= total_points;
-        center_y /= total_points;
+	center_x /= total_points;
+	center_y /= total_points;
     } else {
-        // Fallback to bounding box center
-        center_x = (min_x + max_x) * 0.5 * terrain.cell_size + terrain.origin.x;
-        center_y = (min_y + max_y) * 0.5 * terrain.cell_size + terrain.origin.y;
+	// Fallback to bounding box center
+	center_x = (min_x + max_x) * 0.5 * terrain.cell_size + terrain.origin.x;
+	center_y = (min_y + max_y) * 0.5 * terrain.cell_size + terrain.origin.y;
     }
 
     // Parameters for simplified Steiner point generation
     double min_distance = terrain.cell_size * 3.0;
-    double step_size = terrain.cell_size * 4.0; // Distance between points along guide lines
+    double min_viable_len = terrain.cell_size * 4.0; // minimum viable length
 
     // Distance function to edges
     auto distanceToEdges = [&](double x, double y) -> double {
@@ -1569,168 +1569,213 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
     // Create guide lines from boundary edges to the average center point
     // Sample boundary points (not all to avoid too many points)
     size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 100));
-    
+
     for (size_t i = 0; i < boundary.size(); i += boundary_sample_step) {
-        const auto& edge_point = boundary[i];
+	const auto& edge_point = boundary[i];
 
-        // Create guide line from edge point to center
-        double dx = center_x - edge_point.first;
-        double dy = center_y - edge_point.second;
-        double line_length = std::sqrt(dx * dx + dy * dy);
+	// Create guide line from edge point to center
+	double dx = center_x - edge_point.first;
+	double dy = center_y - edge_point.second;
+	double line_length = std::sqrt(dx * dx + dy * dy);
 
-        if (line_length > step_size * 2.0) { // Ensure line is long enough for meaningful stepping
-            // Normalize direction
-            dx /= line_length;
-            dy /= line_length;
+	if (line_length > min_viable_len) { // Ensure line is long enough for meaningful stepping
+	    // Normalize direction
+	    dx /= line_length;
+	    dy /= line_length;
 
-            // Step along the guide line from edge toward center
-            int max_steps = (int)(line_length / step_size) - 1; // Leave some distance from center
-            
-            for (int step = 1; step <= max_steps && step <= 4; ++step) {
-                // Apply probability selection to prevent clustering near center
-                // Points closer to center have lower probability of being selected
-                double probability;
-                if (step == 1) probability = 1.0;        // Always add closest point to edge
-                else if (step == 2) probability = 0.3;   // 30% probability for second point
-                else if (step == 3) probability = 0.1;   // 10% probability for third point
-                else probability = 0.01;                 // 1% probability for fourth point
-                
-                // Use pseudo-random sampling with specific probabilities
-                if (next_random() > probability) continue;
+	    // Step along the guide line from edge toward center
+	    double step_size = line_length / 5;
 
-                double step_distance = step * step_size;
-                double x = edge_point.first + dx * step_distance;
-                double y = edge_point.second + dy * step_distance;
+	    for (int step = 1; step <= 4; ++step) {
+		// Apply probability selection to prevent clustering near center
+		// Points closer to center have lower probability of being selected
+		double probability;
+		if (step == 1) probability = 0.9;        // 90% probability for closest point to edge
+		else if (step == 2) probability = 0.7;   // 30% probability for second point
+		else if (step == 3) probability = 0.5;   // 10% probability for third point
+		else probability = 0.3;                 // 1% probability for fourth point
 
-                // Check if point is valid (inside boundary, not in holes)
-                if (pointInPolygon(x, y, boundary)) {
-                    bool in_hole = false;
-                    for (const auto& hole : holes) {
-                        if (pointInPolygon(x, y, hole)) {
-                            in_hole = true;
-                            break;
-                        }
-                    }
+		// Use pseudo-random sampling with specific probabilities
+		if (next_random() > probability) continue;
 
-                    if (!in_hole) {
-                        double edge_distance = distanceToEdges(x, y);
+		double step_distance = step * step_size;
+		double x = edge_point.first + dx * step_distance;
+		double y = edge_point.second + dy * step_distance;
 
-                        if (edge_distance > min_distance) {
-                            // Check terrain coordinates
-                            int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-                            int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+		// Check if point is valid (inside boundary, not in holes)
+		if (pointInPolygon(x, y, boundary)) {
+		    bool in_hole = false;
+		    for (const auto& hole : holes) {
+			if (pointInPolygon(x, y, hole)) {
+			    in_hole = true;
+			    break;
+			}
+		    }
 
-                            bool is_in_active_region = false;
-                            if (terrain_x >= 0 && terrain_x < terrain.width && 
-                                    terrain_y >= 0 && terrain_y < terrain.height) {
-                                is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-                            }
+		    if (!in_hole) {
+			double edge_distance = distanceToEdges(x, y);
 
-                            if (is_in_active_region) {
-                                // Check distance to existing points
-                                bool too_close = false;
-                                for (const auto& existing : steiner_points) {
-                                    double dx_check = x - existing.first;
-                                    double dy_check = y - existing.second;
-                                    if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-                                        too_close = true;
-                                        break;
-                                    }
-                                }
+			if (edge_distance > min_distance) {
+			    // Check terrain coordinates
+			    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+			    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
 
-                                if (!too_close) {
-                                    steiner_points.push_back({x, y});
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+			    bool is_in_active_region = false;
+			    if (terrain_x >= 0 && terrain_x < terrain.width && 
+				    terrain_y >= 0 && terrain_y < terrain.height) {
+				is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+			    }
+
+			    if (is_in_active_region) {
+				// Check distance to existing points
+				bool too_close = false;
+				for (const auto& existing : steiner_points) {
+				    double dx_check = x - existing.first;
+				    double dy_check = y - existing.second;
+				    if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+					too_close = true;
+					break;
+				    }
+				}
+
+				if (!too_close) {
+				    steiner_points.push_back({x, y});
+				}
+			    }
+			}
+		    }
+		}
+	    }
+
+	    // Add center point
+	    if (pointInPolygon(center_x, center_y, boundary)) {
+		double x = center_x;
+		double y = center_y;
+		bool in_hole = false;
+		for (const auto& hole : holes) {
+		    if (pointInPolygon(x, y, hole)) {
+			in_hole = true;
+			break;
+		    }
+		}
+
+		if (!in_hole) {
+		    double edge_distance = distanceToEdges(x, y);
+
+		    if (edge_distance > min_distance) {
+			// Check terrain coordinates
+			int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+			int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+
+			bool is_in_active_region = false;
+			if (terrain_x >= 0 && terrain_x < terrain.width && 
+				terrain_y >= 0 && terrain_y < terrain.height) {
+			    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+			}
+
+			if (is_in_active_region) {
+			    // Check distance to existing points
+			    bool too_close = false;
+			    for (const auto& existing : steiner_points) {
+				double dx_check = x - existing.first;
+				double dy_check = y - existing.second;
+				if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+				    too_close = true;
+				    break;
+				}
+			    }
+
+			    if (!too_close) {
+				steiner_points.push_back({x, y});
+			    }
+			}
+		    }
+		}
+	    }
+	}
     }
-    
     // Also create guide lines from hole edges to center (if any holes exist)
     for (const auto& hole : holes) {
-        size_t hole_sample_step = std::max(1, (int)(hole.size() / 50));
-        
-        for (size_t i = 0; i < hole.size(); i += hole_sample_step) {
-            const auto& hole_edge_point = hole[i];
+	size_t hole_sample_step = std::max(1, (int)(hole.size() / 50));
 
-            // Create guide line from hole edge point to center
-            double dx = center_x - hole_edge_point.first;
-            double dy = center_y - hole_edge_point.second;
-            double line_length = std::sqrt(dx * dx + dy * dy);
+	for (size_t i = 0; i < hole.size(); i += hole_sample_step) {
+	    const auto& hole_edge_point = hole[i];
 
-            if (line_length > step_size * 2.0) {
-                // Normalize direction
-                dx /= line_length;
-                dy /= line_length;
+	    // Create guide line from hole edge point to center
+	    double dx = center_x - hole_edge_point.first;
+	    double dy = center_y - hole_edge_point.second;
+	    double line_length = std::sqrt(dx * dx + dy * dy);
 
-                // Step along the guide line from hole edge toward center
-                int max_steps = (int)(line_length / step_size) - 1;
-                
-                for (int step = 1; step <= max_steps && step <= 4; ++step) {
-                    // Apply probability selection to prevent clustering near center
-                    // Points closer to center have lower probability of being selected
-                    double probability;
-                    if (step == 1) probability = 1.0;        // Always add closest point to edge
-                    else if (step == 2) probability = 0.3;   // 30% probability for second point
-                    else if (step == 3) probability = 0.1;   // 10% probability for third point
-                    else probability = 0.01;                 // 1% probability for fourth point
-                    
-                    // Use pseudo-random sampling with specific probabilities
-                    if (next_random() > probability) continue;
+	    if (line_length > min_viable_len) {
+		// Normalize direction
+		dx /= line_length;
+		dy /= line_length;
 
-                    double step_distance = step * step_size;
-                    double x = hole_edge_point.first + dx * step_distance;
-                    double y = hole_edge_point.second + dy * step_distance;
+		// Step along the guide line from hole edge toward center
+		double step_size = line_length / 5;
 
-                    // Check if point is valid
-                    if (pointInPolygon(x, y, boundary)) {
-                        bool in_any_hole = false;
-                        for (const auto& check_hole : holes) {
-                            if (pointInPolygon(x, y, check_hole)) {
-                                in_any_hole = true;
-                                break;
-                            }
-                        }
+		for (int step = 1; step <= 4; ++step) {
+		    // Apply probability selection to prevent clustering near center
+		    // Points closer to center have lower probability of being selected
+		    double probability;
+		    if (step == 1) probability = 1.0;        // Always add closest point to edge
+		    else if (step == 2) probability = 0.3;   // 30% probability for second point
+		    else if (step == 3) probability = 0.1;   // 10% probability for third point
+		    else probability = 0.01;                 // 1% probability for fourth point
 
-                        if (!in_any_hole) {
-                            double edge_distance = distanceToEdges(x, y);
+		    // Use pseudo-random sampling with specific probabilities
+		    if (next_random() > probability) continue;
 
-                            if (edge_distance > min_distance) {
-                                // Check terrain coordinates
-                                int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-                                int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+		    double step_distance = step * step_size / 5;
+		    double x = hole_edge_point.first + dx * step_distance;
+		    double y = hole_edge_point.second + dy * step_distance;
 
-                                bool is_in_active_region = false;
-                                if (terrain_x >= 0 && terrain_x < terrain.width && 
-                                        terrain_y >= 0 && terrain_y < terrain.height) {
-                                    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-                                }
+		    // Check if point is valid
+		    if (pointInPolygon(x, y, boundary)) {
+			bool in_any_hole = false;
+			for (const auto& check_hole : holes) {
+			    if (pointInPolygon(x, y, check_hole)) {
+				in_any_hole = true;
+				break;
+			    }
+			}
 
-                                if (is_in_active_region) {
-                                    // Check distance to existing points
-                                    bool too_close = false;
-                                    for (const auto& existing : steiner_points) {
-                                        double dx_check = x - existing.first;
-                                        double dy_check = y - existing.second;
-                                        if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
-                                            too_close = true;
-                                            break;
-                                        }
-                                    }
+			if (!in_any_hole) {
+			    double edge_distance = distanceToEdges(x, y);
 
-                                    if (!too_close) {
-                                        steiner_points.push_back({x, y});
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+			    if (edge_distance > min_distance) {
+				// Check terrain coordinates
+				int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+				int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+
+				bool is_in_active_region = false;
+				if (terrain_x >= 0 && terrain_x < terrain.width && 
+					terrain_y >= 0 && terrain_y < terrain.height) {
+				    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+				}
+
+				if (is_in_active_region) {
+				    // Check distance to existing points
+				    bool too_close = false;
+				    for (const auto& existing : steiner_points) {
+					double dx_check = x - existing.first;
+					double dy_check = y - existing.second;
+					if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+					    too_close = true;
+					    break;
+					}
+				    }
+
+				    if (!too_close) {
+					steiner_points.push_back({x, y});
+				    }
+				}
+			    }
+			}
+		    }
+		}
+	    }
+	}
     }
 
     std::cout << "Generated " << steiner_points.size() << " Steiner points using guide lines to average center point" << std::endl;
