@@ -58,6 +58,7 @@ struct ConnectedComponent;
 struct MeshStats;
 struct TerrainData;
 struct DSPData;
+struct NMGTriangleData;
 
 // Basic 3D point structure
 struct Point3D {
@@ -232,6 +233,9 @@ struct TerrainMesh {
 	}
 	return total;
     }
+
+    // Convert mesh to NMG-compatible triangle data
+    bool toNMG(NMGTriangleData& nmg_data) const;
 };
 
 // Mesh validation statistics
@@ -406,7 +410,6 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
 
 // BRL-CAD DSP integration functions
-bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data);
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
 
 // Triangulation functions (these will eventually be moved to TerrainMesh class)
@@ -2380,29 +2383,28 @@ bool DSPData::toTerrain(TerrainData& terrain) const {
     return terrain.fromDSP(*this);
 }
 
-// Convert TerrainMesh to NMG-compatible triangle data
-bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data) {
-    if (mesh.vertices.empty() || mesh.triangles.empty()) {
+bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
+    if (vertices.empty() || triangles.empty()) {
 	return false;
     }
 
     nmg_data.triangles.clear();
-    nmg_data.unique_vertices = mesh.vertices;  // Copy vertex data
-    nmg_data.surface_triangle_count = mesh.surface_triangle_count;
+    nmg_data.unique_vertices = vertices;  // Copy vertex data
+    nmg_data.surface_triangle_count = surface_triangle_count;
 
     // Convert triangles to NMG format
-    nmg_data.triangles.reserve(mesh.triangles.size());
+    nmg_data.triangles.reserve(triangles.size());
 
-    for (size_t i = 0; i < mesh.triangles.size(); ++i) {
-	const Triangle& tri = mesh.triangles[i];
+    for (size_t i = 0; i < triangles.size(); ++i) {
+	const Triangle& tri = triangles[i];
 
 	// Create triangle vertices with references to unique vertex array
-	NMGTriangleData::TriangleVertex v0(mesh.vertices[tri.vertices[0]], tri.vertices[0]);
-	NMGTriangleData::TriangleVertex v1(mesh.vertices[tri.vertices[1]], tri.vertices[1]);
-	NMGTriangleData::TriangleVertex v2(mesh.vertices[tri.vertices[2]], tri.vertices[2]);
+	NMGTriangleData::TriangleVertex v0(vertices[tri.vertices[0]], tri.vertices[0]);
+	NMGTriangleData::TriangleVertex v1(vertices[tri.vertices[1]], tri.vertices[1]);
+	NMGTriangleData::TriangleVertex v2(vertices[tri.vertices[2]], tri.vertices[2]);
 
 	// Determine if this is a surface triangle (first N triangles are surface)
-	bool is_surface = (i < mesh.surface_triangle_count);
+	bool is_surface = (i < surface_triangle_count);
 
 	// Create NMG triangle
 	NMGTriangleData::NMGTriangle nmg_tri(v0, v1, v2, is_surface);
@@ -2425,7 +2427,7 @@ bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) 
     triangulateVolume(terrain, mesh);
 
     // Step 3: Convert mesh to NMG format
-    return convertMeshToNMG(mesh, nmg_data);
+    return mesh.toNMG(nmg_data);
 }
 
 
