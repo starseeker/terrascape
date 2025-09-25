@@ -96,10 +96,10 @@ int main(int argc, char* argv[])
         // Validate the mesh
         TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
-        std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
-        std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
-        std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
-        std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        std::cout << "  Volume: " << stats.getVolume() << " (expected: " << stats.getExpectedVolume() << ")" << std::endl;
+        std::cout << "  Surface area: " << stats.getSurfaceArea() << " (expected: " << stats.getExpectedSurfaceArea() << ")" << std::endl;
+        std::cout << "  Is manifold: " << (stats.getIsManifold() ? "yes" : "no") << std::endl;
+        std::cout << "  CCW oriented: " << (stats.getIsCCWOriented() ? "yes" : "no") << std::endl;
         
         if (TerraScapeIO::writeObjFile(output_file, mesh)) {
             std::cout << "Successfully wrote BRL-CAD compatible mesh to: " << output_file << std::endl;
@@ -148,13 +148,13 @@ int main(int argc, char* argv[])
             TerraScape::triangulateVolumeLegacy(terrain, mesh);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
-            params.error_tol = error_threshold;
-            params.min_reduction = reduction_percent;
+            params.setErrorTol(error_threshold);
+            params.setMinReduction(reduction_percent);
             TerraScape::triangulateSurfaceOnly(terrain, mesh, params);
         } else if (use_simplified) {
             TerraScape::SimplificationParams params;
-            params.error_tol = error_threshold;
-            params.min_reduction = reduction_percent;
+            params.setErrorTol(error_threshold);
+            params.setMinReduction(reduction_percent);
             TerraScape::triangulateVolumeSimplified(terrain, mesh, params);
         } else {
             // Default to component-based approach
@@ -167,10 +167,10 @@ int main(int argc, char* argv[])
         // Validate mesh properties
         TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
-        std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
-        std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
-        std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
-        std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        std::cout << "  Volume: " << stats.getVolume() << " (expected: " << stats.getExpectedVolume() << ")" << std::endl;
+        std::cout << "  Surface area: " << stats.getSurfaceArea() << " (expected: " << stats.getExpectedSurfaceArea() << ")" << std::endl;
+        std::cout << "  Is manifold: " << (stats.getIsManifold() ? "yes" : "no") << std::endl;
+        std::cout << "  CCW oriented: " << (stats.getIsCCWOriented() ? "yes" : "no") << std::endl;
         
         // Write OBJ file
         if (!TerraScapeIO::writeObjFile(output_file, mesh)) {

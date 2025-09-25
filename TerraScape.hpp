@@ -240,11 +240,28 @@ class TerrainMesh {
 
 	// Convert mesh to NMG-compatible triangle data
 	bool toNMG(NMGTriangleData& nmg_data) const;
+
+	// Triangulation methods (moved from standalone functions)
+	void triangulateVolume(const TerrainData& terrain);
+	void triangulateVolumeLegacy(const TerrainData& terrain);
+	void triangulateVolumeSimplified(const TerrainData& terrain, const SimplificationParams& params);
+	void triangulateSurfaceOnly(const TerrainData& terrain, const SimplificationParams& params);
+	void triangulateVolumeWithComponents(const TerrainData& terrain);
+	void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component);
+
+    private:
+	// Helper methods for triangulation
+	void triangulateBottomFaceWithEarcut(const std::vector<std::vector<size_t>>& bottom_vertices,
+		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+	void triangulateBottomFaceWithDetria(const std::vector<std::vector<size_t>>& bottom_vertices,
+		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+	void fallbackBottomTriangulation(const std::vector<std::vector<size_t>>& bottom_vertices,
+		const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
 };
 
 // Mesh validation statistics
 class MeshStats {
-    public:
+    private:
 	double volume;
 	double surface_area;
 	double expected_volume;
@@ -253,42 +270,90 @@ class MeshStats {
 	bool is_ccw_oriented;
 	int non_manifold_edges;
 
+    public:
 	MeshStats() : volume(0), surface_area(0), expected_volume(0), expected_surface_area(0),
 	is_manifold(true), is_ccw_oriented(true), non_manifold_edges(0) {}
+
+	// Getters
+	double getVolume() const { return volume; }
+	double getSurfaceArea() const { return surface_area; }
+	double getExpectedVolume() const { return expected_volume; }
+	double getExpectedSurfaceArea() const { return expected_surface_area; }
+	bool getIsManifold() const { return is_manifold; }
+	bool getIsCCWOriented() const { return is_ccw_oriented; }
+	int getNonManifoldEdges() const { return non_manifold_edges; }
+
+	// Setters for internal use
+	void setVolume(double val) { volume = val; }
+	void setSurfaceArea(double val) { surface_area = val; }
+	void setExpectedVolume(double val) { expected_volume = val; }
+	void setExpectedSurfaceArea(double val) { expected_surface_area = val; }
+	void setIsManifold(bool val) { is_manifold = val; }
+	void setIsCCWOriented(bool val) { is_ccw_oriented = val; }
+	void setNonManifoldEdges(int val) { non_manifold_edges = val; }
 };
 
 // Terrain simplification parameters based on Terra/Scape concepts
 class SimplificationParams {
-    public:
+    private:
 	double error_tol;      // Maximum allowed geometric error
 	double slope_tol;      // Slope threshold for feature preservation
 	int min_reduction;     // Minimum percentage of triangles to remove
 	bool preserve_bounds;  // Whether to preserve terrain boundaries
 
+    public:
 	SimplificationParams() :
 	    error_tol(0.1),
 	    slope_tol(0.2),
 	    min_reduction(50),
 	    preserve_bounds(true) {}
+
+	// Getters
+	double getErrorTol() const { return error_tol; }
+	double getSlopeTol() const { return slope_tol; }
+	int getMinReduction() const { return min_reduction; }
+	bool getPreserveBounds() const { return preserve_bounds; }
+
+	// Setters
+	void setErrorTol(double val) { error_tol = val; }
+	void setSlopeTol(double val) { slope_tol = val; }
+	void setMinReduction(int val) { min_reduction = val; }
+	void setPreserveBounds(bool val) { preserve_bounds = val; }
 };
 
 // Local terrain analysis for adaptive simplification
 class TerrainFeature {
-    public:
+    private:
 	double curvature;          // Local surface curvature
 	double slope;              // Local slope magnitude
 	double roughness;          // Local height variation
 	bool is_boundary;          // Whether this is a boundary vertex
 	double importance;   // Combined importance metric
 
+    public:
 	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
+
+	// Getters
+	double getCurvature() const { return curvature; }
+	double getSlope() const { return slope; }
+	double getRoughness() const { return roughness; }
+	bool getIsBoundary() const { return is_boundary; }
+	double getImportance() const { return importance; }
+
+	// Setters
+	void setCurvature(double val) { curvature = val; }
+	void setSlope(double val) { slope = val; }
+	void setRoughness(double val) { roughness = val; }
+	void setIsBoundary(bool val) { is_boundary = val; }
+	void setImportance(double val) { importance = val; }
 };
 
 // Edge structure for manifold checking
 class Edge {
-    public:
+    private:
 	size_t v0, v1;
 
+    public:
 	Edge(size_t a, size_t b) {
 	    if (a < b) {
 		v0 = a; v1 = b;
@@ -296,6 +361,10 @@ class Edge {
 		v0 = b; v1 = a;
 	    }
 	}
+
+	// Getters
+	size_t getV0() const { return v0; }
+	size_t getV1() const { return v1; }
 
 	bool operator<(const Edge& other) const {
 	    if (v0 != other.v0) return v0 < other.v0;
@@ -311,7 +380,7 @@ class Edge {
 class EdgeHash {
     public:
 	size_t operator()(const Edge& e) const {
-	    return std::hash<size_t>()(e.v0) ^ (std::hash<size_t>()(e.v1) << 1);
+	    return std::hash<size_t>()(e.getV0()) ^ (std::hash<size_t>()(e.getV1()) << 1);
 	}
 };
 
@@ -479,7 +548,7 @@ TerrainFeature TerrainData::analyzePoint(int x, int y) const {
     if (isValidCell(x, y-1) && isValidCell(x, y+1)) {
 	dy = (getHeight(x, y+1) - getHeight(x, y-1)) / (2.0 * cell_size);
     }
-    feature.slope = std::sqrt(dx*dx + dy*dy);
+    feature.setSlope(std::sqrt(dx*dx + dy*dy));
 
     // Calculate local curvature (second derivatives)
     double dxx = 0, dyy = 0;
@@ -490,7 +559,7 @@ TerrainFeature TerrainData::analyzePoint(int x, int y) const {
     if (isValidCell(x, y-1) && isValidCell(x, y+1)) {
 	dyy = (getHeight(x, y+1) - 2*h_center + getHeight(x, y-1)) / (cell_size * cell_size);
     }
-    feature.curvature = std::abs(dxx) + std::abs(dyy);
+    feature.setCurvature(std::abs(dxx) + std::abs(dyy));
 
     // Calculate local roughness (height variation in neighborhood)
     double height_sum = 0;
@@ -516,15 +585,15 @@ TerrainFeature TerrainData::analyzePoint(int x, int y) const {
 		}
 	    }
 	}
-	feature.roughness = std::sqrt(height_variance / neighbor_count);
+	feature.setRoughness(std::sqrt(height_variance / neighbor_count));
     }
 
     // Check if this is a boundary point
-    feature.is_boundary = (x == 0 || x == width-1 || y == 0 || y == height-1);
+    feature.setIsBoundary(x == 0 || x == width-1 || y == 0 || y == height-1);
 
     // Calculate importance score (Terra/Scape style geometric importance)
-    feature.importance = feature.curvature + 0.5 * feature.slope + 0.3 * feature.roughness;
-    if (feature.is_boundary) feature.importance *= 2.0; // Preserve boundaries
+    feature.setImportance(feature.getCurvature() + 0.5 * feature.getSlope() + 0.3 * feature.getRoughness());
+    if (feature.getIsBoundary()) feature.setImportance(feature.getImportance() * 2.0); // Preserve boundaries
 
     return feature;
 }
@@ -550,12 +619,12 @@ std::vector<std::vector<bool>> TerrainData::generateSampleMask(const Simplificat
 	    TerrainFeature feature = analyzePoint(x, y);
 
 	    // Include points with high importance or exceeding thresholds
-	    if (feature.importance > params.error_tol ||
-		    feature.slope > params.slope_tol) {
+	    if (feature.getImportance() > params.getErrorTol() ||
+		    feature.getSlope() > params.getSlopeTol()) {
 		mask[y][x] = true;
 	    } else {
 		// Store for potential inclusion based on overall reduction target
-		importance_points.push_back({feature.importance, {x, y}});
+		importance_points.push_back({feature.getImportance(), {x, y}});
 	    }
 	}
     }
@@ -571,7 +640,7 @@ std::vector<std::vector<bool>> TerrainData::generateSampleMask(const Simplificat
     }
 
     int total_points = width * height;
-    int min_required = total_points * (100 - params.min_reduction) / 100;
+    int min_required = total_points * (100 - params.getMinReduction()) / 100;
 
     // Add most important remaining points to reach minimum density
     for (const auto& point : importance_points) {
@@ -675,8 +744,33 @@ TerrainComponents TerrainData::analyzeComponents(double height_threshold) const 
     return result;
 }
 
-// Triangulate a single connected component as a separate volumetric mesh
+// Wrapper functions for backwards compatibility
+void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolume(terrain);
+}
+
+void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolumeWithComponents(terrain);
+}
+
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh) {
+    mesh.triangulateComponentVolume(terrain, component);
+}
+
+void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
+    mesh.triangulateVolumeLegacy(terrain);
+}
+
+void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+    mesh.triangulateVolumeSimplified(terrain, params);
+}
+
+void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+    mesh.triangulateSurfaceOnly(terrain, params);
+}
+
+// Triangulate a single connected component as a separate volumetric mesh
+void TerrainMesh::triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component) {
     if (component.cells.empty()) {
 	return;
     }
@@ -694,8 +788,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 	double world_y = terrain.origin.y - y * terrain.cell_size;
 	double height = terrain.getHeight(x, y);
 
-	top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-	bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+	top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+	bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
     }
 
     // Create a set for quick lookup of component cells
@@ -716,15 +810,15 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t v11 = top_vertices[y+1][x+1];
 
 		// Add two triangles with CCW orientation (viewed from above)
-		mesh.addSurfaceTriangle(v00, v01, v10);
-		mesh.addSurfaceTriangle(v10, v01, v11);
+		addSurfaceTriangle(v00, v01, v10);
+		addSurfaceTriangle(v10, v01, v11);
 	    }
 	}
     }
 
     // Add bottom surface triangles using earcut for more efficient triangulation
     std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, &component_cells_set);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &component_cells_set);
 
     // Generate walls by examining each potential wall edge
     // For each cell, check its 4 neighbors and create walls where needed
@@ -743,8 +837,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y+1][x];
 
 		// Right wall facing outward
-		mesh.addTriangle(t1, t2, b1);
-		mesh.addTriangle(t2, b2, b1);
+		addTriangle(t1, t2, b1);
+		addTriangle(t2, b2, b1);
 	    }
 	}
 
@@ -758,8 +852,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y][x+1];
 
 		// Bottom wall facing outward
-		mesh.addTriangle(t1, b1, t2);
-		mesh.addTriangle(t2, b1, b2);
+		addTriangle(t1, b1, t2);
+		addTriangle(t2, b1, b2);
 	    }
 	}
 
@@ -773,8 +867,8 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y+1][x];
 
 		// Left wall facing outward
-		mesh.addTriangle(t1, b1, t2);
-		mesh.addTriangle(t2, b1, b2);
+		addTriangle(t1, b1, t2);
+		addTriangle(t2, b1, b2);
 	    }
 	}
 
@@ -788,16 +882,16 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 		size_t b2 = bottom_vertices[y][x+1];
 
 		// Top wall facing outward
-		mesh.addTriangle(t1, t2, b1);
-		mesh.addTriangle(t2, b2, b1);
+		addTriangle(t1, t2, b1);
+		addTriangle(t2, b2, b1);
 	    }
 	}
     }
 }
 
 // Triangulate terrain volume with proper handling of connected components
-void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.clear();
+void TerrainMesh::triangulateVolumeWithComponents(const TerrainData& terrain) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -812,13 +906,13 @@ void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& me
     for (const auto& component : components.components) {
 	std::cout << "Processing component " << component.id
 	    << " with " << component.cells.size() << " cells" << std::endl;
-	triangulateComponentVolume(terrain, component, mesh);
+	triangulateComponentVolume(terrain, component);
     }
 }
 
 // Generate a volumetric triangle mesh from terrain data (legacy single-mesh approach)
-void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
-    mesh.clear();
+void TerrainMesh::triangulateVolumeLegacy(const TerrainData& terrain) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -840,8 +934,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	    double world_y = terrain.origin.y - y * terrain.cell_size; // Note: y is flipped in image coordinates
 	    double height = terrain.getHeight(x, y);
 
-	    top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-	    bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+	    top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+	    bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
 	}
     }
 
@@ -856,14 +950,14 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 
 	    // Add two triangles with CCW orientation (viewed from above)
 	    // Triangle 1: v00, v01, v10
-	    mesh.addSurfaceTriangle(v00, v01, v10);
+	    addSurfaceTriangle(v00, v01, v10);
 	    // Triangle 2: v10, v01, v11
-	    mesh.addSurfaceTriangle(v10, v01, v11);
+	    addSurfaceTriangle(v10, v01, v11);
 	}
     }
 
     // Add bottom surface triangles using detria for high-quality triangulation
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, nullptr);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, nullptr);
 
     // Add side walls
     // Left wall (x = 0)
@@ -873,8 +967,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][0];
 	size_t bot_1 = bottom_vertices[y + 1][0];
 
-	mesh.addTriangle(top_0, bot_0, top_1);
-	mesh.addTriangle(top_1, bot_0, bot_1);
+	addTriangle(top_0, bot_0, top_1);
+	addTriangle(top_1, bot_0, bot_1);
     }
 
     // Right wall (x = width - 1)
@@ -885,8 +979,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][x];
 	size_t bot_1 = bottom_vertices[y + 1][x];
 
-	mesh.addTriangle(top_0, top_1, bot_0);
-	mesh.addTriangle(top_1, bot_1, bot_0);
+	addTriangle(top_0, top_1, bot_0);
+	addTriangle(top_1, bot_1, bot_0);
     }
 
     // Top wall (y = 0)
@@ -896,8 +990,8 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[0][x];
 	size_t bot_1 = bottom_vertices[0][x + 1];
 
-	mesh.addTriangle(top_0, top_1, bot_0);
-	mesh.addTriangle(top_1, bot_1, bot_0);
+	addTriangle(top_0, top_1, bot_0);
+	addTriangle(top_1, bot_1, bot_0);
     }
 
     // Bottom wall (y = height - 1)
@@ -908,20 +1002,20 @@ void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
 	size_t bot_0 = bottom_vertices[y][x];
 	size_t bot_1 = bottom_vertices[y][x + 1];
 
-	mesh.addTriangle(top_0, bot_0, top_1);
-	mesh.addTriangle(top_1, bot_0, bot_1);
+	addTriangle(top_0, bot_0, top_1);
+	addTriangle(top_1, bot_0, bot_1);
     }
 }
 
 // Generate a volumetric triangle mesh from terrain data
-void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+void TerrainMesh::triangulateVolume(const TerrainData& terrain) {
     // Use component-based approach by default for better handling of disjoint islands
-    triangulateVolumeWithComponents(terrain, mesh);
+    triangulateVolumeWithComponents(terrain);
 }
 
 // Generate a simplified volumetric triangle mesh using Terra/Scape concepts
-void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.clear();
+void TerrainMesh::triangulateVolumeSimplified(const TerrainData& terrain, const SimplificationParams& params) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -937,7 +1031,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 
     // For manifold guarantee, ensure we keep vertices in a structured grid pattern
     // Use regular subsampling combined with feature-based importance
-    int step_size = std::max(1, (int)std::sqrt(100.0 / (100.0 - params.min_reduction)));
+    int step_size = std::max(1, (int)std::sqrt(100.0 / (100.0 - params.getMinReduction())));
 
     // First pass: structured subsampling to maintain topology
     for (int y = 0; y < terrain.height; y += step_size) {
@@ -972,8 +1066,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 		double world_y = terrain.origin.y - y * terrain.cell_size;
 		double height = terrain.getHeight(x, y);
 
-		top_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
-		bottom_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, 0.0));
+		top_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+		bottom_vertices[y][x] = addVertex(Point3D(world_x, world_y, 0.0));
 	    }
 	}
     }
@@ -996,8 +1090,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 		size_t v11_top = top_vertices[y+1][x+1];
 
 		// Top surface triangles
-		mesh.addSurfaceTriangle(v00_top, v01_top, v10_top);
-		mesh.addSurfaceTriangle(v10_top, v01_top, v11_top);
+		addSurfaceTriangle(v00_top, v01_top, v10_top);
+		addSurfaceTriangle(v10_top, v01_top, v11_top);
 	    }
 	    // Handle cases where we have 3 vertices (create 1 triangle)
 	    else if (quad_corners.size() == 3) {
@@ -1014,7 +1108,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 			//size_t v1_bot = bottom_vertices[quad_corners[1].second][quad_corners[1].first];
 			//size_t v2_bot = bottom_vertices[quad_corners[2].second][quad_corners[2].first];
 
-			mesh.addSurfaceTriangle(v_top, v1_top, v2_top);
+			addSurfaceTriangle(v_top, v1_top, v2_top);
 			break;
 		    }
 		}
@@ -1032,7 +1126,7 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    }
 	}
     }
-    triangulateBottomFaceWithDetria(mesh, bottom_vertices, terrain, &keep_cells);
+    TerraScape::triangulateBottomFaceWithDetria(*this, bottom_vertices, terrain, &keep_cells);
 
     // Left Wall (x = 0)
     {
@@ -1049,8 +1143,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t top_1 = top_vertices[y1][0];
 	    size_t bot_0 = bottom_vertices[y0][0];
 	    size_t bot_1 = bottom_vertices[y1][0];
-	    mesh.addTriangle(top_0, bot_0, top_1);
-	    mesh.addTriangle(top_1, bot_0, bot_1);
+	    addTriangle(top_0, bot_0, top_1);
+	    addTriangle(top_1, bot_0, bot_1);
 	}
     }
 
@@ -1072,8 +1166,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t bot_0 = bottom_vertices[y0][x];
 	    size_t bot_1 = bottom_vertices[y1][x];
 
-	    mesh.addTriangle(top_0, top_1, bot_0);
-	    mesh.addTriangle(top_1, bot_1, bot_0);
+	    addTriangle(top_0, top_1, bot_0);
+	    addTriangle(top_1, bot_1, bot_0);
 	}
     }
 
@@ -1092,8 +1186,8 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t top_1 = top_vertices[0][x1];
 	    size_t bot_0 = bottom_vertices[0][x0];
 	    size_t bot_1 = bottom_vertices[0][x1];
-	    mesh.addTriangle(top_0, top_1, bot_0);
-	    mesh.addTriangle(top_1, bot_1, bot_0);
+	    addTriangle(top_0, top_1, bot_0);
+	    addTriangle(top_1, bot_1, bot_0);
 	}
     }
 
@@ -1115,15 +1209,15 @@ void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, 
 	    size_t bot_0 = bottom_vertices[y][x0];
 	    size_t bot_1 = bottom_vertices[y][x1];
 
-	    mesh.addTriangle(top_0, bot_0, top_1);
-	    mesh.addTriangle(top_1, bot_0, bot_1);
+	    addTriangle(top_0, bot_0, top_1);
+	    addTriangle(top_1, bot_0, bot_1);
 	}
     }
 }
 
 // Generate terrain surface-only mesh with Terra/Scape simplification (no volume)
-void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
-    mesh.clear();
+void TerrainMesh::triangulateSurfaceOnly(const TerrainData& terrain, const SimplificationParams& params) {
+    clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
 	return;
@@ -1133,7 +1227,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
     auto sample_mask = terrain.generateSampleMask(params);
 
     // Use more aggressive decimation for surface-only mode
-    int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.min_reduction)));
+    int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.getMinReduction())));
 
     // Create simplified grid with structured subsampling
     std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
@@ -1172,7 +1266,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		double world_y = terrain.origin.y - y * terrain.cell_size;
 		double height = terrain.getHeight(x, y);
 
-		surface_vertices[y][x] = mesh.addVertex(Point3D(world_x, world_y, height));
+		surface_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
 	    }
 	}
     }
@@ -1194,8 +1288,8 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		size_t v01 = surface_vertices[y+1][x];
 		size_t v11 = surface_vertices[y+1][x+1];
 
-		mesh.addSurfaceTriangle(v00, v01, v10);
-		mesh.addSurfaceTriangle(v10, v01, v11);
+		addSurfaceTriangle(v00, v01, v10);
+		addSurfaceTriangle(v10, v01, v11);
 	    }
 	    // Handle partial quads
 	    else if (corners.size() == 3) {
@@ -1208,7 +1302,7 @@ void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const
 		size_t v1 = surface_vertices[p1.second][p1.first];
 		size_t v2 = surface_vertices[p2.second][p2.first];
 
-		mesh.addSurfaceTriangle(v0, v1, v2);
+		addSurfaceTriangle(v0, v1, v2);
 	    }
 	}
     }
@@ -1998,14 +2092,14 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     // Count non-manifold edges
     for (const auto& pair : edge_count) {
 	if (pair.second != 2) {
-	    stats.non_manifold_edges++;
-	    stats.is_manifold = false;
+	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
+	    stats.setIsManifold(false);
 	}
     }
 
     // Check CCW orientation - for a volumetric mesh, this is more complex
     // We'll consider the mesh properly oriented if all normals point outward
-    stats.is_ccw_oriented = true;
+    stats.setIsCCWOriented(true);
     int total_triangles = 0;
     int properly_oriented = 0;
 
@@ -2027,34 +2121,34 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     }
 
     if (total_triangles > 0) {
-	stats.is_ccw_oriented = (properly_oriented >= total_triangles * 0.95); // 95% threshold
+	stats.setIsCCWOriented(properly_oriented >= total_triangles * 0.95); // 95% threshold
     }
 
     // Calculate volume using divergence theorem
-    stats.volume = 0.0;
+    stats.setVolume(0.0);
     for (const auto& triangle : triangles) {
 	const Point3D& p0 = vertices[triangle.vertices[0]];
 	const Point3D& p1 = vertices[triangle.vertices[1]];
 	const Point3D& p2 = vertices[triangle.vertices[2]];
 
 	// Volume contribution from this triangle
-	stats.volume += (p0.x * (p1.y * p2.z - p2.y * p1.z) +
+	stats.setVolume(stats.getVolume() + (p0.x * (p1.y * p2.z - p2.y * p1.z) +
 		p1.x * (p2.y * p0.z - p0.y * p2.z) +
-		p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0;
+		p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0);
     }
-    stats.volume = std::abs(stats.volume);
+    stats.setVolume(std::abs(stats.getVolume()));
 
     // Calculate expected volume from terrain data
-    stats.expected_volume = 0.0;
+    stats.setExpectedVolume(0.0);
     for (int y = 0; y < terrain.height; ++y) {
 	for (int x = 0; x < terrain.width; ++x) {
 	    double height = terrain.getHeight(x, y);
-	    stats.expected_volume += height * terrain.cell_size * terrain.cell_size;
+	    stats.setExpectedVolume(stats.getExpectedVolume() + height * terrain.cell_size * terrain.cell_size);
 	}
     }
 
     // Calculate surface area (only terrain surface triangles)
-    stats.surface_area = 0.0;
+    stats.setSurfaceArea(0.0);
     for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
 	const Triangle& triangle = triangles[i];
 	const Point3D& p0 = vertices[triangle.vertices[0]];
@@ -2064,11 +2158,11 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
 	Point3D edge1 = p1 - p0;
 	Point3D edge2 = p2 - p0;
 	Point3D cross_product = edge1.cross(edge2);
-	stats.surface_area += cross_product.length() * 0.5;
+	stats.setSurfaceArea(stats.getSurfaceArea() + cross_product.length() * 0.5);
     }
 
     // Expected surface area (rough approximation)
-    stats.expected_surface_area = terrain.width * terrain.height * terrain.cell_size * terrain.cell_size;
+    stats.setExpectedSurfaceArea(terrain.width * terrain.height * terrain.cell_size * terrain.cell_size);
 
     return stats;
 }
