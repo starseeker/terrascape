@@ -13,30 +13,29 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <tuple>
-#define _USE_MATH_DEFINES
+#include <string>
+#include <queue>
+#include <set>
+#include <map>
+#include <unordered_set>
+#include <unordered_map>
+#include <functional>
+#include <memory>
+
 #include <cmath>
 #include <algorithm>
 #include <limits>
 #include <climits>
-#include <queue>
-#include <memory>
-#include <iostream>
-#include <unordered_set>
-#include <set>
-#include <map>
-#include <string>
-#include <stdexcept>
 #include <cstdint>
-#include <array>
+#include <stdexcept>
+#include <iostream>
 
+#define _USE_MATH_DEFINES
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
-#include <functional>
-#include <unordered_map>
-#include <fstream>
-#include <iomanip>
 
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic push /* start new diagnostic pragma */
@@ -192,16 +191,16 @@ struct MeshStats {
 
 // Terrain simplification parameters based on Terra/Scape concepts
 struct SimplificationParams {
-    double error_threshold;     // Maximum allowed geometric error
-    double slope_threshold;     // Slope threshold for feature preservation
-    int min_triangle_reduction; // Minimum percentage of triangles to remove
-    bool preserve_boundaries;   // Whether to preserve terrain boundaries
+    double error_tol;      // Maximum allowed geometric error
+    double slope_tol;      // Slope threshold for feature preservation  
+    int min_reduction;     // Minimum percentage of triangles to remove
+    bool preserve_bounds;  // Whether to preserve terrain boundaries
 
     SimplificationParams() :
-	error_threshold(0.1),
-	slope_threshold(0.2),
-	min_triangle_reduction(50),
-	preserve_boundaries(true) {}
+	error_tol(0.1),
+	slope_tol(0.2),
+	min_reduction(50),
+	preserve_bounds(true) {}
 };
 
 // Local terrain analysis for adaptive simplification
@@ -210,9 +209,9 @@ struct TerrainFeature {
     double slope;              // Local slope magnitude
     double roughness;          // Local height variation
     bool is_boundary;          // Whether this is a boundary vertex
-    double importance_score;   // Combined importance metric
+    double importance;   // Combined importance metric
 
-    TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance_score(0) {}
+    TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
 };
 
 // Edge structure for manifold checking
@@ -339,16 +338,13 @@ struct NMGTriangleData {
 };
 
 // Forward declarations
-bool readTerrainFile(const std::string& filename, TerrainData& terrain);
-bool readPGMFile(const std::string& filename, TerrainData& terrain);
-void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh);
-void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
-void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
-void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
-TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y);
-std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params);
+void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh);
+void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh);
+void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
+void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params);
+TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y);
+std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, const SimplificationParams& params);
 MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain);
-bool writeObjFile(const std::string& filename, const TerrainMesh& mesh);
 
 // BRL-CAD DSP integration functions
 bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain);
@@ -357,10 +353,10 @@ bool convertMeshToNMG(const TerrainMesh& mesh, NMGTriangleData& nmg_data);
 bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data);
 
 // Flood fill and connected component analysis
-TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double height_threshold = 1e-6);
-void floodFillComponent(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
+TerrainComponents analyzeComponents(const TerrainData& terrain, double height_threshold = 1e-6);
+void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
 	ConnectedComponent& component, int start_x, int start_y, double height_threshold);
-void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
+void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
 void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
 
 // Earcut-based efficient bottom face triangulation
@@ -395,69 +391,8 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
 
 // Implementation
 
-// Helper function to check file extension
-bool hasExtension(const std::string& filename, const std::string& ext) {
-    if (filename.length() >= ext.length()) {
-	return (0 == filename.compare(filename.length() - ext.length(), ext.length(), ext));
-    }
-    return false;
-}
-
-// Read terrain data from file using GDAL or custom PGM reader
-bool readTerrainFile(const std::string& filename, TerrainData& terrain) {
-    // Try PGM format first
-    if (hasExtension(filename, ".pgm") || hasExtension(filename, ".PGM")) {
-	return readPGMFile(filename, terrain);
-    }
-    return false;
-}
-
-// Simple PGM file reader
-bool readPGMFile(const std::string& filename, TerrainData& terrain) {
-    std::ifstream file(filename);
-    if (!file.is_open()) {
-	return false;
-    }
-
-    std::string magic;
-    file >> magic;
-    if (magic != "P2") {
-	return false; // Only support ASCII PGM
-    }
-
-    int width, height, max_val;
-    file >> width >> height >> max_val;
-
-    terrain.width = width;
-    terrain.height = height;
-    terrain.cell_size = 1.0;
-    terrain.origin = Point3D(0, 0, 0);
-
-    // Read the height data
-    terrain.heights.resize(terrain.height);
-    terrain.min_height = std::numeric_limits<double>::max();
-    terrain.max_height = std::numeric_limits<double>::lowest();
-
-    for (int y = 0; y < terrain.height; ++y) {
-	terrain.heights[y].resize(terrain.width);
-	for (int x = 0; x < terrain.width; ++x) {
-	    int pixel_value;
-	    file >> pixel_value;
-
-	    // Convert pixel value to height (normalize to reasonable range)
-	    double height = static_cast<double>(pixel_value) / max_val * 100.0; // Scale to 0-100 range
-	    terrain.heights[y][x] = height;
-	    terrain.min_height = std::min(terrain.min_height, height);
-	    terrain.max_height = std::max(terrain.max_height, height);
-	}
-    }
-
-    file.close();
-    return true;
-}
-
 // Analyze terrain features at a specific point (Terra/Scape inspired)
-TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y) {
+TerrainFeature analyzePoint(const TerrainData& terrain, int x, int y) {
     TerrainFeature feature;
 
     if (!terrain.isValidCell(x, y)) {
@@ -516,14 +451,14 @@ TerrainFeature analyzeTerrainPoint(const TerrainData& terrain, int x, int y) {
     feature.is_boundary = (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1);
 
     // Calculate importance score (Terra/Scape style geometric importance)
-    feature.importance_score = feature.curvature + 0.5 * feature.slope + 0.3 * feature.roughness;
-    if (feature.is_boundary) feature.importance_score *= 2.0; // Preserve boundaries
+    feature.importance = feature.curvature + 0.5 * feature.slope + 0.3 * feature.roughness;
+    if (feature.is_boundary) feature.importance *= 2.0; // Preserve boundaries
 
     return feature;
 }
 
 // Generate adaptive sampling mask based on terrain features
-std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& terrain, const SimplificationParams& params) {
+std::vector<std::vector<bool>> generateSampleMask(const TerrainData& terrain, const SimplificationParams& params) {
     std::vector<std::vector<bool>> mask(terrain.height, std::vector<bool>(terrain.width, false));
 
     // Always include boundary points
@@ -540,15 +475,15 @@ std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& ter
 
     for (int y = 1; y < terrain.height-1; ++y) {
 	for (int x = 1; x < terrain.width-1; ++x) {
-	    TerrainFeature feature = analyzeTerrainPoint(terrain, x, y);
+	    TerrainFeature feature = analyzePoint(terrain, x, y);
 
 	    // Include points with high importance or exceeding thresholds
-	    if (feature.importance_score > params.error_threshold ||
-		    feature.slope > params.slope_threshold) {
+	    if (feature.importance > params.error_tol ||
+		    feature.slope > params.slope_tol) {
 		mask[y][x] = true;
 	    } else {
 		// Store for potential inclusion based on overall reduction target
-		importance_points.push_back({feature.importance_score, {x, y}});
+		importance_points.push_back({feature.importance, {x, y}});
 	    }
 	}
     }
@@ -564,7 +499,7 @@ std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& ter
     }
 
     int total_points = terrain.width * terrain.height;
-    int min_required = total_points * (100 - params.min_triangle_reduction) / 100;
+    int min_required = total_points * (100 - params.min_reduction) / 100;
 
     // Add most important remaining points to reach minimum density
     for (const auto& point : importance_points) {
@@ -582,7 +517,7 @@ std::vector<std::vector<bool>> generateAdaptiveSampleMask(const TerrainData& ter
 }
 
 // Flood fill to identify a connected component of non-zero height cells
-void floodFillComponent(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
+void floodFill(const TerrainData& terrain, std::vector<std::vector<bool>>& visited,
 	ConnectedComponent& component, int start_x, int start_y, double height_threshold) {
     std::queue<std::pair<int, int>> to_visit;
     to_visit.push({start_x, start_y});
@@ -615,7 +550,7 @@ void floodFillComponent(const TerrainData& terrain, std::vector<std::vector<bool
 }
 
 // Analyze terrain to identify connected components (islands)
-TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double height_threshold) {
+TerrainComponents analyzeComponents(const TerrainData& terrain, double height_threshold) {
     TerrainComponents result(terrain.width, terrain.height);
     std::vector<std::vector<bool>> visited(terrain.height, std::vector<bool>(terrain.width, false));
 
@@ -628,7 +563,7 @@ TerrainComponents analyzeTerrainComponents(const TerrainData& terrain, double he
 		ConnectedComponent component;
 		component.id = component_id;
 
-		floodFillComponent(terrain, visited, component, x, y, height_threshold);
+		floodFill(terrain, visited, component, x, y, height_threshold);
 
 		// Mark cells in the component map
 		for (const auto& cell : component.cells) {
@@ -791,7 +726,7 @@ void triangulateComponentVolume(const TerrainData& terrain, const ConnectedCompo
 }
 
 // Triangulate terrain volume with proper handling of connected components
-void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
+void triangulateVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh) {
     mesh.clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -799,7 +734,7 @@ void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainM
     }
 
     // Analyze terrain to find connected components
-    TerrainComponents components = analyzeTerrainComponents(terrain);
+    TerrainComponents components = analyzeComponents(terrain);
 
     std::cout << "Found " << components.components.size() << " terrain component(s)" << std::endl;
 
@@ -812,7 +747,7 @@ void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainM
 }
 
 // Generate a volumetric triangle mesh from terrain data (legacy single-mesh approach)
-void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
+void triangulateVolumeLegacy(const TerrainData& terrain, TerrainMesh& mesh) {
     mesh.clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -909,13 +844,13 @@ void triangulateTerrainVolumeLegacy(const TerrainData& terrain, TerrainMesh& mes
 }
 
 // Generate a volumetric triangle mesh from terrain data
-void triangulateTerrainVolume(const TerrainData& terrain, TerrainMesh& mesh) {
+void triangulateVolume(const TerrainData& terrain, TerrainMesh& mesh) {
     // Use component-based approach by default for better handling of disjoint islands
-    triangulateTerrainVolumeWithComponents(terrain, mesh);
+    triangulateVolumeWithComponents(terrain, mesh);
 }
 
 // Generate a simplified volumetric triangle mesh using Terra/Scape concepts
-void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+void triangulateVolumeSimplified(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
     mesh.clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -923,7 +858,7 @@ void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh&
     }
 
     // Generate adaptive sampling mask based on terrain features
-    auto sample_mask = generateAdaptiveSampleMask(terrain, params);
+    auto sample_mask = generateSampleMask(terrain, params);
 
     // Create a new simplified grid by decimation
     std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
@@ -932,7 +867,7 @@ void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh&
 
     // For manifold guarantee, ensure we keep vertices in a structured grid pattern
     // Use regular subsampling combined with feature-based importance
-    int step_size = std::max(1, (int)std::sqrt(100.0 / (100.0 - params.min_triangle_reduction)));
+    int step_size = std::max(1, (int)std::sqrt(100.0 / (100.0 - params.min_reduction)));
 
     // First pass: structured subsampling to maintain topology
     for (int y = 0; y < terrain.height; y += step_size) {
@@ -1117,7 +1052,7 @@ void triangulateTerrainVolumeSimplified(const TerrainData& terrain, TerrainMesh&
 }
 
 // Generate terrain surface-only mesh with Terra/Scape simplification (no volume)
-void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
+void triangulateSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh, const SimplificationParams& params) {
     mesh.clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -1125,10 +1060,10 @@ void triangulateTerrainSurfaceOnly(const TerrainData& terrain, TerrainMesh& mesh
     }
 
     // Generate adaptive sampling mask
-    auto sample_mask = generateAdaptiveSampleMask(terrain, params);
+    auto sample_mask = generateSampleMask(terrain, params);
 
     // Use more aggressive decimation for surface-only mode
-    int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.min_triangle_reduction)));
+    int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.min_reduction)));
 
     // Create simplified grid with structured subsampling
     std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
@@ -2328,37 +2263,6 @@ MeshStats validateMesh(const TerrainMesh& mesh, const TerrainData& terrain) {
     return stats;
 }
 
-// Write mesh to OBJ file
-bool writeObjFile(const std::string& filename, const TerrainMesh& mesh) {
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-	return false;
-    }
-
-    file << "# TerraScape generated OBJ file" << std::endl;
-    file << "# Vertices: " << mesh.vertices.size() << std::endl;
-    file << "# Triangles: " << mesh.triangles.size() << std::endl;
-    file << std::endl;
-
-    // Write vertices
-    for (const auto& vertex : mesh.vertices) {
-	file << "v " << std::fixed << std::setprecision(6)
-	    << vertex.x << " " << vertex.y << " " << vertex.z << std::endl;
-    }
-
-    file << std::endl;
-
-    // Write triangles (OBJ uses 1-based indexing)
-    for (const auto& triangle : mesh.triangles) {
-	file << "f " << (triangle.vertices[0] + 1) << " "
-	    << (triangle.vertices[1] + 1) << " "
-	    << (triangle.vertices[2] + 1) << std::endl;
-    }
-
-    file.close();
-    return true;
-}
-
 // Convert DSP data to TerraScape TerrainData format
 bool convertDSPToTerrain(const DSPData& dsp, TerrainData& terrain) {
     if (!dsp.dsp_buf || dsp.dsp_xcnt == 0 || dsp.dsp_ycnt == 0) {
@@ -2465,7 +2369,7 @@ bool triangulateTerrainForBRLCAD(const DSPData& dsp, NMGTriangleData& nmg_data) 
 
     // Step 2: Generate volumetric triangle mesh using TerraScape
     TerrainMesh mesh;
-    triangulateTerrainVolume(terrain, mesh);
+    triangulateVolume(terrain, mesh);
 
     // Step 3: Convert mesh to NMG format
     return convertMeshToNMG(mesh, nmg_data);
