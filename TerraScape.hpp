@@ -376,11 +376,28 @@ namespace TerraScape {
     void triangulateTerrainVolumeWithComponents(const TerrainData& terrain, TerrainMesh& mesh);
     void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component, TerrainMesh& mesh);
     
+    // Rectangle decomposition structure for efficient bottom triangulation
+    struct Rectangle {
+        int x, y;      // Bottom-left corner
+        int width, height;
+        
+        Rectangle(int x_, int y_, int w, int h) : x(x_), y(y_), width(w), height(h) {}
+    };
+
     // Earcut-based efficient bottom face triangulation
     void triangulateBottomFaceWithEarcut(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                         const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
     void fallbackBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices, 
                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells);
+    
+    // Rectangle-based efficient bottom face triangulation  
+    void rectangleBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
+                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells = nullptr);
+    
+    // Helper functions for rectangle decomposition
+    std::vector<Rectangle> findMaximalRectangles(const std::set<std::pair<int, int>>& active_cells, 
+                                                int min_x, int max_x, int min_y, int max_y);
+    bool isValidRectangle(const std::set<std::pair<int, int>>& active_cells, int x, int y, int width, int height);
     
     // Helper for hole boundary extraction
     bool extractHoleBoundary(const std::vector<std::pair<int, int>>& hole_cells,
@@ -812,9 +829,9 @@ namespace TerraScape {
             }
         }
         
-        // Add bottom surface triangles using earcut for more efficient triangulation
+        // Add bottom surface triangles using rectangle decomposition for more efficient triangulation
         std::set<std::pair<int, int>> component_cells_set(component.cells.begin(), component.cells.end());
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &component_cells_set);
+        rectangleBottomTriangulation(mesh, bottom_vertices, terrain, &component_cells_set);
         
         // Generate walls by examining each potential wall edge
         // For each cell, check its 4 neighbors and create walls where needed
@@ -952,8 +969,8 @@ namespace TerraScape {
             }
         }
 
-        // Add bottom surface triangles using earcut for more efficient triangulation
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, nullptr);
+        // Add bottom surface triangles using rectangle decomposition for more efficient triangulation
+        rectangleBottomTriangulation(mesh, bottom_vertices, terrain, nullptr);
 
         // Add side walls
         // Left wall (x = 0)
@@ -1127,7 +1144,7 @@ namespace TerraScape {
                 }
             }
         }
-        triangulateBottomFaceWithEarcut(mesh, bottom_vertices, terrain, &keep_cells);
+        rectangleBottomTriangulation(mesh, bottom_vertices, terrain, &keep_cells);
 
         // Add side walls for boundary edges with proper gap filling
         // Left wall (x = 0)
@@ -1800,6 +1817,218 @@ namespace TerraScape {
                         // Add two triangles with CCW orientation (viewed from below, so reversed)
                         mesh.addTriangle(v00, v10, v01);
                         mesh.addTriangle(v10, v11, v01);
+                    }
+                }
+            }
+        }
+    }
+
+    // Helper function to check if a rectangle is valid (all cells are active)
+    bool isValidRectangle(const std::set<std::pair<int, int>>& active_cells, int x, int y, int width, int height) {
+        for (int j = y; j < y + height; ++j) {
+            for (int i = x; i < x + width; ++i) {
+                if (!active_cells.count({i, j})) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // Find maximal rectangles using greedy approach with triangulation constraints
+    std::vector<Rectangle> findMaximalRectangles(const std::set<std::pair<int, int>>& active_cells, 
+                                               int min_x, int max_x, int min_y, int max_y) {
+        std::vector<Rectangle> rectangles;
+        std::set<std::pair<int, int>> remaining_cells = active_cells;
+        
+        while (!remaining_cells.empty()) {
+            // Find a cell to start from
+            auto start_cell = *remaining_cells.begin();
+            int start_x = start_cell.first;
+            int start_y = start_cell.second;
+            
+            // Find the largest rectangle starting from this cell
+            // The constraint is that a rectangle covering cells (start_x, start_y) to (start_x+w-1, start_y+h-1)
+            // needs vertices at (start_x, start_y) and (start_x+w, start_y+h)
+            // So we need start_x+w < terrain.width and start_y+h < terrain.height
+            
+            int best_width = 1;
+            int best_height = 1;
+            int max_area = 1;
+            
+            // Maximum possible dimensions respecting vertex bounds
+            int max_w = max_x - start_x + 1;  // This many cells can fit horizontally
+            int max_h = max_y - start_y + 1;  // This many cells can fit vertically
+            
+            for (int h = 1; h <= max_h; ++h) {
+                // Check if all cells in this height exist
+                bool height_valid = true;
+                for (int y = start_y; y < start_y + h && height_valid; ++y) {
+                    if (!remaining_cells.count({start_x, y})) {
+                        height_valid = false;
+                    }
+                }
+                
+                if (!height_valid) {
+                    break;
+                }
+                
+                // Find max width for this height
+                int width = 0;
+                for (int w = 1; w <= max_w; ++w) {
+                    bool width_valid = true;
+                    for (int y = start_y; y < start_y + h && width_valid; ++y) {
+                        for (int x = start_x; x < start_x + w && width_valid; ++x) {
+                            if (!remaining_cells.count({x, y})) {
+                                width_valid = false;
+                            }
+                        }
+                    }
+                    
+                    if (width_valid) {
+                        width = w;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (width > 0 && width * h > max_area) {
+                    best_width = width;
+                    best_height = h;
+                    max_area = width * h;
+                }
+            }
+            
+            // Create rectangle and remove cells from remaining set
+            rectangles.emplace_back(start_x, start_y, best_width, best_height);
+            
+            for (int y = start_y; y < start_y + best_height; ++y) {
+                for (int x = start_x; x < start_x + best_width; ++x) {
+                    remaining_cells.erase({x, y});
+                }
+            }
+        }
+        
+        return rectangles;
+    }
+
+    // Rectangle-based efficient bottom face triangulation
+    void rectangleBottomTriangulation(TerrainMesh& mesh, const std::vector<std::vector<size_t>>& bottom_vertices,
+                                     const TerrainData& terrain, const std::set<std::pair<int, int>>* filter_cells) {
+        
+        // Build set of cells that should have bottom faces
+        std::set<std::pair<int, int>> active_cells;
+        for (int y = 0; y < terrain.height; ++y) {
+            for (int x = 0; x < terrain.width; ++x) {
+                if (bottom_vertices[y][x] != SIZE_MAX) {
+                    if (filter_cells == nullptr || filter_cells->count({x, y})) {
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+        }
+        
+        if (active_cells.empty()) {
+            return;
+        }
+        
+        // Find bounds of active region
+        int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+        for (const auto& cell : active_cells) {
+            min_x = std::min(min_x, cell.first);
+            max_x = std::max(max_x, cell.first);
+            min_y = std::min(min_y, cell.second);
+            max_y = std::max(max_y, cell.second);
+        }
+        
+        std::cout << "DEBUG: Active region bounds: x=" << min_x << ".." << max_x << ", y=" << min_y << ".." << max_y << "\n";
+        std::cout << "DEBUG: Terrain dimensions: " << terrain.width << "x" << terrain.height << "\n";
+        
+        // Find maximal rectangles in the active region
+        std::vector<Rectangle> rectangles = findMaximalRectangles(active_cells, min_x, max_x, min_y, max_y);
+        
+        // Debug output
+        int total_rect_area = 0;
+        for (const auto& rect : rectangles) {
+            total_rect_area += rect.width * rect.height;
+            std::cout << "  Rectangle: (" << rect.x << "," << rect.y << ") size " << rect.width << "x" << rect.height << "\n";
+        }
+        std::cout << "DEBUG: Found " << rectangles.size() << " rectangles covering " << total_rect_area 
+                  << " cells out of " << active_cells.size() << " active cells\n";
+        
+        // Triangulate each rectangle with 2 triangles
+        std::set<std::pair<int, int>> triangulated_cells;
+        int rectangles_triangulated = 0;
+        
+        for (const auto& rect : rectangles) {
+            // For a rectangle covering cells from (x,y) to (x+width-1, y+height-1),
+            // the vertices are at grid points (x,y), (x+width,y), (x,y+height), (x+width,y+height)
+            int x1 = rect.x;
+            int y1 = rect.y; 
+            int x2 = rect.x + rect.width;
+            int y2 = rect.y + rect.height;
+            
+            std::cout << "  Trying to triangulate rectangle: (" << x1 << "," << y1 << ") to (" << x2 << "," << y2 << ")\n";
+            std::cout << "  Terrain bounds: " << terrain.width << "x" << terrain.height << "\n";
+            
+            // Verify coordinates are within bounds for triangulation
+            // We need vertices at (x2,y2) to exist, but terrain vertices only go to (width-1, height-1)
+            if (x1 >= 0 && x2 < terrain.width && y1 >= 0 && y2 < terrain.height) {
+                size_t v00 = bottom_vertices[y1][x1];      // Bottom-left
+                size_t v10 = bottom_vertices[y1][x2];      // Bottom-right  
+                size_t v01 = bottom_vertices[y2][x1];      // Top-left
+                size_t v11 = bottom_vertices[y2][x2];      // Top-right
+                
+                std::cout << "    Vertices: " << v00 << ", " << v10 << ", " << v01 << ", " << v11 << "\n";
+                
+                // Verify all vertices exist
+                if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                    // Add two triangles with CCW orientation (viewed from below, so reversed)
+                    mesh.addTriangle(v00, v10, v01);
+                    mesh.addTriangle(v10, v11, v01);
+                    rectangles_triangulated++;
+                    
+                    // Mark all cells in this rectangle as triangulated
+                    for (int j = rect.y; j < rect.y + rect.height; ++j) {
+                        for (int i = rect.x; i < rect.x + rect.width; ++i) {
+                            triangulated_cells.insert({i, j});
+                        }
+                    }
+                    std::cout << "    Successfully triangulated\n";
+                } else {
+                    std::cout << "    Failed: missing vertices\n";
+                }
+            } else {
+                std::cout << "    Failed: out of bounds\n";
+            }
+        }
+        
+        std::cout << "DEBUG: Triangulated " << rectangles_triangulated << " rectangles, covering " 
+                  << triangulated_cells.size() << " cells\n";
+        
+        // For any remaining untriangulated cells, use fallback per-cell triangulation
+        for (const auto& cell : active_cells) {
+            if (!triangulated_cells.count(cell)) {
+                int x = cell.first;
+                int y = cell.second;
+                
+                // Check if we can form a single cell quad
+                if (x < terrain.width - 1 && y < terrain.height - 1) {
+                    size_t v00 = bottom_vertices[y][x];
+                    size_t v10 = bottom_vertices[y][x + 1]; 
+                    size_t v01 = bottom_vertices[y + 1][x];
+                    size_t v11 = bottom_vertices[y + 1][x + 1];
+                    
+                    if (v00 != SIZE_MAX && v10 != SIZE_MAX && v01 != SIZE_MAX && v11 != SIZE_MAX) {
+                        // Check that all corner cells should be included
+                        bool include_cell = (filter_cells == nullptr) || 
+                                           (filter_cells->count({x, y}) && filter_cells->count({x+1, y}) && 
+                                            filter_cells->count({x, y+1}) && filter_cells->count({x+1, y+1}));
+                        
+                        if (include_cell) {
+                            mesh.addTriangle(v00, v10, v01);
+                            mesh.addTriangle(v10, v11, v01);
+                        }
                     }
                 }
             }
