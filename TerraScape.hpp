@@ -1463,31 +1463,21 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
     return inside;
 }
 
-// Generate Steiner points in geometric progression from edges toward center
-std::vector<std::pair<double, double>> generateSteinerPoints(
+// Calculate approximate medial axis points for a polygon
+std::vector<std::pair<double, double>> calculateMedialAxisPoints(
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
-	const std::set<std::pair<int, int>>& active_cells,
-	const TerrainData& terrain,
-	double min_x, double max_x, double min_y, double max_y) {
-
-    std::vector<std::pair<double, double>> steiner_points;
+	double cell_size, double min_x, double max_x, double min_y, double max_y) {
+	
+    std::vector<std::pair<double, double>> medial_points;
     
-    // Parameters for geometric progression-based Steiner point generation
-    double progression_factor = 0.6;   // More aggressive progression for better size variation
-    int max_levels = 3;                // Reduce levels for cleaner progression
-    double min_distance = terrain.cell_size * 4.0;  // Increase minimum distance
-    double base_density = terrain.cell_size * 12.0; // Increase base spacing for better progression
+    // Use provided bounds instead of calculating from boundary
     
-    // Calculate bounding box center
-    double center_x = (min_x + max_x) * 0.5;
-    double center_y = (min_y + max_y) * 0.5;
-    
-    // Function to calculate minimum distance to boundary or holes
-    auto distanceToEdge = [&](double x, double y) -> double {
+    // Distance function to boundary edges
+    auto distanceToEdges = [&](double x, double y) -> double {
         double min_dist = std::numeric_limits<double>::max();
         
-        // Distance to boundary edges
+        // Distance to boundary
         for (size_t i = 0; i < boundary.size(); ++i) {
             size_t next = (i + 1) % boundary.size();
             double dx1 = boundary[next].first - boundary[i].first;
@@ -1506,7 +1496,7 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
             min_dist = std::min(min_dist, dist);
         }
         
-        // Distance to hole edges
+        // Distance to holes
         for (const auto& hole : holes) {
             for (size_t i = 0; i < hole.size(); ++i) {
                 size_t next = (i + 1) % hole.size();
@@ -1530,143 +1520,428 @@ std::vector<std::pair<double, double>> generateSteinerPoints(
         return min_dist;
     };
     
-    // Calculate maximum distance from center to any boundary point for normalization
-    double max_distance_to_center = 0.0;
-    for (const auto& point : boundary) {
-        double dx = point.first - center_x;
-        double dy = point.second - center_y;
-        double dist = std::sqrt(dx * dx + dy * dy);
-        max_distance_to_center = std::max(max_distance_to_center, dist);
-    }
+    // Sample grid to find local maxima of distance function (approximate medial axis)
+    double sample_spacing = cell_size * 2.0; // Much finer spacing to catch interior regions
+    double medial_threshold = cell_size * 0.1; // Very low threshold to ensure we find points
     
-    // Generate concentric rings of Steiner points
-    for (int level = 1; level <= max_levels; ++level) {
-        double level_factor = std::pow(progression_factor, level);
-        double ring_distance = max_distance_to_center * level_factor;
+    int points_tested = 0;
+    int points_inside = 0;
+    
+    // Use boundary-guided approach to find medial axis points
+    // Instead of grid sampling, step inward from boundary points to find interior points
+    double inward_step = cell_size * 4.0;
+    
+    for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 100))) {
+        const auto& boundary_point = boundary[i];
         
-        // Skip if ring is too close to center
-        if (ring_distance < min_distance * 2.0) continue;
+        // Calculate inward direction (toward bounding box center as approximation)
+        double center_x = (min_x + max_x) * 0.5;
+        double center_y = (min_y + max_y) * 0.5;
+        double inward_dx = center_x - boundary_point.first;
+        double inward_dy = center_y - boundary_point.second;
+        double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
         
-        // Calculate point spacing for this ring - closer to edges means smaller spacing
-        double level_spacing = base_density * level_factor;
-        
-        // Generate points in this ring
-        int num_points = std::max(6, (int)(2.0 * M_PI * ring_distance / level_spacing));
-        
-        for (int i = 0; i < num_points; ++i) {
-            double angle = 2.0 * M_PI * i / num_points;
-            double x = center_x + ring_distance * std::cos(angle);
-            double y = center_y + ring_distance * std::sin(angle);
+        if (inward_len > inward_step) {
+            inward_dx /= inward_len;
+            inward_dy /= inward_len;
             
-            // Check if point is inside the boundary
-            if (pointInPolygon(x, y, boundary)) {
-                // Check if point is not inside any hole
-                bool in_hole = false;
-                for (const auto& hole : holes) {
-                    if (pointInPolygon(x, y, hole)) {
-                        in_hole = true;
-                        break;
-                    }
-                }
+            // Try several points stepping inward
+            for (int step = 2; step <= 6; ++step) {
+                double test_x = boundary_point.first + inward_dx * inward_step * step;
+                double test_y = boundary_point.second + inward_dy * inward_step * step;
                 
-                if (!in_hole) {
-                    // Check distance to boundary/holes - ensure we're not too close to edges
-                    double edge_distance = distanceToEdge(x, y);
-                    if (edge_distance > min_distance) {
-                        
-                        // Convert back to terrain coordinates to check if point is valid
-                        int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-                        int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-                        
-                        // Check if point is within active region
-                        bool is_in_active_region = false;
-                        if (terrain_x >= 0 && terrain_x < terrain.width && 
-                            terrain_y >= 0 && terrain_y < terrain.height) {
-                            is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+                if (pointInPolygon(test_x, test_y, boundary)) {
+                    points_inside++;
+                    // Check not inside holes
+                    bool in_hole = false;
+                    for (const auto& hole : holes) {
+                        if (pointInPolygon(test_x, test_y, hole)) {
+                            in_hole = true;
+                            break;
                         }
+                    }
+                    
+                    if (!in_hole) {
+                        double dist = distanceToEdges(test_x, test_y);
                         
-                        if (is_in_active_region) {
-                            // Check minimum distance to existing Steiner points
-                            bool too_close = false;
-                            for (const auto& existing : steiner_points) {
-                                double dx = x - existing.first;
-                                double dy = y - existing.second;
-                                if (std::sqrt(dx * dx + dy * dy) < min_distance) {
-                                    too_close = true;
-                                    break;
-                                }
-                            }
-                            
-                            if (!too_close) {
-                                steiner_points.push_back({x, y});
-                            }
+                        // Only keep points that are reasonably far from edges
+                        if (dist > medial_threshold) {
+                            medial_points.push_back({test_x, test_y});
                         }
                     }
                 }
+                points_tested++;
             }
         }
     }
     
-    // Add some additional points based on distance field for better coverage in large interior regions
-    double region_width = max_x - min_x;
-    double region_height = max_y - min_y;
-    int sample_density = std::max(6, std::min(12, (int)(std::max(region_width, region_height) / (terrain.cell_size * 4.0))));
+    std::cout << "Found " << medial_points.size() << " medial axis points" << std::endl;
     
-    for (int i = 3; i < sample_density - 3; i += 3) {
-        for (int j = 3; j < sample_density - 3; j += 3) {
-            double x = min_x + (region_width * i) / sample_density;
-            double y = min_y + (region_height * j) / sample_density;
+    return medial_points;
+}
+
+// Construct medial axis polyline from discrete points using minimum spanning tree approach
+std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> constructMedialAxisPolyline(
+    const std::vector<std::pair<double, double>>& medial_points) {
+    
+    std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> polyline_segments;
+    
+    if (medial_points.size() < 2) {
+        return polyline_segments;
+    }
+    
+    // Simple approach: connect each point to its nearest neighbor to form a connected polyline
+    std::vector<bool> used(medial_points.size(), false);
+    std::vector<int> connection_order;
+    
+    // Start with first point
+    connection_order.push_back(0);
+    used[0] = true;
+    
+    // Greedily connect to nearest unused point
+    for (size_t connected = 1; connected < medial_points.size(); ++connected) {
+        int last_point = connection_order.back();
+        double min_dist = std::numeric_limits<double>::max();
+        int next_point = -1;
+        
+        for (size_t i = 0; i < medial_points.size(); ++i) {
+            if (used[i]) continue;
             
-            // Check if point is inside the boundary
-            if (pointInPolygon(x, y, boundary)) {
-                // Check if point is not inside any hole
-                bool in_hole = false;
-                for (const auto& hole : holes) {
-                    if (pointInPolygon(x, y, hole)) {
-                        in_hole = true;
-                        break;
-                    }
-                }
+            double dx = medial_points[i].first - medial_points[last_point].first;
+            double dy = medial_points[i].second - medial_points[last_point].second;
+            double dist = std::sqrt(dx * dx + dy * dy);
+            
+            if (dist < min_dist) {
+                min_dist = dist;
+                next_point = i;
+            }
+        }
+        
+        if (next_point != -1) {
+            // Add segment from last point to next point
+            polyline_segments.push_back({medial_points[last_point], medial_points[next_point]});
+            connection_order.push_back(next_point);
+            used[next_point] = true;
+        }
+    }
+    
+    return polyline_segments;
+}
+
+// Find closest point on medial axis polyline to a given point
+std::pair<double, double> closestPointOnMedialPolyline(
+    double x, double y,
+    const std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>>& polyline_segments) {
+    
+    if (polyline_segments.empty()) {
+        return {x, y}; // Return input point if no polyline
+    }
+    
+    double min_dist = std::numeric_limits<double>::max();
+    std::pair<double, double> closest_point = {x, y};
+    
+    for (const auto& segment : polyline_segments) {
+        const auto& p1 = segment.first;
+        const auto& p2 = segment.second;
+        
+        // Find closest point on line segment p1-p2 to point (x,y)
+        double dx = p2.first - p1.first;
+        double dy = p2.second - p1.second;
+        double len_sq = dx * dx + dy * dy;
+        
+        double t = 0.0;
+        if (len_sq > 0.0) {
+            double dot = (x - p1.first) * dx + (y - p1.second) * dy;
+            t = std::max(0.0, std::min(1.0, dot / len_sq));
+        }
+        
+        double closest_x = p1.first + t * dx;
+        double closest_y = p1.second + t * dy;
+        
+        double dist_sq = (x - closest_x) * (x - closest_x) + (y - closest_y) * (y - closest_y);
+        
+        if (dist_sq < min_dist) {
+            min_dist = dist_sq;
+            closest_point = {closest_x, closest_y};
+        }
+    }
+    
+    return closest_point;
+}
+
+// Generate Steiner points using medial axis guidance for better distribution
+std::vector<std::pair<double, double>> generateSteinerPoints(
+	const std::vector<std::pair<double, double>>& boundary,
+	const std::vector<std::vector<std::pair<double, double>>>& holes,
+	const std::set<std::pair<int, int>>& active_cells,
+	const TerrainData& terrain,
+	double min_x, double max_x, double min_y, double max_y) {
+
+    std::vector<std::pair<double, double>> steiner_points;
+    
+    // Calculate medial axis points
+    std::vector<std::pair<double, double>> medial_axis = calculateMedialAxisPoints(boundary, holes, terrain.cell_size, min_x, max_x, min_y, max_y);
+    
+    // Construct medial axis polyline from discrete points
+    std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> medial_polyline = 
+        constructMedialAxisPolyline(medial_axis);
+    
+    // Parameters for medial axis guided Steiner point generation
+    double min_distance = terrain.cell_size * 3.0;
+    int max_lines_per_vertex = 6; // Maximum guidance lines from each boundary vertex
+    double step_size = terrain.cell_size * 4.0; // Distance between points along guidance lines
+    
+    // Distance function to edges
+    auto distanceToEdges = [&](double x, double y) -> double {
+        double min_dist = std::numeric_limits<double>::max();
+        
+        // Distance to boundary
+        for (size_t i = 0; i < boundary.size(); ++i) {
+            size_t next = (i + 1) % boundary.size();
+            double dx1 = boundary[next].first - boundary[i].first;
+            double dy1 = boundary[next].second - boundary[i].second;
+            double dx2 = x - boundary[i].first;
+            double dy2 = y - boundary[i].second;
+            
+            double dot = dx1 * dx2 + dy1 * dy2;
+            double len_sq = dx1 * dx1 + dy1 * dy1;
+            
+            double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+            double px = boundary[i].first + t * dx1;
+            double py = boundary[i].second + t * dy1;
+            
+            double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+            min_dist = std::min(min_dist, dist);
+        }
+        
+        // Distance to holes
+        for (const auto& hole : holes) {
+            for (size_t i = 0; i < hole.size(); ++i) {
+                size_t next = (i + 1) % hole.size();
+                double dx1 = hole[next].first - hole[i].first;
+                double dy1 = hole[next].second - hole[i].second;
+                double dx2 = x - hole[i].first;
+                double dy2 = y - hole[i].second;
                 
-                if (!in_hole) {
-                    double edge_distance = distanceToEdge(x, y);
+                double dot = dx1 * dx2 + dy1 * dy2;
+                double len_sq = dx1 * dx1 + dy1 * dy1;
+                
+                double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+                double px = hole[i].first + t * dx1;
+                double py = hole[i].second + t * dy1;
+                
+                double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+                min_dist = std::min(min_dist, dist);
+            }
+        }
+        
+        return min_dist;
+    };
+    
+    // Simple pseudo-random number generator (using linear congruential generator)
+    uint32_t rng_state = 12345; // Seed
+    auto next_random = [&rng_state]() -> double {
+        rng_state = rng_state * 1664525 + 1013904223;
+        return (double)(rng_state % 1000) / 1000.0;
+    };
+    
+    // Create guidance lines from boundary vertices to medial axis polyline
+    if (!medial_polyline.empty()) {
+        for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / (max_lines_per_vertex * 4)))) {
+            const auto& vertex = boundary[i];
+            
+            // Find closest point on medial axis polyline
+            std::pair<double, double> closest_medial = closestPointOnMedialPolyline(vertex.first, vertex.second, medial_polyline);
+            
+            // Create guidance line from vertex to closest point on medial axis polyline
+            double dx = closest_medial.first - vertex.first;
+            double dy = closest_medial.second - vertex.second;
+            double line_length = std::sqrt(dx * dx + dy * dy);
+            
+            if (line_length > min_distance * 2.0) {
+                // Normalize direction
+                dx /= line_length;
+                dy /= line_length;
+                
+                // Place points along this guidance line with adaptive density
+                int num_steps = std::max(2, (int)(line_length / step_size));
+                
+                for (int step = 1; step < num_steps; ++step) {
+                    // Use pseudo-random sampling to avoid clustering
+                    if (next_random() > 0.4) continue; // Skip some points randomly
                     
-                    // Only place points that are significantly far from edges (for large triangles in interior)
-                    double required_distance = min_distance * 2.0 + edge_distance * 0.05;
+                    double t = (double)step / num_steps;
+                    double x = vertex.first + t * dx * line_length;
+                    double y = vertex.second + t * dy * line_length;
                     
-                    // Convert back to terrain coordinates to check if point is valid
-                    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
-                    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
-                    
-                    // Check if point is within active region
-                    bool is_in_active_region = false;
-                    if (terrain_x >= 0 && terrain_x < terrain.width && 
-                        terrain_y >= 0 && terrain_y < terrain.height) {
-                        is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
-                    }
-                    
-                    if (is_in_active_region && edge_distance > required_distance) {
-                        // Check minimum distance to existing points
-                        bool too_close = false;
-                        for (const auto& existing : steiner_points) {
-                            double dx = x - existing.first;
-                            double dy = y - existing.second;
-                            if (std::sqrt(dx * dx + dy * dy) < required_distance) {
-                                too_close = true;
+                    // Check if point is valid
+                    if (pointInPolygon(x, y, boundary)) {
+                        // Check not in holes
+                        bool in_hole = false;
+                        for (const auto& hole : holes) {
+                            if (pointInPolygon(x, y, hole)) {
+                                in_hole = true;
                                 break;
                             }
                         }
                         
-                        if (!too_close) {
-                            steiner_points.push_back({x, y});
+                        if (!in_hole) {
+                            double edge_distance = distanceToEdges(x, y);
+                            
+                            // Closer to medial axis = fewer points (tapering effect)
+                            double distance_to_medial = std::sqrt((x - closest_medial.first) * (x - closest_medial.first) + 
+                                                                  (y - closest_medial.second) * (y - closest_medial.second));
+                            double taper_factor = 1.0 - (distance_to_medial / line_length);
+                            double required_distance = min_distance * (1.0 + taper_factor);
+                            
+                            if (edge_distance > required_distance) {
+                                // Check terrain coordinates
+                                int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+                                int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+                                
+                                bool is_in_active_region = false;
+                                if (terrain_x >= 0 && terrain_x < terrain.width && 
+                                    terrain_y >= 0 && terrain_y < terrain.height) {
+                                    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+                                }
+                                
+                                if (is_in_active_region) {
+                                    // Check distance to existing points
+                                    bool too_close = false;
+                                    for (const auto& existing : steiner_points) {
+                                        double dx_check = x - existing.first;
+                                        double dy_check = y - existing.second;
+                                        if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < required_distance) {
+                                            too_close = true;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (!too_close) {
+                                        steiner_points.push_back({x, y});
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    } else {
+        // Fallback: generate points using boundary-guided approach if no medial axis polyline found
+        std::cout << "Using boundary-guided approach for Steiner point generation" << std::endl;
+        
+        double sample_distance = terrain.cell_size * 8.0; // Distance to step inward from boundary
+        
+        // Generate points by stepping inward from boundary edges
+        for (size_t i = 0; i < boundary.size(); i += std::max(1, (int)(boundary.size() / 200))) { // Sample every few boundary points
+            const auto& edge_point = boundary[i];
+            
+            // Find inward direction (toward center of bounding box for simplicity)
+            double center_x = (min_x + max_x) * 0.5;
+            double center_y = (min_y + max_y) * 0.5;
+            double inward_dx = center_x - edge_point.first;
+            double inward_dy = center_y - edge_point.second;
+            double inward_len = std::sqrt(inward_dx * inward_dx + inward_dy * inward_dy);
+            
+            if (inward_len > sample_distance) {
+                inward_dx /= inward_len;
+                inward_dy /= inward_len;
+                
+                // Try several points stepping inward from this boundary point
+                for (int step = 1; step <= 3; ++step) {
+                    double step_dist = sample_distance * step;
+                    if (step_dist > inward_len * 0.8) break; // Don't go too far toward center
+                    
+                    double test_x = edge_point.first + inward_dx * step_dist;
+                    double test_y = edge_point.second + inward_dy * step_dist;
+                    
+                    // Add some randomization to avoid regular patterns
+                    double jitter_x = (next_random() - 0.5) * terrain.cell_size * 2.0;
+                    double jitter_y = (next_random() - 0.5) * terrain.cell_size * 2.0;
+                    test_x += jitter_x;
+                    test_y += jitter_y;
+                    
+                    if (pointInPolygon(test_x, test_y, boundary)) {
+                        // Check not in holes
+                        bool in_hole = false;
+                        for (const auto& hole : holes) {
+                            if (pointInPolygon(test_x, test_y, hole)) {
+                                in_hole = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!in_hole) {
+                            double edge_distance = distanceToEdges(test_x, test_y);
+                            
+                            if (edge_distance > min_distance) {
+                                // Check terrain coordinates
+                                int terrain_x = static_cast<int>((test_x - terrain.origin.x) / terrain.cell_size);
+                                int terrain_y = static_cast<int>((terrain.origin.y - test_y) / terrain.cell_size);
+                                
+                                bool is_in_active_region = false;
+                                if (terrain_x >= 0 && terrain_x < terrain.width && 
+                                    terrain_y >= 0 && terrain_y < terrain.height) {
+                                    is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+                                }
+                                
+                                if (is_in_active_region) {
+                                    // Check distance to existing points
+                                    bool too_close = false;
+                                    for (const auto& existing : steiner_points) {
+                                        double dx_check = test_x - existing.first;
+                                        double dy_check = test_y - existing.second;
+                                        if (std::sqrt(dx_check * dx_check + dy_check * dy_check) < min_distance) {
+                                            too_close = true;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (!too_close) {
+                                        steiner_points.push_back({test_x, test_y});
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        std::cout << "Generated " << steiner_points.size() << " Steiner points using boundary-guided approach" << std::endl;
+    }
+    
+    // Add medial axis points themselves as Steiner points (if they satisfy constraints)
+    for (const auto& medial_pt : medial_axis) {
+        int terrain_x = static_cast<int>((medial_pt.first - terrain.origin.x) / terrain.cell_size);
+        int terrain_y = static_cast<int>((terrain.origin.y - medial_pt.second) / terrain.cell_size);
+        
+        bool is_in_active_region = false;
+        if (terrain_x >= 0 && terrain_x < terrain.width && 
+            terrain_y >= 0 && terrain_y < terrain.height) {
+            is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+        }
+        
+        if (is_in_active_region) {
+            bool too_close = false;
+            for (const auto& existing : steiner_points) {
+                double dx = medial_pt.first - existing.first;
+                double dy = medial_pt.second - existing.second;
+                if (std::sqrt(dx * dx + dy * dy) < min_distance * 2.0) {
+                    too_close = true;
+                    break;
+                }
+            }
+            
+            if (!too_close) {
+                steiner_points.push_back(medial_pt);
+            }
+        }
     }
 
-    std::cout << "Generated " << steiner_points.size() << " Steiner points for geometric progression triangulation" << std::endl;
+    std::cout << "Generated " << steiner_points.size() << " Steiner points using medial axis polyline guidance" 
+              << (medial_polyline.empty() ? " (boundary-guided fallback)" : "") << std::endl;
     
     return steiner_points;
 }
@@ -1840,7 +2115,7 @@ void triangulateBottomFaceWithDetria(TerrainMesh& mesh, const std::vector<std::v
 
 	// Add Steiner points as vertices and to the point list
 	for (const auto& point : steiner_points) {
-	    double world_z = terrain.min_height - 1.0; // Slightly below terrain
+	    double world_z = 0.0; // Bottom face is planar at z=0
 	    size_t vertex_index = mesh.addVertex(Point3D(point.first, point.second, world_z));
 	    all_vertex_indices.push_back(vertex_index);
 	    all_points.push_back({point.first, point.second});
