@@ -14,6 +14,7 @@
 
 #include <vector>
 #include <tuple>
+#define _USE_MATH_DEFINES
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -28,6 +29,10 @@
 #include <stdexcept>
 #include <cstdint>
 #include <array>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include <functional>
 #include <unordered_map>
 #include <fstream>
@@ -1462,44 +1467,207 @@ bool pointInPolygon(double x, double y, const std::vector<std::pair<double, doub
 std::vector<std::pair<double, double>> generateSteinerPoints(
 	const std::vector<std::pair<double, double>>& boundary,
 	const std::vector<std::vector<std::pair<double, double>>>& holes,
-	const std::set<std::pair<int, int>>&,
+	const std::set<std::pair<int, int>>& active_cells,
 	const TerrainData& terrain,
 	double min_x, double max_x, double min_y, double max_y) {
 
     std::vector<std::pair<double, double>> steiner_points;
-
-    // Calculate region dimensions
-    double width = max_x - min_x;
-    double height = max_y - min_y;
-
-    // Generate grid of potential Steiner points with adaptive density
-    double cell_size = terrain.cell_size;
-    int grid_density = std::max(3, std::min(8, (int)(std::max(width, height) / (cell_size * 4.0))));
-
-    for (int i = 1; i < grid_density; ++i) {
-	for (int j = 1; j < grid_density; ++j) {
-	    double x = min_x + (width * i) / grid_density;
-	    double y = min_y + (height * j) / grid_density;
-
-	    // Check if point is inside the boundary
-	    if (pointInPolygon(x, y, boundary)) {
-
-		// Check if point is not inside any hole
-		bool in_hole = false;
-		for (const auto& hole : holes) {
-		    if (pointInPolygon(x, y, hole)) {
-			in_hole = true;
-			break;
-		    }
-		}
-
-		if (!in_hole) {
-		    steiner_points.push_back({x, y});
-		}
-	    }
-	}
+    
+    // Parameters for geometric progression-based Steiner point generation
+    double progression_factor = 0.6;   // More aggressive progression for better size variation
+    int max_levels = 3;                // Reduce levels for cleaner progression
+    double min_distance = terrain.cell_size * 4.0;  // Increase minimum distance
+    double base_density = terrain.cell_size * 12.0; // Increase base spacing for better progression
+    
+    // Calculate bounding box center
+    double center_x = (min_x + max_x) * 0.5;
+    double center_y = (min_y + max_y) * 0.5;
+    
+    // Function to calculate minimum distance to boundary or holes
+    auto distanceToEdge = [&](double x, double y) -> double {
+        double min_dist = std::numeric_limits<double>::max();
+        
+        // Distance to boundary edges
+        for (size_t i = 0; i < boundary.size(); ++i) {
+            size_t next = (i + 1) % boundary.size();
+            double dx1 = boundary[next].first - boundary[i].first;
+            double dy1 = boundary[next].second - boundary[i].second;
+            double dx2 = x - boundary[i].first;
+            double dy2 = y - boundary[i].second;
+            
+            double dot = dx1 * dx2 + dy1 * dy2;
+            double len_sq = dx1 * dx1 + dy1 * dy1;
+            
+            double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+            double px = boundary[i].first + t * dx1;
+            double py = boundary[i].second + t * dy1;
+            
+            double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+            min_dist = std::min(min_dist, dist);
+        }
+        
+        // Distance to hole edges
+        for (const auto& hole : holes) {
+            for (size_t i = 0; i < hole.size(); ++i) {
+                size_t next = (i + 1) % hole.size();
+                double dx1 = hole[next].first - hole[i].first;
+                double dy1 = hole[next].second - hole[i].second;
+                double dx2 = x - hole[i].first;
+                double dy2 = y - hole[i].second;
+                
+                double dot = dx1 * dx2 + dy1 * dy2;
+                double len_sq = dx1 * dx1 + dy1 * dy1;
+                
+                double t = (len_sq > 0) ? std::max(0.0, std::min(1.0, dot / len_sq)) : 0.0;
+                double px = hole[i].first + t * dx1;
+                double py = hole[i].second + t * dy1;
+                
+                double dist = std::sqrt((x - px) * (x - px) + (y - py) * (y - py));
+                min_dist = std::min(min_dist, dist);
+            }
+        }
+        
+        return min_dist;
+    };
+    
+    // Calculate maximum distance from center to any boundary point for normalization
+    double max_distance_to_center = 0.0;
+    for (const auto& point : boundary) {
+        double dx = point.first - center_x;
+        double dy = point.second - center_y;
+        double dist = std::sqrt(dx * dx + dy * dy);
+        max_distance_to_center = std::max(max_distance_to_center, dist);
+    }
+    
+    // Generate concentric rings of Steiner points
+    for (int level = 1; level <= max_levels; ++level) {
+        double level_factor = std::pow(progression_factor, level);
+        double ring_distance = max_distance_to_center * level_factor;
+        
+        // Skip if ring is too close to center
+        if (ring_distance < min_distance * 2.0) continue;
+        
+        // Calculate point spacing for this ring - closer to edges means smaller spacing
+        double level_spacing = base_density * level_factor;
+        
+        // Generate points in this ring
+        int num_points = std::max(6, (int)(2.0 * M_PI * ring_distance / level_spacing));
+        
+        for (int i = 0; i < num_points; ++i) {
+            double angle = 2.0 * M_PI * i / num_points;
+            double x = center_x + ring_distance * std::cos(angle);
+            double y = center_y + ring_distance * std::sin(angle);
+            
+            // Check if point is inside the boundary
+            if (pointInPolygon(x, y, boundary)) {
+                // Check if point is not inside any hole
+                bool in_hole = false;
+                for (const auto& hole : holes) {
+                    if (pointInPolygon(x, y, hole)) {
+                        in_hole = true;
+                        break;
+                    }
+                }
+                
+                if (!in_hole) {
+                    // Check distance to boundary/holes - ensure we're not too close to edges
+                    double edge_distance = distanceToEdge(x, y);
+                    if (edge_distance > min_distance) {
+                        
+                        // Convert back to terrain coordinates to check if point is valid
+                        int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+                        int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+                        
+                        // Check if point is within active region
+                        bool is_in_active_region = false;
+                        if (terrain_x >= 0 && terrain_x < terrain.width && 
+                            terrain_y >= 0 && terrain_y < terrain.height) {
+                            is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+                        }
+                        
+                        if (is_in_active_region) {
+                            // Check minimum distance to existing Steiner points
+                            bool too_close = false;
+                            for (const auto& existing : steiner_points) {
+                                double dx = x - existing.first;
+                                double dy = y - existing.second;
+                                if (std::sqrt(dx * dx + dy * dy) < min_distance) {
+                                    too_close = true;
+                                    break;
+                                }
+                            }
+                            
+                            if (!too_close) {
+                                steiner_points.push_back({x, y});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Add some additional points based on distance field for better coverage in large interior regions
+    double region_width = max_x - min_x;
+    double region_height = max_y - min_y;
+    int sample_density = std::max(6, std::min(12, (int)(std::max(region_width, region_height) / (terrain.cell_size * 4.0))));
+    
+    for (int i = 3; i < sample_density - 3; i += 3) {
+        for (int j = 3; j < sample_density - 3; j += 3) {
+            double x = min_x + (region_width * i) / sample_density;
+            double y = min_y + (region_height * j) / sample_density;
+            
+            // Check if point is inside the boundary
+            if (pointInPolygon(x, y, boundary)) {
+                // Check if point is not inside any hole
+                bool in_hole = false;
+                for (const auto& hole : holes) {
+                    if (pointInPolygon(x, y, hole)) {
+                        in_hole = true;
+                        break;
+                    }
+                }
+                
+                if (!in_hole) {
+                    double edge_distance = distanceToEdge(x, y);
+                    
+                    // Only place points that are significantly far from edges (for large triangles in interior)
+                    double required_distance = min_distance * 2.0 + edge_distance * 0.05;
+                    
+                    // Convert back to terrain coordinates to check if point is valid
+                    int terrain_x = static_cast<int>((x - terrain.origin.x) / terrain.cell_size);
+                    int terrain_y = static_cast<int>((terrain.origin.y - y) / terrain.cell_size);
+                    
+                    // Check if point is within active region
+                    bool is_in_active_region = false;
+                    if (terrain_x >= 0 && terrain_x < terrain.width && 
+                        terrain_y >= 0 && terrain_y < terrain.height) {
+                        is_in_active_region = active_cells.count({terrain_x, terrain_y}) > 0;
+                    }
+                    
+                    if (is_in_active_region && edge_distance > required_distance) {
+                        // Check minimum distance to existing points
+                        bool too_close = false;
+                        for (const auto& existing : steiner_points) {
+                            double dx = x - existing.first;
+                            double dy = y - existing.second;
+                            if (std::sqrt(dx * dx + dy * dy) < required_distance) {
+                                too_close = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!too_close) {
+                            steiner_points.push_back({x, y});
+                        }
+                    }
+                }
+            }
+        }
     }
 
+    std::cout << "Generated " << steiner_points.size() << " Steiner points for geometric progression triangulation" << std::endl;
+    
     return steiner_points;
 }
 
