@@ -2134,7 +2134,7 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     }
     
     // For Garland-Heckbert simplified surfaces, triangulate bottom face using boundary vertices
-    // instead of grid-based approach that creates artificial holes
+    // Extract and properly order boundary vertices for detria triangulation
     std::cout << "Triangulating bottom face using simplified surface boundary (no artificial holes)" << std::endl;
     
     // Collect all boundary vertices from surface mesh
@@ -2146,32 +2146,151 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     
     std::cout << "Found " << boundary_vertex_set.size() << " boundary vertices for bottom triangulation" << std::endl;
     
-    // Simple approach: Create triangles from boundary vertices to a central point
+    // Use detria for high-quality Delaunay triangulation instead of simple fan triangulation
     if (boundary_vertex_set.size() >= 3) {
-        // Calculate center point of all boundary vertices for fan triangulation
-        double center_x = 0.0, center_y = 0.0;
-        for (size_t v : boundary_vertex_set) {
-            Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
-            center_x += bottom_vertex.x;
-            center_y += bottom_vertex.y;
-        }
-        center_x /= boundary_vertex_set.size();
-        center_y /= boundary_vertex_set.size();
-        
-        // Add center vertex for fan triangulation
-        size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
-        
-        // Create fan triangulation from center to boundary edges
-        for (const Edge& edge : boundary_edges) {
-            size_t b0 = bottom_vertex_map[edge.getV0()];
-            size_t b1 = bottom_vertex_map[edge.getV1()];
+        try {
+            // Create ordered boundary by tracing connected edges
+            std::vector<size_t> ordered_boundary;
+            std::set<size_t> used_vertices;
             
-            // Add triangle from center to boundary edge (CCW for bottom face)
-            addTriangle(center_vertex, b1, b0);
+            // Start with any boundary vertex
+            size_t current_vertex = *boundary_vertex_set.begin();
+            ordered_boundary.push_back(current_vertex);
+            used_vertices.insert(current_vertex);
+            
+            // Trace the boundary by following connected edges
+            while (used_vertices.size() < boundary_vertex_set.size()) {
+                bool found_next = false;
+                for (const Edge& edge : boundary_edges) {
+                    size_t v0 = edge.getV0();
+                    size_t v1 = edge.getV1();
+                    
+                    if (v0 == current_vertex && used_vertices.find(v1) == used_vertices.end()) {
+                        current_vertex = v1;
+                        ordered_boundary.push_back(current_vertex);
+                        used_vertices.insert(current_vertex);
+                        found_next = true;
+                        break;
+                    } else if (v1 == current_vertex && used_vertices.find(v0) == used_vertices.end()) {
+                        current_vertex = v0;
+                        ordered_boundary.push_back(current_vertex);
+                        used_vertices.insert(current_vertex);
+                        found_next = true;
+                        break;
+                    }
+                }
+                
+                if (!found_next) {
+                    // If we can't trace a complete boundary, fall back to convex hull approach
+                    std::cout << "Warning: Could not trace complete boundary, using convex hull approach" << std::endl;
+                    break;
+                }
+            }
+            
+            // Set up detria triangulation
+            detria::Triangulation tri;
+            std::vector<detria::PointD> boundary_points;
+            std::vector<size_t> boundary_vertex_indices;
+            
+            // Use ordered boundary if we got a complete trace, otherwise use convex hull
+            if (used_vertices.size() == boundary_vertex_set.size()) {
+                // Complete boundary - use ordered vertices
+                for (size_t v : ordered_boundary) {
+                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                    boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
+                    boundary_vertex_indices.push_back(bottom_vertex_map[v]);
+                }
+                std::cout << "Using complete ordered boundary with " << ordered_boundary.size() << " vertices" << std::endl;
+            } else {
+                // Fall back to all boundary vertices (detria will compute convex hull)
+                for (size_t v : boundary_vertex_set) {
+                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                    boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
+                    boundary_vertex_indices.push_back(bottom_vertex_map[v]);
+                }
+                std::cout << "Using convex hull approach with " << boundary_vertex_set.size() << " vertices" << std::endl;
+            }
+            
+            tri.setPoints(boundary_points);
+            
+            // Create outline
+            std::vector<uint32_t> outline_indices;
+            for (size_t i = 0; i < boundary_points.size(); ++i) {
+                outline_indices.push_back(static_cast<uint32_t>(i));
+            }
+            tri.addOutline(outline_indices);
+            
+            // Perform Delaunay triangulation
+            bool success = tri.triangulate(true); // true for Delaunay
+            
+            if (success) {
+                size_t triangle_count = 0;
+                tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+                    // Add triangle with CCW orientation for bottom face
+                    addTriangle(boundary_vertex_indices[triangle.x], 
+                               boundary_vertex_indices[triangle.z], 
+                               boundary_vertex_indices[triangle.y]);
+                    triangle_count++;
+                });
+                std::cout << "Created detria Delaunay triangulation with " << triangle_count 
+                          << " triangles (improved quality vs fan)" << std::endl;
+            } else {
+                std::cout << "Warning: Detria triangulation failed, falling back to fan triangulation" << std::endl;
+                // Fall back to fan triangulation
+                // Calculate center point of all boundary vertices for fan triangulation
+                double center_x = 0.0, center_y = 0.0;
+                for (size_t v : boundary_vertex_set) {
+                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                    center_x += bottom_vertex.x;
+                    center_y += bottom_vertex.y;
+                }
+                center_x /= boundary_vertex_set.size();
+                center_y /= boundary_vertex_set.size();
+                
+                // Add center vertex for fan triangulation
+                size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
+                
+                // Create fan triangulation from center to boundary edges
+                for (const Edge& edge : boundary_edges) {
+                    size_t b0 = bottom_vertex_map[edge.getV0()];
+                    size_t b1 = bottom_vertex_map[edge.getV1()];
+                    
+                    // Add triangle from center to boundary edge (CCW for bottom face)
+                    addTriangle(center_vertex, b1, b0);
+                }
+                
+                std::cout << "Created fallback fan triangulation with " << boundary_edges.size() 
+                          << " triangles from center point" << std::endl;
+            }
+            
+        } catch (...) {
+            std::cout << "Warning: Detria triangulation failed with exception, falling back to fan triangulation" << std::endl;
+            // Fall back to fan triangulation
+            // Calculate center point of all boundary vertices for fan triangulation
+            double center_x = 0.0, center_y = 0.0;
+            for (size_t v : boundary_vertex_set) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                center_x += bottom_vertex.x;
+                center_y += bottom_vertex.y;
+            }
+            center_x /= boundary_vertex_set.size();
+            center_y /= boundary_vertex_set.size();
+            
+            // Add center vertex for fan triangulation
+            size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
+            
+            // Create fan triangulation from center to boundary edges
+            for (const Edge& edge : boundary_edges) {
+                size_t b0 = bottom_vertex_map[edge.getV0()];
+                size_t b1 = bottom_vertex_map[edge.getV1()];
+                
+                // Add triangle from center to boundary edge (CCW for bottom face)
+                addTriangle(center_vertex, b1, b0);
+            }
+            
+            std::cout << "Created fallback fan triangulation with " << boundary_edges.size() 
+                      << " triangles from center point" << std::endl;
         }
-        
-        std::cout << "Created fan triangulation with " << boundary_edges.size() 
-                  << " triangles from center point" << std::endl;
     }
 }
 
