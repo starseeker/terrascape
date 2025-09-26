@@ -70,7 +70,7 @@
 #include <unordered_map>
 #include <functional>
 #include <memory>
-
+#include <numeric>
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -366,6 +366,7 @@ class TerrainMesh {
 		std::vector<Triangle>& triangles,
 		std::vector<QuadricError>& vertex_quadrics,
 		std::vector<bool>& vertex_removed,
+		std::vector<size_t>& vertex_collapse_target,
 		std::priority_queue<EdgeCollapse>& collapse_queue);
 	void rebuildAffectedRegion(size_t collapsed_vertex, size_t remaining_vertex,
 		const std::vector<Point3D>& vertices,
@@ -1967,6 +1968,12 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     size_t current_triangles = original_triangles;
     
     std::vector<bool> vertex_removed(surface_vertices.size(), false);
+    std::vector<size_t> vertex_collapse_target(surface_vertices.size());
+    
+    // Initialize collapse mapping - each vertex initially maps to itself
+    for (size_t i = 0; i < surface_vertices.size(); i++) {
+        vertex_collapse_target[i] = i;
+    }
     
     std::cout << "Garland-Heckbert: Starting with " << original_triangles << " triangles, target: " << target_triangles << std::endl;
     
@@ -1985,7 +1992,7 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
         // Perform edge collapse and update data structures
         size_t triangles_before = current_triangles;
         if (performEdgeCollapse(best_collapse, surface_vertices, surface_triangles, 
-                               vertex_quadrics, vertex_removed, collapse_queue)) {
+                               vertex_quadrics, vertex_removed, vertex_collapse_target, collapse_queue)) {
             collapse_count++;
             
             // Estimate triangle count reduction (typically 2 triangles removed per edge collapse)
@@ -2006,23 +2013,57 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     
     std::cout << "Garland-Heckbert: Completed " << collapse_count << " edge collapses" << std::endl;
     
-    // Step 5: Apply edge collapses and compact the surface mesh
-    // First, update all triangles to map collapsed vertices
-    for (Triangle& triangle : surface_triangles) {
-        for (int i = 0; i < 3; i++) {
-            size_t& v = triangle.vertices[i];
-            // If this vertex was removed, find what it was collapsed to
-            // (In our simplified approach, v1 is always collapsed to v0)
+    // Step 5: Apply edge collapses by updating triangle connectivity
+    // Create a function to resolve the final target of a vertex after all collapses
+    auto getFinalTarget = [&vertex_collapse_target](size_t vertex) -> size_t {
+        size_t target = vertex;
+        std::set<size_t> visited;  // Prevent infinite loops
+        
+        while (vertex_collapse_target[target] != target && visited.find(target) == visited.end()) {
+            visited.insert(target);
+            target = vertex_collapse_target[target];
         }
+        return target;
+    };
+    
+    // Update all triangles to use final targets for collapsed vertices
+    std::vector<Triangle> valid_triangles;
+    std::set<std::array<size_t, 3>> seen_triangles;  // Track triangles to avoid duplicates
+    
+    for (Triangle& triangle : surface_triangles) {
+        // Apply vertex collapse mapping
+        for (int i = 0; i < 3; i++) {
+            triangle.vertices[i] = getFinalTarget(triangle.vertices[i]);
+        }
+        
+        // Skip degenerate triangles (those with duplicate vertices after collapse)
+        if (triangle.vertices[0] == triangle.vertices[1] || 
+            triangle.vertices[1] == triangle.vertices[2] || 
+            triangle.vertices[2] == triangle.vertices[0]) {
+            continue;  // Skip degenerate triangle
+        }
+        
+        // Create canonical form for duplicate checking (sort vertices)
+        std::array<size_t, 3> canonical = triangle.vertices;
+        std::sort(canonical.begin(), canonical.end());
+        
+        // Skip duplicate triangles
+        if (seen_triangles.count(canonical)) {
+            continue;  // Skip duplicate triangle
+        }
+        seen_triangles.insert(canonical);
+        
+        // Recompute triangle normal after vertex updates
+        triangle.computeNormal(surface_vertices);
+        valid_triangles.push_back(triangle);
     }
     
-    // Remove degenerate triangles (those with duplicate vertices after collapse)
-    auto new_end = std::remove_if(surface_triangles.begin(), surface_triangles.end(),
-        [&vertex_removed](const Triangle& t) {
-            return vertex_removed[t.vertices[0]] || vertex_removed[t.vertices[1]] || vertex_removed[t.vertices[2]] ||
-                   t.vertices[0] == t.vertices[1] || t.vertices[1] == t.vertices[2] || t.vertices[2] == t.vertices[0];
-        });
-    surface_triangles.erase(new_end, surface_triangles.end());
+    size_t removed_count = surface_triangles.size() - valid_triangles.size();
+    surface_triangles = std::move(valid_triangles);
+    
+    if (removed_count > 0) {
+        std::cout << "Removed " << removed_count << " degenerate/duplicate triangles during vertex mapping" << std::endl;
+    }
     
     std::cout << "Garland-Heckbert: After cleanup: " << surface_triangles.size() << " triangles" << std::endl;
     
@@ -2060,7 +2101,7 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     }
 }
 
-// Complete volume triangulation using Garland-Heckbert surface + traditional walls/bottom
+// Complete volume triangulation using Garland-Heckbert vertex selection + detria surface reconstruction
 void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrain, const SimplificationParams& params) {
     clear();
     
@@ -2068,38 +2109,258 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         return;
     }
     
-    // First generate optimized surface using Garland-Heckbert
-    generateGarlandHeckbertSurface(terrain, params);
+    // Step 1: Use Garland-Heckbert to identify which vertices should survive
+    std::cout << "Using Garland-Heckbert algorithm to identify surviving vertices" << std::endl;
     
-    // Store surface vertex count for later reference
-    size_t surface_vertex_count = vertices.size();
+    // Build initial complete triangulation of the surface
+    std::vector<Point3D> surface_vertices;
+    std::vector<Triangle> surface_triangles;
+    std::vector<std::vector<size_t>> grid_to_vertex(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
     
-    // Now add bottom vertices and build walls
-    // Create mapping from surface vertices back to grid coordinates for walls
-    std::vector<std::pair<int, int>> vertex_to_grid(surface_vertex_count);
+    buildInitialSurfaceTriangulation(terrain, surface_vertices, surface_triangles, grid_to_vertex);
     
-    // Find grid coordinates for each surface vertex
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        Point3D& vertex = vertices[v];
-        int grid_x = (int)std::round((vertex.x - terrain.origin.x) / terrain.cell_size);
-        int grid_y = (int)std::round((terrain.origin.y - vertex.y) / terrain.cell_size);
-        
-        // Clamp to valid range
-        grid_x = std::max(0, std::min(grid_x, terrain.width - 1));
-        grid_y = std::max(0, std::min(grid_y, terrain.height - 1));
-        
-        vertex_to_grid[v] = {grid_x, grid_y};
+    // Compute quadric error metrics for all vertices
+    std::vector<QuadricError> vertex_quadrics(surface_vertices.size());
+    computeVertexQuadrics(surface_vertices, surface_triangles, vertex_quadrics);
+    
+    // Build priority queue of edge collapse candidates  
+    std::priority_queue<EdgeCollapse> collapse_queue;
+    buildEdgeCollapseQueue(surface_vertices, surface_triangles, vertex_quadrics, collapse_queue);
+    
+    // Perform edge collapses to identify which vertices should be kept
+    size_t original_triangles = surface_triangles.size();
+    size_t target_triangles = original_triangles * (100 - params.getMinReduction()) / 100;
+    size_t current_triangles = original_triangles;
+    
+    std::vector<bool> vertex_removed(surface_vertices.size(), false);
+    std::vector<size_t> vertex_collapse_target(surface_vertices.size());
+    
+    // Initialize collapse mapping - each vertex initially maps to itself
+    for (size_t i = 0; i < surface_vertices.size(); i++) {
+        vertex_collapse_target[i] = i;
     }
     
-    // Add bottom vertices (same x,y coordinates as surface, but z=0)
-    std::vector<size_t> bottom_vertex_map(surface_vertex_count);
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        Point3D surface_vertex = vertices[v];
-        Point3D bottom_vertex(surface_vertex.x, surface_vertex.y, 0.0);
-        bottom_vertex_map[v] = addVertex(bottom_vertex);
+    std::cout << "Garland-Heckbert selection: Starting with " << original_triangles << " triangles, target: " << target_triangles << std::endl;
+    
+    size_t collapse_count = 0;
+    size_t max_collapses = 50000;
+    
+    while (!collapse_queue.empty() && current_triangles > target_triangles && collapse_count < max_collapses) {
+        EdgeCollapse best_collapse = collapse_queue.top();
+        collapse_queue.pop();
+        
+        // Verify edge is still valid (vertices not already removed)
+        if (vertex_removed[best_collapse.edge.getV0()] || vertex_removed[best_collapse.edge.getV1()]) {
+            continue;
+        }
+        
+        // Perform edge collapse to identify vertex removal (no need for manifold preservation)
+        if (performEdgeCollapse(best_collapse, surface_vertices, surface_triangles, 
+                               vertex_quadrics, vertex_removed, vertex_collapse_target, collapse_queue)) {
+            collapse_count++;
+            current_triangles = std::max(target_triangles, current_triangles - 2);
+            
+            if (collapse_count % 1000 == 0) {
+                current_triangles = std::count_if(surface_triangles.begin(), surface_triangles.end(),
+                                                [&vertex_removed](const Triangle& t) {
+                                                    return !vertex_removed[t.vertices[0]] && 
+                                                           !vertex_removed[t.vertices[1]] && 
+                                                           !vertex_removed[t.vertices[2]];
+                                                });
+                std::cout << "Vertex selection: " << collapse_count << " collapses, " << current_triangles << " triangles remaining" << std::endl;
+            }
+        }
     }
     
-    // Build boundary edges for wall generation
+    std::cout << "Garland-Heckbert selection completed: " << collapse_count << " edge collapses" << std::endl;
+    
+    // Step 2: Identify boundary vertices and interior vertices that survived
+    std::vector<std::pair<double, double>> boundary_vertices;
+    std::vector<std::pair<double, double>> interior_steiner_points;
+    std::vector<Point3D> surviving_vertices;
+    
+    // Identify boundary cells
+    std::set<std::pair<int, int>> boundary_cells;
+    for (int y = 0; y < terrain.height; y++) {
+        for (int x = 0; x < terrain.width; x++) {
+            if (terrain.heights[y][x] > 0) {
+                bool is_boundary = (x == 0 || x == terrain.width-1 || y == 0 || y == terrain.height-1 ||
+                                   terrain.heights[y-1][x] == 0 || terrain.heights[y+1][x] == 0 ||
+                                   terrain.heights[y][x-1] == 0 || terrain.heights[y][x+1] == 0);
+                if (is_boundary) {
+                    boundary_cells.insert({x, y});
+                }
+            }
+        }
+    }
+    
+    // Collect surviving vertices
+    for (size_t i = 0; i < surface_vertices.size(); i++) {
+        if (!vertex_removed[i]) {
+            // Find the grid coordinates for this vertex
+            double world_x = surface_vertices[i].x;
+            double world_y = surface_vertices[i].y;
+            
+            // Convert world coordinates back to grid coordinates
+            int grid_x = static_cast<int>(std::round(world_x));
+            int grid_y = static_cast<int>(std::round(-world_y));
+            
+            if (grid_x >= 0 && grid_x < terrain.width && grid_y >= 0 && grid_y < terrain.height) {
+                if (boundary_cells.count({grid_x, grid_y})) {
+                    // This is a boundary vertex
+                    boundary_vertices.push_back({world_x, world_y});
+                } else {
+                    // This is an interior vertex - use as Steiner point
+                    interior_steiner_points.push_back({world_x, world_y});
+                }
+                surviving_vertices.push_back(surface_vertices[i]);
+            }
+        }
+    }
+    
+    std::cout << "Identified " << boundary_vertices.size() << " boundary vertices and " 
+              << interior_steiner_points.size() << " interior Steiner points" << std::endl;
+    
+    // Step 3: Trace boundary polygon from boundary vertices
+    std::vector<std::pair<double, double>> ordered_boundary;
+    if (!boundary_vertices.empty()) {
+        // Build adjacency map for boundary tracing
+        std::map<std::pair<double, double>, std::vector<std::pair<double, double>>> adjacency;
+        
+        // Find adjacent boundary vertices (within small distance)
+        for (size_t i = 0; i < boundary_vertices.size(); i++) {
+            for (size_t j = i + 1; j < boundary_vertices.size(); j++) {
+                double dx = boundary_vertices[i].first - boundary_vertices[j].first;
+                double dy = boundary_vertices[i].second - boundary_vertices[j].second;
+                double dist = std::sqrt(dx*dx + dy*dy);
+                
+                if (dist < 2.0) {  // Adjacent if within 2 units (grid spacing + tolerance)
+                    adjacency[boundary_vertices[i]].push_back(boundary_vertices[j]);
+                    adjacency[boundary_vertices[j]].push_back(boundary_vertices[i]);
+                }
+            }
+        }
+        
+        // Trace boundary polygon
+        if (!adjacency.empty()) {
+            std::set<std::pair<double, double>> visited;
+            std::pair<double, double> current = adjacency.begin()->first;
+            std::pair<double, double> previous = current;
+            
+            ordered_boundary.push_back(current);
+            visited.insert(current);
+            
+            while (true) {
+                std::pair<double, double> next = current;
+                for (const auto& neighbor : adjacency[current]) {
+                    if (visited.find(neighbor) == visited.end()) {
+                        next = neighbor;
+                        break;
+                    }
+                }
+                
+                if (next == current || visited.find(next) != visited.end()) {
+                    break;  // Complete or stuck
+                }
+                
+                ordered_boundary.push_back(next);
+                visited.insert(next);
+                previous = current;
+                current = next;
+            }
+        }
+    }
+    
+    std::cout << "Traced boundary polygon with " << ordered_boundary.size() << " vertices" << std::endl;
+    
+    // Step 4: Reconstruct manifold surface using detria triangulation
+    std::cout << "Reconstructing manifold surface using detria with boundary + interior Steiner points" << std::endl;
+    
+    if (ordered_boundary.empty()) {
+        std::cout << "ERROR: No boundary polygon found - falling back to original surface" << std::endl;
+        generateGarlandHeckbertSurface(terrain, params);
+        return;
+    }
+    
+    // Prepare points for detria (boundary + interior Steiner points)
+    std::vector<detria::PointD> detria_points;
+    std::vector<Point3D> point_heights;  // Store Z heights for each point
+    
+    // Add boundary vertices first
+    for (const auto& boundary_pt : ordered_boundary) {
+        detria_points.push_back({boundary_pt.first, boundary_pt.second});
+        
+        // Find height for this boundary point
+        double height = 0.0;
+        for (const Point3D& vertex : surviving_vertices) {
+            if (std::abs(vertex.x - boundary_pt.first) < 0.1 && 
+                std::abs(vertex.y - boundary_pt.second) < 0.1) {
+                height = vertex.z;
+                break;
+            }
+        }
+        point_heights.push_back({boundary_pt.first, boundary_pt.second, height});
+    }
+    
+    // Add interior Steiner points
+    for (const auto& steiner_pt : interior_steiner_points) {
+        detria_points.push_back({steiner_pt.first, steiner_pt.second});
+        
+        // Find height for this Steiner point
+        double height = 0.0;
+        for (const Point3D& vertex : surviving_vertices) {
+            if (std::abs(vertex.x - steiner_pt.first) < 0.1 && 
+                std::abs(vertex.y - steiner_pt.second) < 0.1) {
+                height = vertex.z;
+                break;
+            }
+        }
+        point_heights.push_back({steiner_pt.first, steiner_pt.second, height});
+    }
+    
+    std::cout << "Using detria with " << detria_points.size() << " points (" 
+              << ordered_boundary.size() << " boundary + " << interior_steiner_points.size() << " interior)" << std::endl;
+    
+    // Create detria triangulation
+    detria::Triangulation<detria::PointD> tri;
+    tri.setPoints(detria_points);
+    
+    // Add boundary outline (only boundary vertices)
+    std::vector<uint32_t> outline_indices;
+    for (size_t i = 0; i < ordered_boundary.size(); ++i) {
+        outline_indices.push_back(static_cast<uint32_t>(i));
+    }
+    tri.addOutline(outline_indices);
+    
+    // Perform triangulation
+    if (!tri.triangulate(true)) {
+        std::cout << "ERROR: Detria triangulation failed - falling back to original surface" << std::endl;
+        generateGarlandHeckbertSurface(terrain, params);
+        return;
+    }
+    
+    // Extract surface triangles from detria
+    vertices.clear();
+    triangles.clear();
+    
+    // Add all points as vertices
+    for (const Point3D& pt : point_heights) {
+        vertices.push_back(pt);
+    }
+    
+    // Extract triangles from detria
+    tri.forEachTriangle([&](detria::Triangle<uint32_t> tri_data) {
+        Triangle new_triangle(tri_data.x, tri_data.y, tri_data.z);
+        new_triangle.computeNormal(vertices);
+        triangles.push_back(new_triangle);
+    }, false);
+    
+    surface_triangle_count = triangles.size();
+    
+    std::cout << "Created detria surface with " << vertices.size() << " vertices and " 
+              << surface_triangle_count << " triangles" << std::endl;
+    
+    // Step 5: Build boundary edges from the new surface triangulation
     std::set<Edge> boundary_edges;
     std::map<Edge, std::vector<size_t>> edge_triangles;
     
@@ -2121,7 +2382,20 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         }
     }
     
-    // Generate walls for boundary edges
+    std::cout << "Found " << boundary_edges.size() << " boundary edges in detria surface" << std::endl;
+    
+    // Step 6: Add bottom vertices (project surface vertices to z=0 plane)  
+    size_t surface_vertex_count = vertices.size();
+    std::vector<size_t> bottom_vertex_map(surface_vertex_count);
+    for (size_t v = 0; v < surface_vertex_count; v++) {
+        Point3D surface_vertex = vertices[v];
+        Point3D bottom_vertex(surface_vertex.x, surface_vertex.y, 0.0);
+        bottom_vertex_map[v] = addVertex(bottom_vertex);
+    }
+    
+    // Step 7: Generate walls for boundary edges
+    std::cout << "Generating walls for " << boundary_edges.size() << " boundary edges" << std::endl;
+    
     for (const Edge& edge : boundary_edges) {
         size_t v0 = edge.getV0();
         size_t v1 = edge.getV1();
@@ -2133,16 +2407,202 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         addTriangle(v1, b0, b1);
     }
     
-    // Generate bottom face using existing detria-based approach
-    std::vector<std::vector<size_t>> bottom_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
-    
-    // Map surface vertices to grid for bottom face triangulation
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        auto [grid_x, grid_y] = vertex_to_grid[v];
-        bottom_vertices[grid_y][grid_x] = bottom_vertex_map[v];
+    // Step 8: Generate bottom face using detria triangulation with Steiner points
+    std::set<size_t> boundary_vertex_set;
+    for (const Edge& edge : boundary_edges) {
+        boundary_vertex_set.insert(edge.getV0());
+        boundary_vertex_set.insert(edge.getV1());
     }
     
-    triangulateBottomFaceWithDetria(bottom_vertices, terrain, nullptr);
+    std::cout << "Extracted " << boundary_vertex_set.size() << " boundary vertices from simplified surface" << std::endl;
+    
+    // Triangulate bottom face using boundary vertices (no artificial holes!)
+    if (boundary_vertex_set.size() >= 3) {
+        try {
+            // Set up detria triangulation with properly ordered boundary vertices
+            detria::Triangulation tri;
+            std::vector<detria::PointD> boundary_points;
+            std::vector<size_t> boundary_vertex_indices;
+            
+            // Trace boundary vertices in proper order to form a valid polygon
+            // Start from any boundary vertex and trace around the boundary
+            std::vector<size_t> ordered_boundary;
+            
+            if (boundary_vertex_set.size() >= 3) {
+                std::cout << "Debug: Starting boundary tracing..." << std::endl;
+                std::map<size_t, std::vector<size_t>> boundary_adjacency;
+                for (const Edge& edge : boundary_edges) {
+                    size_t v0 = edge.getV0();
+                    size_t v1 = edge.getV1();
+                    boundary_adjacency[v0].push_back(v1);
+                    boundary_adjacency[v1].push_back(v0);
+                }
+                
+                // Start tracing from the first boundary vertex
+                size_t start_vertex = *boundary_vertex_set.begin();
+                size_t current_vertex = start_vertex;
+                size_t prev_vertex = SIZE_MAX;
+                
+                ordered_boundary.push_back(current_vertex);
+                
+                do {
+                    // Find next vertex that's not the previous one
+                    size_t next_vertex = SIZE_MAX;
+                    for (size_t neighbor : boundary_adjacency[current_vertex]) {
+                        if (neighbor != prev_vertex) {
+                            next_vertex = neighbor;
+                            break;
+                        }
+                    }
+                    
+                    if (next_vertex == SIZE_MAX || next_vertex == start_vertex) {
+                        break;  // Completed the loop or reached dead end
+                    }
+                    
+                    ordered_boundary.push_back(next_vertex);
+                    prev_vertex = current_vertex;
+                    current_vertex = next_vertex;
+                    
+                } while (current_vertex != start_vertex && ordered_boundary.size() < boundary_vertex_set.size());
+                
+                std::cout << "Traced boundary polygon with " << ordered_boundary.size() << " vertices" << std::endl;
+            }
+            
+            // Use ordered boundary if we successfully traced it, otherwise use all boundary vertices
+            std::vector<size_t> vertices_to_use;
+            if (ordered_boundary.size() >= 3 && ordered_boundary.size() == boundary_vertex_set.size()) {
+                vertices_to_use = ordered_boundary;
+                std::cout << "Using properly ordered boundary polygon for detria" << std::endl;
+            } else {
+                vertices_to_use.assign(boundary_vertex_set.begin(), boundary_vertex_set.end());
+                std::cout << "Warning: Boundary tracing incomplete, detria may fail with unordered vertices" << std::endl;
+            }
+            
+            // Generate Steiner points using the ordered boundary
+            std::vector<std::pair<double, double>> boundary_polygon;
+            std::vector<std::vector<std::pair<double, double>>> holes; // No holes in simplified mode
+            
+            // Create active_cells set representing the entire terrain area
+            std::set<std::pair<int, int>> active_cells;
+            for (int y = 0; y < terrain.height; y++) {
+                for (int x = 0; x < terrain.width; x++) {
+                    if (terrain.getHeight(x, y) > 0) {  // Only include non-zero height cells
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+            
+            double min_x = std::numeric_limits<double>::max();
+            double max_x = std::numeric_limits<double>::lowest();
+            double min_y = std::numeric_limits<double>::max(); 
+            double max_y = std::numeric_limits<double>::lowest();
+            
+            // Create boundary polygon from ordered vertices
+            for (size_t v : vertices_to_use) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                boundary_polygon.push_back({bottom_vertex.x, bottom_vertex.y});
+                min_x = std::min(min_x, bottom_vertex.x);
+                max_x = std::max(max_x, bottom_vertex.x);
+                min_y = std::min(min_y, bottom_vertex.y);
+                max_y = std::max(max_y, bottom_vertex.y);
+            }
+            
+            // Convert world coordinates back to grid coordinates for Steiner point generation
+            double grid_min_x = (min_x - terrain.origin.x) / terrain.cell_size;
+            double grid_max_x = (max_x - terrain.origin.x) / terrain.cell_size;
+            double grid_min_y = (terrain.origin.y - max_y) / terrain.cell_size;
+            double grid_max_y = (terrain.origin.y - min_y) / terrain.cell_size;
+            
+            // Generate Steiner points for better triangle quality
+            std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
+                boundary_polygon, holes, active_cells, grid_min_x, grid_max_x, grid_min_y, grid_max_y);
+                
+            std::cout << "Generated " << steiner_points.size() << " Steiner points for simplified mode" << std::endl;
+            
+            // Add boundary vertices to detria first
+            for (size_t v : vertices_to_use) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
+                boundary_vertex_indices.push_back(bottom_vertex_map[v]);
+            }
+            
+            // Add Steiner points as vertices and to the point list
+            for (const auto& point : steiner_points) {
+                double world_z = 0.0; // Bottom face is planar at z=0
+                size_t vertex_index = addVertex(Point3D(point.first, point.second, world_z));
+                boundary_vertex_indices.push_back(vertex_index);
+                boundary_points.push_back({point.first, point.second});
+            }
+            
+            tri.setPoints(boundary_points);
+            
+            // Create outline (only boundary vertices, not Steiner points)
+            std::vector<uint32_t> outline_indices;
+            for (size_t i = 0; i < vertices_to_use.size(); ++i) {
+                outline_indices.push_back(static_cast<uint32_t>(i));
+            }
+            tri.addOutline(outline_indices);
+            
+            // Perform Delaunay triangulation
+            if (tri.triangulate(true)) {
+                size_t triangle_count = 0;
+                tri.forEachTriangle([&](detria::Triangle<uint32_t> tri_data) {
+                    // Add triangle with CCW orientation for bottom face
+                    addTriangle(boundary_vertex_indices[tri_data.x], 
+                               boundary_vertex_indices[tri_data.z], 
+                               boundary_vertex_indices[tri_data.y]);
+                    triangle_count++;
+                }, false);
+                std::cout << "Created detria triangulation of bottom face with " << triangle_count 
+                          << " triangles (no artificial holes)" << std::endl;
+            } else {
+                std::cout << "Detria triangulation failed, using fan triangulation fallback" << std::endl;
+                // Fallback to fan triangulation
+                double center_x = 0.0, center_y = 0.0;
+                for (size_t v : boundary_vertex_set) {
+                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                    center_x += bottom_vertex.x;
+                    center_y += bottom_vertex.y;
+                }
+                center_x /= boundary_vertex_set.size();
+                center_y /= boundary_vertex_set.size();
+                
+                size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
+                
+                for (const Edge& edge : boundary_edges) {
+                    size_t b0 = bottom_vertex_map[edge.getV0()];
+                    size_t b1 = bottom_vertex_map[edge.getV1()];
+                    addTriangle(center_vertex, b1, b0);
+                }
+                
+                std::cout << "Created fan triangulation fallback with " << boundary_edges.size() 
+                          << " triangles" << std::endl;
+            }
+            
+        } catch (...) {
+            std::cout << "Detria triangulation failed with exception, using fan triangulation fallback" << std::endl;
+            // Fallback to fan triangulation
+            double center_x = 0.0, center_y = 0.0;
+            for (size_t v : boundary_vertex_set) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                center_x += bottom_vertex.x;
+                center_y += bottom_vertex.y;
+            }
+            center_x /= boundary_vertex_set.size();
+            center_y /= boundary_vertex_set.size();
+            
+            size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
+            
+            for (const Edge& edge : boundary_edges) {
+                size_t b0 = bottom_vertex_map[edge.getV0()];
+                size_t b1 = bottom_vertex_map[edge.getV1()];
+                addTriangle(center_vertex, b1, b0);
+            }
+            
+            std::cout << "Created fan triangulation fallback with " << boundary_edges.size() 
+                      << " triangles" << std::endl;
+        }
+    }
 }
 
 // Helper method: Build initial complete surface triangulation from height field
@@ -2231,18 +2691,44 @@ void TerrainMesh::buildEdgeCollapseQueue(const std::vector<Point3D>& vertices,
     std::priority_queue<EdgeCollapse>& collapse_queue) {
     
     std::set<Edge> edges;
+    std::map<Edge, int> edge_count;
     
-    // Collect all edges from triangles
+    // Collect all edges from triangles and count their usage
     for (const Triangle& triangle : triangles) {
-        edges.insert(Edge(triangle.vertices[0], triangle.vertices[1]));
-        edges.insert(Edge(triangle.vertices[1], triangle.vertices[2]));
-        edges.insert(Edge(triangle.vertices[2], triangle.vertices[0]));
+        Edge e1(triangle.vertices[0], triangle.vertices[1]);
+        Edge e2(triangle.vertices[1], triangle.vertices[2]);
+        Edge e3(triangle.vertices[2], triangle.vertices[0]);
+        
+        edges.insert(e1);
+        edges.insert(e2);
+        edges.insert(e3);
+        
+        edge_count[e1]++;
+        edge_count[e2]++;
+        edge_count[e3]++;
     }
+    
+    // Identify boundary vertices (vertices on edges used by only one triangle)
+    std::set<size_t> boundary_vertices;
+    for (const auto& pair : edge_count) {
+        if (pair.second == 1) {  // Boundary edge
+            const Edge& edge = pair.first;
+            boundary_vertices.insert(edge.getV0());
+            boundary_vertices.insert(edge.getV1());
+        }
+    }
+    
+    std::cout << "Protected " << boundary_vertices.size() << " boundary vertices from edge collapse" << std::endl;
     
     // For each edge, compute collapse cost and optimal position
     for (const Edge& edge : edges) {
         size_t v0 = edge.getV0();
         size_t v1 = edge.getV1();
+        
+        // Don't collapse edges involving boundary vertices - keep boundary fixed
+        if (boundary_vertices.count(v0) || boundary_vertices.count(v1)) {
+            continue;
+        }
         
         const QuadricError& q0 = vertex_quadrics[v0];
         const QuadricError& q1 = vertex_quadrics[v1];
@@ -2289,6 +2775,7 @@ bool TerrainMesh::performEdgeCollapse(const EdgeCollapse& collapse,
     std::vector<Triangle>& triangles,
     std::vector<QuadricError>& vertex_quadrics,
     std::vector<bool>& vertex_removed,
+    std::vector<size_t>& vertex_collapse_target,
     std::priority_queue<EdgeCollapse>& collapse_queue) {
     
     size_t v0 = collapse.edge.getV0();
@@ -2298,11 +2785,11 @@ bool TerrainMesh::performEdgeCollapse(const EdgeCollapse& collapse,
     vertices[v0] = collapse.new_position;
     vertex_removed[v1] = true;
     
+    // Update collapse mapping: v1 now maps to v0
+    vertex_collapse_target[v1] = v0;
+    
     // Update quadric for remaining vertex
     vertex_quadrics[v0] = vertex_quadrics[v0] + vertex_quadrics[v1];
-    
-    // Simple approach: just mark vertex as removed and handle degenerate triangles in final compaction
-    // This is much more efficient than updating all triangles immediately
     
     return true;
 }
@@ -2333,11 +2820,26 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     }
 
     // Count non-manifold edges
+    int boundary_edges = 0;  // edges with 1 triangle
+    int over_shared_edges = 0;  // edges with 3+ triangles
+    
     for (const auto& pair : edge_count) {
-	if (pair.second != 2) {
+	if (pair.second == 1) {
+	    boundary_edges++;
+	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
+	    stats.setIsManifold(false);
+	} else if (pair.second > 2) {
+	    over_shared_edges++;
 	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
 	    stats.setIsManifold(false);
 	}
+    }
+    
+    if (!stats.getIsManifold()) {
+	std::cout << "Non-manifold mesh detected:" << std::endl;
+	std::cout << "  Boundary edges (1 triangle): " << boundary_edges << std::endl;
+	std::cout << "  Over-shared edges (3+ triangles): " << over_shared_edges << std::endl;
+	std::cout << "  Total non-manifold edges: " << stats.getNonManifoldEdges() << std::endl;
     }
 
     // Check CCW orientation - for a volumetric mesh, this is more complex
