@@ -1451,15 +1451,38 @@ TerrainData::processGuideLines(const std::vector<std::pair<double, double>>& edg
 	    dx /= line_length;
 	    dy /= line_length;
 
-	    // Step along the guide line from edge toward center
-	    double step_size = line_length / 5;
-
-	    for (int step = 1; step <= 4; ++step) {
+	    // Use dynamic step count based on probability vector size
+	    int num_steps = static_cast<int>(step_probabilities.size());
+	    
+	    for (int step = 1; step <= num_steps; ++step) {
 		// Apply probability selection
 		double probability = step_probabilities[step - 1];
 		if (next_random() > probability) continue;
 
-		double step_distance = step * step_size / step_divisor;
+		// Calculate gradient step distance - shorter near edges, longer toward center
+		// Use geometric progression: each step is further than the previous
+		double step_ratio = static_cast<double>(step) / static_cast<double>(num_steps + 1);
+		double progression_factor = 0.6; // Controls how much the step distances grow
+		double base_distance = line_length / (num_steps + 1);
+		
+		// Calculate geometric progression distance
+		double geometric_sum = (1.0 - std::pow(1.0 + progression_factor, num_steps)) / (-progression_factor);
+		double normalized_position = 0.0;
+		for (int s = 1; s <= step; ++s) {
+		    normalized_position += std::pow(1.0 + progression_factor, s - 1);
+		}
+		normalized_position /= geometric_sum;
+		
+		// Apply step divisor and add controlled randomness (±15% variation)
+		double step_distance = (normalized_position * line_length) / step_divisor;
+		double randomness_factor = 0.15; // ±15% randomness
+		double random_offset = (next_random() - 0.5) * 2.0 * randomness_factor;
+		step_distance *= (1.0 + random_offset);
+		
+		// Ensure we don't go past the center or too close to the edge
+		step_distance = std::max(step_distance, base_distance * 0.5);
+		step_distance = std::min(step_distance, line_length * 0.95);
+
 		double x = edge_point.first + dx * step_distance;
 		double y = edge_point.second + dy * step_distance;
 
@@ -1574,17 +1597,25 @@ TerrainData::generateSteinerPoints (
 	return (double)(rng_state % 1000) / 1000.0;
     };
 
-    // Process boundary guide lines
-    size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 100));
-    std::vector<double> boundary_probabilities = {0.9, 0.7, 0.5, 0.3}; // step probabilities
+    // Process boundary guide lines with enhanced coverage
+    // Use smaller sample step to increase active guideline density and reduce long thin triangles
+    size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 150)); // Increased density
+    
+    // Enhanced boundary probabilities with more steps for better gradient coverage
+    // Higher probability for steps closer to edges, decreasing toward center
+    std::vector<double> boundary_probabilities = {0.95, 0.85, 0.65, 0.45, 0.25, 0.1}; // 6 steps
     processGuideLines(boundary, center_x, center_y, min_viable_len, boundary_probabilities,
 	    next_random, boundary, holes, active_cells, min_distance,
 	    distanceToEdges, steiner_points, boundary_sample_step);
 
-    // Process hole guide lines
+    // Process hole guide lines with enhanced coverage
     for (const auto& hole : holes) {
-	size_t hole_sample_step = std::max(1, (int)(hole.size() / 50));
-	std::vector<double> hole_probabilities = {1.0, 0.3, 0.1, 0.01}; // different probabilities for holes
+	// Increase hole guideline density to prevent thin triangles near holes
+	size_t hole_sample_step = std::max(1, (int)(hole.size() / 75)); // Increased density
+	
+	// Enhanced hole probabilities with more aggressive sampling near edges
+	// Holes need more intensive coverage to avoid problematic triangles
+	std::vector<double> hole_probabilities = {1.0, 0.8, 0.5, 0.2, 0.05}; // 5 steps
 	processGuideLines(hole, center_x, center_y, min_viable_len, hole_probabilities,
 		next_random, boundary, holes, active_cells, min_distance,
 		distanceToEdges, steiner_points, hole_sample_step, 5.0); // step_divisor = 5.0 for holes
