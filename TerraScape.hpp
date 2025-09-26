@@ -2213,18 +2213,67 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
                 std::cout << "Warning: Boundary tracing incomplete, detria may fail with unordered vertices" << std::endl;
             }
             
-            // Add vertices to detria
+            // Generate Steiner points using the ordered boundary
+            std::vector<std::pair<double, double>> boundary_polygon;
+            std::vector<std::vector<std::pair<double, double>>> holes; // No holes in simplified mode
+            
+            // Create active_cells set representing the entire terrain area
+            std::set<std::pair<int, int>> active_cells;
+            for (int y = 0; y < terrain.height; y++) {
+                for (int x = 0; x < terrain.width; x++) {
+                    if (terrain.getHeight(x, y) > 0) {  // Only include non-zero height cells
+                        active_cells.insert({x, y});
+                    }
+                }
+            }
+            
+            double min_x = std::numeric_limits<double>::max();
+            double max_x = std::numeric_limits<double>::lowest();
+            double min_y = std::numeric_limits<double>::max(); 
+            double max_y = std::numeric_limits<double>::lowest();
+            
+            // Create boundary polygon from ordered vertices
+            for (size_t v : vertices_to_use) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                boundary_polygon.push_back({bottom_vertex.x, bottom_vertex.y});
+                min_x = std::min(min_x, bottom_vertex.x);
+                max_x = std::max(max_x, bottom_vertex.x);
+                min_y = std::min(min_y, bottom_vertex.y);
+                max_y = std::max(max_y, bottom_vertex.y);
+            }
+            
+            // Convert world coordinates back to grid coordinates for Steiner point generation
+            double grid_min_x = (min_x - terrain.origin.x) / terrain.cell_size;
+            double grid_max_x = (max_x - terrain.origin.x) / terrain.cell_size;
+            double grid_min_y = (terrain.origin.y - max_y) / terrain.cell_size;
+            double grid_max_y = (terrain.origin.y - min_y) / terrain.cell_size;
+            
+            // Generate Steiner points for better triangle quality
+            std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
+                boundary_polygon, holes, active_cells, grid_min_x, grid_max_x, grid_min_y, grid_max_y);
+                
+            std::cout << "Generated " << steiner_points.size() << " Steiner points for simplified mode" << std::endl;
+            
+            // Add boundary vertices to detria first
             for (size_t v : vertices_to_use) {
                 Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
                 boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
                 boundary_vertex_indices.push_back(bottom_vertex_map[v]);
             }
             
+            // Add Steiner points as vertices and to the point list
+            for (const auto& point : steiner_points) {
+                double world_z = 0.0; // Bottom face is planar at z=0
+                size_t vertex_index = addVertex(Point3D(point.first, point.second, world_z));
+                boundary_vertex_indices.push_back(vertex_index);
+                boundary_points.push_back({point.first, point.second});
+            }
+            
             tri.setPoints(boundary_points);
             
-            // Create outline (detria will compute convex hull for us)
+            // Create outline (only boundary vertices, not Steiner points)
             std::vector<uint32_t> outline_indices;
-            for (size_t i = 0; i < boundary_points.size(); ++i) {
+            for (size_t i = 0; i < vertices_to_use.size(); ++i) {
                 outline_indices.push_back(static_cast<uint32_t>(i));
             }
             tri.addOutline(outline_indices);
