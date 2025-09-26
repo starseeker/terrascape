@@ -2154,13 +2154,67 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     // Triangulate bottom face using boundary vertices (no artificial holes!)
     if (boundary_vertex_set.size() >= 3) {
         try {
-            // Set up detria triangulation with boundary vertices only
+            // Set up detria triangulation with properly ordered boundary vertices
             detria::Triangulation tri;
             std::vector<detria::PointD> boundary_points;
             std::vector<size_t> boundary_vertex_indices;
             
-            // Add boundary vertices to detria
-            for (size_t v : boundary_vertex_set) {
+            // Trace boundary vertices in proper order to form a valid polygon
+            // Start from any boundary vertex and trace around the boundary
+            std::vector<size_t> ordered_boundary;
+            
+            if (boundary_vertex_set.size() >= 3) {
+                std::cout << "Debug: Starting boundary tracing..." << std::endl;
+                std::map<size_t, std::vector<size_t>> boundary_adjacency;
+                for (const Edge& edge : boundary_edges) {
+                    size_t v0 = edge.getV0();
+                    size_t v1 = edge.getV1();
+                    boundary_adjacency[v0].push_back(v1);
+                    boundary_adjacency[v1].push_back(v0);
+                }
+                
+                // Start tracing from the first boundary vertex
+                size_t start_vertex = *boundary_vertex_set.begin();
+                size_t current_vertex = start_vertex;
+                size_t prev_vertex = SIZE_MAX;
+                
+                ordered_boundary.push_back(current_vertex);
+                
+                do {
+                    // Find next vertex that's not the previous one
+                    size_t next_vertex = SIZE_MAX;
+                    for (size_t neighbor : boundary_adjacency[current_vertex]) {
+                        if (neighbor != prev_vertex) {
+                            next_vertex = neighbor;
+                            break;
+                        }
+                    }
+                    
+                    if (next_vertex == SIZE_MAX || next_vertex == start_vertex) {
+                        break;  // Completed the loop or reached dead end
+                    }
+                    
+                    ordered_boundary.push_back(next_vertex);
+                    prev_vertex = current_vertex;
+                    current_vertex = next_vertex;
+                    
+                } while (current_vertex != start_vertex && ordered_boundary.size() < boundary_vertex_set.size());
+                
+                std::cout << "Traced boundary polygon with " << ordered_boundary.size() << " vertices" << std::endl;
+            }
+            
+            // Use ordered boundary if we successfully traced it, otherwise use all boundary vertices
+            std::vector<size_t> vertices_to_use;
+            if (ordered_boundary.size() >= 3 && ordered_boundary.size() == boundary_vertex_set.size()) {
+                vertices_to_use = ordered_boundary;
+                std::cout << "Using properly ordered boundary polygon for detria" << std::endl;
+            } else {
+                vertices_to_use.assign(boundary_vertex_set.begin(), boundary_vertex_set.end());
+                std::cout << "Warning: Boundary tracing incomplete, detria may fail with unordered vertices" << std::endl;
+            }
+            
+            // Add vertices to detria
+            for (size_t v : vertices_to_use) {
                 Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
                 boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
                 boundary_vertex_indices.push_back(bottom_vertex_map[v]);
@@ -2190,7 +2244,11 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
                 std::cout << "Created detria triangulation of bottom face with " << triangle_count 
                           << " triangles (no artificial holes)" << std::endl;
             } else {
-                std::cout << "Detria triangulation failed, using fan triangulation fallback" << std::endl;
+                // Get detailed error information from detria
+                auto error = tri.getError();
+                std::string error_msg = tri.getErrorMessage();
+                std::cout << "Detria triangulation failed with error: " << error_msg << std::endl;
+                std::cout << "Using fan triangulation fallback" << std::endl;
                 // Fallback to fan triangulation
                 double center_x = 0.0, center_y = 0.0;
                 for (size_t v : boundary_vertex_set) {
