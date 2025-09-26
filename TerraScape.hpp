@@ -70,7 +70,7 @@
 #include <unordered_map>
 #include <functional>
 #include <memory>
-
+#include <numeric>
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -2027,20 +2027,43 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     };
     
     // Update all triangles to use final targets for collapsed vertices
+    std::vector<Triangle> valid_triangles;
+    std::set<std::array<size_t, 3>> seen_triangles;  // Track triangles to avoid duplicates
+    
     for (Triangle& triangle : surface_triangles) {
+        // Apply vertex collapse mapping
         for (int i = 0; i < 3; i++) {
             triangle.vertices[i] = getFinalTarget(triangle.vertices[i]);
         }
+        
+        // Skip degenerate triangles (those with duplicate vertices after collapse)
+        if (triangle.vertices[0] == triangle.vertices[1] || 
+            triangle.vertices[1] == triangle.vertices[2] || 
+            triangle.vertices[2] == triangle.vertices[0]) {
+            continue;  // Skip degenerate triangle
+        }
+        
+        // Create canonical form for duplicate checking (sort vertices)
+        std::array<size_t, 3> canonical = triangle.vertices;
+        std::sort(canonical.begin(), canonical.end());
+        
+        // Skip duplicate triangles
+        if (seen_triangles.count(canonical)) {
+            continue;  // Skip duplicate triangle
+        }
+        seen_triangles.insert(canonical);
+        
         // Recompute triangle normal after vertex updates
         triangle.computeNormal(surface_vertices);
+        valid_triangles.push_back(triangle);
     }
     
-    // Remove degenerate triangles (those with duplicate vertices after collapse)
-    auto new_end = std::remove_if(surface_triangles.begin(), surface_triangles.end(),
-        [](const Triangle& t) {
-            return t.vertices[0] == t.vertices[1] || t.vertices[1] == t.vertices[2] || t.vertices[2] == t.vertices[0];
-        });
-    surface_triangles.erase(new_end, surface_triangles.end());
+    size_t removed_count = surface_triangles.size() - valid_triangles.size();
+    surface_triangles = std::move(valid_triangles);
+    
+    if (removed_count > 0) {
+        std::cout << "Removed " << removed_count << " degenerate/duplicate triangles during vertex mapping" << std::endl;
+    }
     
     std::cout << "Garland-Heckbert: After cleanup: " << surface_triangles.size() << " triangles" << std::endl;
     
@@ -2116,9 +2139,13 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     for (const auto& pair : edge_triangles) {
         if (pair.second.size() == 1) {  // Boundary edge
             boundary_edges.insert(pair.first);
+        } else if (pair.second.size() > 2) {
+            std::cout << "WARNING: Surface edge shared by " << pair.second.size() 
+                      << " triangles before wall generation!" << std::endl;
         }
     }
     
+    std::cout << "Debug: Surface mesh has " << surface_triangle_count << " triangles" << std::endl;
     std::cout << "Found " << boundary_edges.size() << " boundary edges in simplified surface" << std::endl;
     
     // Add bottom vertices (project surface vertices to z=0 plane)
@@ -2130,6 +2157,15 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     }
     
     // Generate walls for boundary edges
+    std::cout << "Debug: Generating walls for " << boundary_edges.size() << " boundary edges" << std::endl;
+    
+    // Check for duplicate boundary edges
+    std::set<Edge> unique_boundary_edges(boundary_edges.begin(), boundary_edges.end());
+    if (unique_boundary_edges.size() != boundary_edges.size()) {
+        std::cout << "WARNING: Found " << (boundary_edges.size() - unique_boundary_edges.size()) 
+                  << " duplicate boundary edges!" << std::endl;
+    }
+    
     for (const Edge& edge : boundary_edges) {
         size_t v0 = edge.getV0();
         size_t v1 = edge.getV1();
@@ -2561,11 +2597,26 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     }
 
     // Count non-manifold edges
+    int boundary_edges = 0;  // edges with 1 triangle
+    int over_shared_edges = 0;  // edges with 3+ triangles
+    
     for (const auto& pair : edge_count) {
-	if (pair.second != 2) {
+	if (pair.second == 1) {
+	    boundary_edges++;
+	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
+	    stats.setIsManifold(false);
+	} else if (pair.second > 2) {
+	    over_shared_edges++;
 	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
 	    stats.setIsManifold(false);
 	}
+    }
+    
+    if (!stats.getIsManifold()) {
+	std::cout << "Non-manifold mesh detected:" << std::endl;
+	std::cout << "  Boundary edges (1 triangle): " << boundary_edges << std::endl;
+	std::cout << "  Over-shared edges (3+ triangles): " << over_shared_edges << std::endl;
+	std::cout << "  Total non-manifold edges: " << stats.getNonManifoldEdges() << std::endl;
     }
 
     // Check CCW orientation - for a volumetric mesh, this is more complex
