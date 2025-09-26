@@ -369,6 +369,8 @@ class TerrainMesh {
 		std::set<std::pair<int, int>>& processed_cells);
 	void triangulateCoplanarPatch(const CoplanarPatch& patch, const TerrainData& terrain,
 		const std::vector<std::vector<size_t>>& top_vertices);
+	void triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch, const TerrainData& terrain,
+        const std::vector<std::vector<size_t>>& top_vertices);
 	void generateSurfaceMeshWithPatches(const TerrainData& terrain, 
 		const std::vector<std::vector<size_t>>& top_vertices, double coplanar_tolerance);
 };
@@ -2205,8 +2207,36 @@ void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain,
     std::cout << total_patch_cells << ")" << std::endl;
 
     // For now, use standard grid triangulation for all surface cells to ensure manifold property
+    // TODO: Add optimized triangulation for large coplanar patches
+    
+    // Identify which cells are in large patches (worth optimizing)
+    std::set<std::pair<int, int>> large_patch_cells;
+    std::vector<CoplanarPatch> large_patches;
+    
+    for (const auto& patch : patches) {
+	if (patch.size() >= 25) {  // Only optimize patches with 25+ cells
+	    large_patches.push_back(patch);
+	    for (const auto& cell : patch.cells) {
+		large_patch_cells.insert(cell);
+	    }
+	}
+    }
+    
+    std::cout << "  " << large_patches.size() << " large patches (25+ cells) will be optimized" << std::endl;
+
+    // First, triangulate large patches with detria
+    for (const auto& patch : large_patches) {
+	triangulateCoplanarPatchWithDetria(patch, terrain, top_vertices);
+    }
+
+    // Then, use standard grid triangulation for remaining cells
     for (int y = 0; y < terrain.height - 1; ++y) {
 	for (int x = 0; x < terrain.width - 1; ++x) {
+	    // Skip if this cell is part of a large patch (already triangulated)
+	    if (large_patch_cells.count({x, y})) {
+		continue;
+	    }
+
 	    // Get the four corner vertices of the cell
 	    size_t v00 = top_vertices[y][x];
 	    size_t v10 = top_vertices[y][x + 1];
@@ -2370,6 +2400,98 @@ void TerrainMesh::triangulateCoplanarPatch(const CoplanarPatch& patch, const Ter
 	    addSurfaceTriangle(v00, v01, v10);
 	    addSurfaceTriangle(v10, v01, v11);
 	}
+    }
+}
+
+// Triangulate a large coplanar patch using detria for optimization
+void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch, const TerrainData& terrain,
+    const std::vector<std::vector<size_t>>& top_vertices) {
+    
+    if (patch.size() < 9) { // Only for patches with 9+ cells as per requirement
+	return triangulateCoplanarPatch(patch, terrain, top_vertices);
+    }
+
+    const std::set<std::pair<int, int>>& patch_cells = patch.cells;
+
+    // Find bounds of patch
+    int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+    for (const auto& cell : patch_cells) {
+	min_x = std::min(min_x, cell.first);
+	max_x = std::max(max_x, cell.first);
+	min_y = std::min(min_y, cell.second);
+	max_y = std::max(max_y, cell.second);
+    }
+
+    // Extract all vertices from patch cells (not just boundary)
+    std::set<std::pair<int, int>> vertex_positions;
+    for (const auto& cell : patch_cells) {
+	int x = cell.first;
+	int y = cell.second;
+	
+	// Add all 4 corners of this cell
+	vertex_positions.insert({x, y});
+	vertex_positions.insert({x + 1, y});
+	vertex_positions.insert({x, y + 1});
+	vertex_positions.insert({x + 1, y + 1});
+    }
+
+    // Convert to vectors for detria
+    std::vector<detria::PointD> all_points;
+    std::vector<size_t> all_vertex_indices;
+    
+    for (const auto& pos : vertex_positions) {
+	int x = pos.first;
+	int y = pos.second;
+	
+	if (x >= 0 && x < terrain.width && y >= 0 && y < terrain.height) {
+	    const Point3D& vertex = vertices[top_vertices[y][x]];
+	    all_points.push_back({vertex.x, vertex.y});
+	    all_vertex_indices.push_back(top_vertices[y][x]);
+	}
+    }
+
+    if (all_points.size() < 3) {
+	// Fallback to regular triangulation
+	return triangulateCoplanarPatch(patch, terrain, top_vertices);
+    }
+
+    // Use detria for triangulation (no constraints for now - just Delaunay)
+    try {
+	detria::Triangulation tri;
+	tri.setPoints(all_points);
+
+	// Triangulate
+	bool success = tri.triangulate(true); // Use Delaunay triangulation
+
+	if (success) {
+	    // Extract triangles and add them to the mesh
+	    bool cwTriangles = false; // We want counter-clockwise for surface
+
+	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+		size_t v0, v1, v2;
+
+		if (triangle.x < all_vertex_indices.size()) {
+		    v0 = all_vertex_indices[triangle.x];
+		} else return;
+
+		if (triangle.y < all_vertex_indices.size()) {
+		    v1 = all_vertex_indices[triangle.y];
+		} else return;
+
+		if (triangle.z < all_vertex_indices.size()) {
+		    v2 = all_vertex_indices[triangle.z];
+		} else return;
+
+		// Add triangle with correct surface orientation 
+		addSurfaceTriangle(v0, v1, v2);
+	    }, cwTriangles);
+	} else {
+	    // Fallback to grid triangulation
+	    return triangulateCoplanarPatch(patch, terrain, top_vertices);
+	}
+    } catch (const std::exception&) {
+	// Fallback to grid triangulation if detria fails
+	return triangulateCoplanarPatch(patch, terrain, top_vertices);
     }
 }
 
