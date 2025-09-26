@@ -370,7 +370,7 @@ class TerrainMesh {
 	void triangulateCoplanarPatch(const CoplanarPatch& patch, const TerrainData& terrain,
 		const std::vector<std::vector<size_t>>& top_vertices);
 	void generateSurfaceMeshWithPatches(const TerrainData& terrain, 
-		const std::vector<std::vector<size_t>>& top_vertices);
+		const std::vector<std::vector<size_t>>& top_vertices, double coplanar_tolerance);
 };
 
 // Mesh validation statistics
@@ -2183,8 +2183,41 @@ void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain,
 	}
     }
 
-    // Generate optimized surface mesh using coplanar patches
-    generateSurfaceMeshWithPatches(terrain, top_vertices);
+    // Generate surface mesh: for now, let's just identify patches but use regular triangulation
+    // This will serve as a baseline to ensure we maintain manifold property
+    
+    // Build set of all active cells
+    std::set<std::pair<int, int>> active_cells;
+    for (int y = 0; y < terrain.height; ++y) {
+	for (int x = 0; x < terrain.width; ++x) {
+	    active_cells.insert({x, y});
+	}
+    }
+
+    // Find coplanar patches for analysis
+    std::vector<CoplanarPatch> patches = findCoplanarPatches(terrain, active_cells, coplanar_tolerance);
+    
+    std::cout << "Found " << patches.size() << " coplanar patches (total cells in patches: ";
+    size_t total_patch_cells = 0;
+    for (const auto& patch : patches) {
+	total_patch_cells += patch.size();
+    }
+    std::cout << total_patch_cells << ")" << std::endl;
+
+    // For now, use standard grid triangulation for all surface cells to ensure manifold property
+    for (int y = 0; y < terrain.height - 1; ++y) {
+	for (int x = 0; x < terrain.width - 1; ++x) {
+	    // Get the four corner vertices of the cell
+	    size_t v00 = top_vertices[y][x];
+	    size_t v10 = top_vertices[y][x + 1];
+	    size_t v01 = top_vertices[y + 1][x];
+	    size_t v11 = top_vertices[y + 1][x + 1];
+
+	    // Add two triangles with CCW orientation (viewed from above)
+	    addSurfaceTriangle(v00, v01, v10);
+	    addSurfaceTriangle(v10, v01, v11);
+	}
+    }
 
     // Add bottom surface triangles using detria
     triangulateBottomFaceWithDetria(bottom_vertices, terrain, nullptr);
@@ -2312,171 +2345,37 @@ void TerrainMesh::growCoplanarPatch(CoplanarPatch& patch, const TerrainData& ter
     }
 }
 
-// Triangulate a coplanar patch using detria (same method as bottom face)
+// Triangulate a coplanar patch using individual cell triangulation (safer for manifold guarantee)
 void TerrainMesh::triangulateCoplanarPatch(const CoplanarPatch& patch, const TerrainData& terrain,
     const std::vector<std::vector<size_t>>& top_vertices) {
     
-    if (patch.size() < 3) {
+    if (patch.size() < 1) {
 	return;
     }
 
-    // Convert patch cells to active cells set for detria
+    // For now, use simple individual cell triangulation to ensure manifold property
+    // TODO: Implement proper boundary extraction and detria triangulation for complex patches
     const std::set<std::pair<int, int>>& patch_cells = patch.cells;
-
-    // Find bounds of patch
-    int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+    
     for (const auto& cell : patch_cells) {
-	min_x = std::min(min_x, cell.first);
-	max_x = std::max(max_x, cell.first);
-	min_y = std::min(min_y, cell.second);
-	max_y = std::max(max_y, cell.second);
-    }
+	int x = cell.first;
+	int y = cell.second;
+	
+	if (x < terrain.width - 1 && y < terrain.height - 1) {
+	    size_t v00 = top_vertices[y][x];
+	    size_t v10 = top_vertices[y][x + 1];
+	    size_t v01 = top_vertices[y + 1][x];
+	    size_t v11 = top_vertices[y + 1][x + 1];
 
-    // Create outer boundary (counter-clockwise)
-    std::vector<std::pair<double, double>> outer_boundary;
-    std::vector<size_t> vertex_indices;
-
-    // Bottom edge (left to right)
-    for (int x = min_x; x <= max_x; ++x) {
-	if (patch_cells.count({x, min_y})) {
-	    const Point3D& vertex = vertices[top_vertices[min_y][x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(top_vertices[min_y][x]);
-	}
-    }
-
-    // Right edge (bottom to top, skip corners)
-    for (int y = min_y + 1; y <= max_y; ++y) {
-	if (patch_cells.count({max_x, y})) {
-	    const Point3D& vertex = vertices[top_vertices[y][max_x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(top_vertices[y][max_x]);
-	}
-    }
-
-    // Top edge (right to left, skip corners)
-    for (int x = max_x - 1; x >= min_x; --x) {
-	if (patch_cells.count({x, max_y})) {
-	    const Point3D& vertex = vertices[top_vertices[max_y][x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(top_vertices[max_y][x]);
-	}
-    }
-
-    // Left edge (top to bottom, skip corners)
-    for (int y = max_y - 1; y > min_y; --y) {
-	if (patch_cells.count({min_x, y})) {
-	    const Point3D& vertex = vertices[top_vertices[y][min_x]];
-	    outer_boundary.push_back({vertex.x, vertex.y});
-	    vertex_indices.push_back(top_vertices[y][min_x]);
-	}
-    }
-
-    if (outer_boundary.size() < 3) {
-	// Fallback to individual triangulation for very small patches
-	for (const auto& cell : patch_cells) {
-	    int x = cell.first;
-	    int y = cell.second;
-	    
-	    if (x < terrain.width - 1 && y < terrain.height - 1) {
-		size_t v00 = top_vertices[y][x];
-		size_t v10 = top_vertices[y][x + 1];
-		size_t v01 = top_vertices[y + 1][x];
-		size_t v11 = top_vertices[y + 1][x + 1];
-
-		addSurfaceTriangle(v00, v01, v10);
-		addSurfaceTriangle(v10, v01, v11);
-	    }
-	}
-	return;
-    }
-
-    // Use detria for high-quality triangulation
-    try {
-	std::vector<detria::PointD> all_points;
-	std::vector<size_t> all_vertex_indices;
-
-	// Add boundary points
-	for (size_t i = 0; i < outer_boundary.size(); ++i) {
-	    all_points.push_back({outer_boundary[i].first, outer_boundary[i].second});
-	    all_vertex_indices.push_back(vertex_indices[i]);
-	}
-
-	// Set up detria triangulation
-	detria::Triangulation tri;
-	tri.setPoints(all_points);
-
-	// Add boundary outline
-	std::vector<uint32_t> outline_indices;
-	for (size_t i = 0; i < outer_boundary.size(); ++i) {
-	    outline_indices.push_back(static_cast<uint32_t>(i));
-	}
-	tri.addOutline(outline_indices);
-
-	// Triangulate
-	bool success = tri.triangulate(true); // Use Delaunay triangulation
-
-	if (success) {
-	    // Extract triangles and add them to the mesh
-	    bool cwTriangles = false; // We want counter-clockwise for surface
-
-	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
-		size_t v0, v1, v2;
-
-		if (triangle.x < all_vertex_indices.size()) {
-		    v0 = all_vertex_indices[triangle.x];
-		} else return;
-
-		if (triangle.y < all_vertex_indices.size()) {
-		    v1 = all_vertex_indices[triangle.y];
-		} else return;
-
-		if (triangle.z < all_vertex_indices.size()) {
-		    v2 = all_vertex_indices[triangle.z];
-		} else return;
-
-		// Add triangle with correct surface orientation 
-		addSurfaceTriangle(v0, v1, v2);
-	    }, cwTriangles);
-	} else {
-	    // Fallback to grid triangulation
-	    for (const auto& cell : patch_cells) {
-		int x = cell.first;
-		int y = cell.second;
-		
-		if (x < terrain.width - 1 && y < terrain.height - 1) {
-		    size_t v00 = top_vertices[y][x];
-		    size_t v10 = top_vertices[y][x + 1];
-		    size_t v01 = top_vertices[y + 1][x];
-		    size_t v11 = top_vertices[y + 1][x + 1];
-
-		    addSurfaceTriangle(v00, v01, v10);
-		    addSurfaceTriangle(v10, v01, v11);
-		}
-	    }
-	}
-    } catch (const std::exception&) {
-	// Fallback to grid triangulation if detria fails
-	for (const auto& cell : patch_cells) {
-	    int x = cell.first;
-	    int y = cell.second;
-	    
-	    if (x < terrain.width - 1 && y < terrain.height - 1) {
-		size_t v00 = top_vertices[y][x];
-		size_t v10 = top_vertices[y][x + 1];
-		size_t v01 = top_vertices[y + 1][x];
-		size_t v11 = top_vertices[y + 1][x + 1];
-
-		addSurfaceTriangle(v00, v01, v10);
-		addSurfaceTriangle(v10, v01, v11);
-	    }
+	    addSurfaceTriangle(v00, v01, v10);
+	    addSurfaceTriangle(v10, v01, v11);
 	}
     }
 }
 
-// Generate surface mesh using coplanar patches
+// Generate optimized surface mesh using coplanar patches
 void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain, 
-    const std::vector<std::vector<size_t>>& top_vertices) {
+    const std::vector<std::vector<size_t>>& top_vertices, double coplanar_tolerance) {
     
     // Build set of all active cells
     std::set<std::pair<int, int>> active_cells;
@@ -2486,13 +2385,8 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
 	}
     }
 
-    // Find coplanar patches
-    std::vector<CoplanarPatch> patches = findCoplanarPatches(terrain, active_cells, 0.01);
-
-    std::cout << "Found " << patches.size() << " coplanar patches:" << std::endl;
-    for (size_t i = 0; i < patches.size(); ++i) {
-	std::cout << "  Patch " << i << ": " << patches[i].size() << " cells at height " << patches[i].plane_z << std::endl;
-    }
+    // Find coplanar patches (use the tolerance passed to triangulateVolumeWithPlanarPatches)
+    std::vector<CoplanarPatch> patches = findCoplanarPatches(terrain, active_cells, coplanar_tolerance);
 
     // Track which cells have been triangulated as part of patches
     std::set<std::pair<int, int>> patch_cells;
@@ -2508,6 +2402,7 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
     }
 
     // Triangulate remaining cells using fallback method
+    int fallback_cells = 0;
     for (int y = 0; y < terrain.height - 1; ++y) {
 	for (int x = 0; x < terrain.width - 1; ++x) {
 	    // Skip if any corner of this cell is part of a patch
@@ -2515,6 +2410,8 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
 		patch_cells.count({x, y+1}) || patch_cells.count({x+1, y+1})) {
 		continue;
 	    }
+
+	    fallback_cells++;
 
 	    // Get the four corner vertices of the cell
 	    size_t v00 = top_vertices[y][x];
@@ -2527,6 +2424,8 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
 	    addSurfaceTriangle(v10, v01, v11);
 	}
     }
+    
+    std::cout << "Triangulated " << patches.size() << " patches and " << fallback_cells << " fallback cells" << std::endl;
 }
 
 } // namespace TerraScape
