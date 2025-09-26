@@ -225,6 +225,11 @@ class TerrainData {
 	// Method declarations - implementations follow after all class definitions
 	TerrainFeature analyzePoint(int x, int y) const;
 	std::vector<std::vector<bool>> generateSampleMask(const SimplificationParams& params) const;
+	
+	// New Garland-Heckbert simplification methods
+	TerrainFeature analyzePointWithQuadric(int x, int y) const;
+	std::vector<std::vector<bool>> generateGarlandHeckbertMask(const SimplificationParams& params) const;
+	
 	TerrainComponents analyzeComponents(double height_threshold = 1e-6) const;
 
 	// DSP conversion methods
@@ -401,31 +406,94 @@ class SimplificationParams {
 	bool preserve_bounds;  // Whether to preserve terrain boundaries
 };
 
+// Quadric Error Metric for Garland-Heckbert simplification
+class QuadricError {
+    public:
+	QuadricError() {
+	    // Initialize quadric as zero
+	    for (int i = 0; i < 10; i++) q[i] = 0.0;
+	}
+	
+	// Initialize quadric from a plane equation ax + by + cz + d = 0
+	QuadricError(double a, double b, double c, double d) {
+	    q[0] = a*a;   q[1] = a*b;   q[2] = a*c;   q[3] = a*d;
+	    q[4] = b*b;   q[5] = b*c;   q[6] = b*d;
+	    q[7] = c*c;   q[8] = c*d;
+	    q[9] = d*d;
+	}
+	
+	// Add another quadric to this one
+	QuadricError& operator+=(const QuadricError& other) {
+	    for (int i = 0; i < 10; i++) {
+		q[i] += other.q[i];
+	    }
+	    return *this;
+	}
+	
+	QuadricError operator+(const QuadricError& other) const {
+	    QuadricError result = *this;
+	    result += other;
+	    return result;
+	}
+	
+	// Evaluate quadric at point (x, y, z) - returns squared error
+	double evaluate(double x, double y, double z) const {
+	    return q[0]*x*x + 2*q[1]*x*y + 2*q[2]*x*z + 2*q[3]*x +
+		   q[4]*y*y + 2*q[5]*y*z + 2*q[6]*y + 
+		   q[7]*z*z + 2*q[8]*z + 
+		   q[9];
+	}
+	
+	// Find optimal point that minimizes quadric (solve for minimum)
+	Point3D findOptimalPoint() const {
+	    // Try to solve the linear system Ax = b where A is the quadric matrix
+	    // For terrains, we can often use simpler heuristics
+	    return Point3D(0, 0, 0); // Will implement more sophisticated version
+	}
+	
+    private:
+	// Quadric coefficients for x²  xy  xz   x  y²  yz   y  z²   z   1
+	double q[10];               // 0   1   2   3   4   5   6   7   8   9
+};
+
 // Local terrain analysis for adaptive simplification
 class TerrainFeature {
     public:
 	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
 
-	// Getters
+	// Getters (legacy interface)
 	double getCurvature() const { return curvature; }
 	double getSlope() const { return slope; }
 	double getRoughness() const { return roughness; }
 	bool getIsBoundary() const { return is_boundary; }
 	double getImportance() const { return importance; }
+	
+	// New Garland-Heckbert interface
+	const QuadricError& getQuadric() const { return quadric; }
+	double getQuadricError() const { return quadric_error; }
 
-	// Setters
+	// Setters (legacy interface)
 	void setCurvature(double val) { curvature = val; }
 	void setSlope(double val) { slope = val; }
 	void setRoughness(double val) { roughness = val; }
 	void setIsBoundary(bool val) { is_boundary = val; }
 	void setImportance(double val) { importance = val; }
+	
+	// New Garland-Heckbert setters
+	void setQuadric(const QuadricError& q) { quadric = q; }
+	void setQuadricError(double error) { quadric_error = error; }
 
     private:
+	// Legacy Terra/Scape features
 	double curvature;          // Local surface curvature
 	double slope;              // Local slope magnitude
 	double roughness;          // Local height variation
 	bool is_boundary;          // Whether this is a boundary vertex
-	double importance;   // Combined importance metric
+	double importance;         // Combined importance metric
+	
+	// New Garland-Heckbert features
+	QuadricError quadric;      // Quadric error metric for this vertex
+	double quadric_error;      // Cached quadric error value
 };
 
 // Edge structure for manifold checking
@@ -453,6 +521,26 @@ class Edge {
 	}
     private:
 	size_t v0, v1;
+};
+
+// Edge collapse candidate for Garland-Heckbert decimation
+class EdgeCollapse {
+    public:
+	EdgeCollapse(size_t v0, size_t v1, double error, const Point3D& new_pos) 
+	    : edge(v0, v1), collapse_error(error), new_position(new_pos) {}
+	    
+	Edge edge;                    // Edge to collapse
+	double collapse_error;        // Error introduced by this collapse
+	Point3D new_position;         // Optimal position for merged vertex
+	
+	// For priority queue (min-heap)
+	bool operator<(const EdgeCollapse& other) const {
+	    return collapse_error > other.collapse_error; // Reverse for min-heap
+	}
+	
+	bool operator>(const EdgeCollapse& other) const {
+	    return collapse_error < other.collapse_error;
+	}
 };
 
 // Hash function for Edge
@@ -693,6 +781,142 @@ std::vector<std::vector<bool>> TerrainData::generateSampleMask(const Simplificat
 	}
     }
 
+    return mask;
+}
+
+// Garland-Heckbert point analysis with quadric error metrics
+TerrainFeature TerrainData::analyzePointWithQuadric(int x, int y) const {
+    TerrainFeature feature;
+    
+    if (!isValidCell(x, y)) {
+	return feature;
+    }
+    
+    // First compute legacy features for compatibility
+    feature = analyzePoint(x, y);
+    
+    // Initialize quadric for this vertex by summing quadrics from adjacent faces
+    QuadricError quadric;
+    double current_height = getHeight(x, y);
+    
+    // For height fields, we can create planes from the local surface approximation
+    // Create planes from adjacent grid cells to this vertex
+    std::vector<std::array<Point3D, 3>> adjacent_triangles;
+    
+    // Generate triangles from adjacent grid cells
+    for (int dy = -1; dy <= 0; dy++) {
+	for (int dx = -1; dx <= 0; dx++) {
+	    if (isValidCell(x + dx, y + dy) && isValidCell(x + dx + 1, y + dy) &&
+		isValidCell(x + dx, y + dy + 1) && isValidCell(x + dx + 1, y + dy + 1)) {
+		
+		// Two triangles per quad
+		Point3D p00(x + dx, y + dy, getHeight(x + dx, y + dy));
+		Point3D p10(x + dx + 1, y + dy, getHeight(x + dx + 1, y + dy));
+		Point3D p01(x + dx, y + dy + 1, getHeight(x + dx, y + dy + 1));
+		Point3D p11(x + dx + 1, y + dy + 1, getHeight(x + dx + 1, y + dy + 1));
+		
+		// Check if current vertex is part of these triangles
+		Point3D current_pos(x, y, current_height);
+		if ((x == x + dx && y == y + dy) || (x == x + dx + 1 && y == y + dy) || 
+		    (x == x + dx && y == y + dy + 1)) {
+		    adjacent_triangles.push_back({p00, p10, p01});
+		}
+		if ((x == x + dx + 1 && y == y + dy) || (x == x + dx && y == y + dy + 1) || 
+		    (x == x + dx + 1 && y == y + dy + 1)) {
+		    adjacent_triangles.push_back({p10, p01, p11});
+		}
+	    }
+	}
+    }
+    
+    // Compute quadric by summing contributions from adjacent triangles
+    for (const auto& triangle : adjacent_triangles) {
+	// Compute plane equation from triangle
+	Point3D v1 = triangle[1] - triangle[0];
+	Point3D v2 = triangle[2] - triangle[0];
+	Point3D normal = v1.cross(v2).normalized();
+	
+	if (normal.length() > 1e-10) { // Valid normal
+	    // Plane equation: ax + by + cz + d = 0
+	    double a = normal.x;
+	    double b = normal.y;
+	    double c = normal.z;
+	    double d = -(a * triangle[0].x + b * triangle[0].y + c * triangle[0].z);
+	    
+	    // Add this plane's quadric contribution
+	    quadric += QuadricError(a, b, c, d);
+	}
+    }
+    
+    // Calculate quadric error at current position
+    double error = quadric.evaluate(x, y, current_height);
+    
+    feature.setQuadric(quadric);
+    feature.setQuadricError(error);
+    
+    return feature;
+}
+
+// Generate Garland-Heckbert based sample mask using quadric error metrics
+std::vector<std::vector<bool>> TerrainData::generateGarlandHeckbertMask(const SimplificationParams& params) const {
+    std::vector<std::vector<bool>> mask(height, std::vector<bool>(width, false));
+    
+    // Always preserve boundary points for manifold property
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    if (x == 0 || x == width-1 || y == 0 || y == height-1) {
+		mask[y][x] = true;
+	    }
+	}
+    }
+    
+    // Build initial mesh from grid and compute quadric errors
+    std::vector<std::vector<TerrainFeature>> features(height, std::vector<TerrainFeature>(width));
+    std::vector<std::pair<double, std::pair<int, int>>> error_points;
+    
+    for (int y = 1; y < height-1; ++y) {
+	for (int x = 1; x < width-1; ++x) {
+	    features[y][x] = analyzePointWithQuadric(x, y);
+	    
+	    // Points with low quadric error are candidates for removal
+	    if (features[y][x].getQuadricError() < params.getErrorTol()) {
+		// Store with negative error so highest errors (hardest to remove) come first
+		error_points.push_back({-features[y][x].getQuadricError(), {x, y}});
+	    } else {
+		// Must keep high-error points
+		mask[y][x] = true;
+	    }
+	}
+    }
+    
+    // Sort by error (ascending - easiest to remove first)
+    std::sort(error_points.begin(), error_points.end());
+    
+    // Count current points
+    int current_points = 0;
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    if (mask[y][x]) current_points++;
+	}
+    }
+    
+    int total_points = width * height;
+    int min_required = total_points * (100 - params.getMinReduction()) / 100;
+    
+    // Remove points with lowest error until we reach target reduction
+    // But keep enough points to satisfy minimum requirement
+    int points_to_keep = std::max(min_required - current_points, 0);
+    
+    // Keep highest error points from those we can remove
+    for (int i = error_points.size() - 1; i >= 0 && points_to_keep > 0; i--) {
+	int x = error_points[i].second.first;
+	int y = error_points[i].second.second;
+	if (!mask[y][x]) {
+	    mask[y][x] = true;
+	    points_to_keep--;
+	}
+    }
+    
     return mask;
 }
 
@@ -1035,8 +1259,8 @@ void TerrainMesh::triangulateVolumeSimplified(const TerrainData& terrain, const 
 	return;
     }
 
-    // Generate adaptive sampling mask based on terrain features
-    auto sample_mask = terrain.generateSampleMask(params);
+    // Generate adaptive sampling mask using Garland-Heckbert quadric error metrics
+    auto sample_mask = terrain.generateGarlandHeckbertMask(params);
 
     // Create a new simplified grid by decimation
     std::vector<std::vector<bool>> keep_vertex(terrain.height, std::vector<bool>(terrain.width, false));
@@ -1237,8 +1461,8 @@ void TerrainMesh::triangulateSurfaceOnly(const TerrainData& terrain, const Simpl
 	return;
     }
 
-    // Generate adaptive sampling mask
-    auto sample_mask = terrain.generateSampleMask(params);
+    // Generate adaptive sampling mask using Garland-Heckbert quadric error metrics
+    auto sample_mask = terrain.generateGarlandHeckbertMask(params);
 
     // Use more aggressive decimation for surface-only mode
     int step_size = std::max(2, (int)std::sqrt(100.0 / (100.0 - params.getMinReduction())));
