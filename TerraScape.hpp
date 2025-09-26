@@ -1481,13 +1481,6 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     size_t max_collapses = 50000;
     std::set<Edge> remaining_edges = surface_edges; // Track remaining edges
     
-    // Build vertex adjacency for faster edge lookup (PERFORMANCE OPTIMIZATION)
-    std::unordered_map<size_t, std::unordered_set<size_t>> vertex_adjacency;
-    for (const Edge& edge : remaining_edges) {
-        vertex_adjacency[edge.getV0()].insert(edge.getV1());
-        vertex_adjacency[edge.getV1()].insert(edge.getV0());
-    }
-    
     while (!collapse_queue.empty() && remaining_edges.size() > target_edges && collapse_count < max_collapses) {
         EdgeCollapse best_collapse = collapse_queue.top();
         collapse_queue.pop();
@@ -1520,35 +1513,27 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         // Update quadric for remaining vertex
         vertex_quadrics[v0] = vertex_quadrics[v0] + vertex_quadrics[v1];
         
-        // Use adjacency list for faster edge updates (PERFORMANCE OPTIMIZATION)
+        // Remove edges connected to v1 and add edges connected to v0
         std::set<Edge> edges_to_remove;
         std::set<Edge> edges_to_add;
         
-        // Process edges connected to v1 using adjacency list
-        for (size_t neighbor : vertex_adjacency[v1]) {
-            if (vertex_removed[neighbor]) continue;
-            
-            Edge edge_to_remove = Edge(v1, neighbor);
-            edges_to_remove.insert(edge_to_remove);
-            
-            // Remap edge to use v0 instead of v1
-            if (neighbor != v0) { // Avoid self-edges
-                edges_to_add.insert(Edge(v0, neighbor));
+        for (const Edge& edge : remaining_edges) {
+            if (edge.getV0() == v1 || edge.getV1() == v1) {
+                edges_to_remove.insert(edge);
+                // Remap edge to use v0 instead of v1
+                size_t other_vertex = (edge.getV0() == v1) ? edge.getV1() : edge.getV0();
+                if (other_vertex != v0) { // Avoid self-edges
+                    edges_to_add.insert(Edge(v0, other_vertex));
+                }
             }
         }
         
         // Apply edge updates
         for (const Edge& edge : edges_to_remove) {
             remaining_edges.erase(edge);
-            // Update adjacency lists
-            vertex_adjacency[edge.getV0()].erase(edge.getV1());
-            vertex_adjacency[edge.getV1()].erase(edge.getV0());
         }
         for (const Edge& edge : edges_to_add) {
             remaining_edges.insert(edge);
-            // Update adjacency lists
-            vertex_adjacency[edge.getV0()].insert(edge.getV1());
-            vertex_adjacency[edge.getV1()].insert(edge.getV0());
         }
         
         collapse_count++;
@@ -1577,70 +1562,89 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     std::cout << "Edge-based optimization: Reduced from " << initial_vertices.size() 
               << " to " << vertices.size() << " vertices" << std::endl;
     
-    // Step 7: Generate final surface triangulation using detria with pre-computed boundary polygon
-    std::vector<detria::PointD> detria_points;
-    std::vector<size_t> point_to_vertex_map;
+    // Step 7: Generate final surface triangulation preserving grid structure
+    // IMPORTANT: Use original grid-based triangulation with simplified vertices
+    // to maintain proper volume calculations (detria changes geometry too much)
+    triangles.clear();
+    surface_triangle_count = 0;
     
-    // Add all surviving vertices
+    // Use the existing vertex mapping from earlier in the function
+    vertices.clear();
+    new_vertex_index = 0;
+    
+    // Rebuild vertex list with only surviving vertices
     for (size_t i = 0; i < initial_vertices.size(); i++) {
         if (!vertex_removed[i]) {
-            detria_points.push_back({initial_vertices[i].x, initial_vertices[i].y});
-            point_to_vertex_map.push_back(vertex_remap[i]);
+            vertex_remap[i] = new_vertex_index++;
+            vertices.push_back(initial_vertices[i]);
         }
     }
     
-    std::cout << "Edge-based optimization: Using detria with " << detria_points.size() << " points" << std::endl;
+    std::cout << "Edge-based optimization: Reduced from " << initial_vertices.size() 
+              << " to " << vertices.size() << " vertices" << std::endl;
     
-    detria::Triangulation<detria::PointD> tri;
-    tri.setPoints(detria_points);
-    
-    // Create boundary outline using surviving boundary vertices
-    std::vector<uint32_t> outline_indices;
-    for (size_t boundary_vertex : boundary_polygon) {
-        if (!vertex_removed[boundary_vertex]) {
-            // Find this vertex in our point list
-            auto it = std::find(point_to_vertex_map.begin(), point_to_vertex_map.end(), vertex_remap[boundary_vertex]);
-            if (it != point_to_vertex_map.end()) {
-                outline_indices.push_back(static_cast<uint32_t>(std::distance(point_to_vertex_map.begin(), it)));
+    // Regenerate surface triangulation using original grid structure with surviving vertices
+    // Handle partial quads where some vertices were simplified away
+    for (int y = 0; y < terrain.height - 1; y++) {
+        for (int x = 0; x < terrain.width - 1; x++) {
+            size_t v00 = grid_to_vertex[y][x];
+            size_t v10 = grid_to_vertex[y][x + 1];
+            size_t v01 = grid_to_vertex[y + 1][x];
+            size_t v11 = grid_to_vertex[y + 1][x + 1];
+            
+            // Collect surviving vertices in this quad
+            std::vector<size_t> surviving_vertices;
+            std::vector<size_t> surviving_mapped;
+            
+            if (!vertex_removed[v00]) {
+                surviving_vertices.push_back(v00);
+                surviving_mapped.push_back(vertex_remap[v00]);
             }
-        }
-    }
-    
-    if (!outline_indices.empty()) {
-        tri.addOutline(outline_indices);
-        std::cout << "Edge-based optimization: Added boundary outline with " << outline_indices.size() << " vertices" << std::endl;
-    }
-    
-    // Perform triangulation
-    if (tri.triangulate(true)) {
-        triangles.clear();
-        surface_triangle_count = 0;
-        
-        tri.forEachTriangle([&](detria::Triangle<uint32_t> tri_data) {
-            if (tri_data.x < point_to_vertex_map.size() && 
-                tri_data.y < point_to_vertex_map.size() && 
-                tri_data.z < point_to_vertex_map.size()) {
-                
-                size_t v0 = point_to_vertex_map[tri_data.x];
-                size_t v1 = point_to_vertex_map[tri_data.y];
-                size_t v2 = point_to_vertex_map[tri_data.z];
-                
-                if (v0 < vertices.size() && v1 < vertices.size() && v2 < vertices.size()) {
-                    Triangle new_triangle(v0, v1, v2);
-                    new_triangle.computeNormal(vertices);
-                    triangles.push_back(new_triangle);
+            if (!vertex_removed[v10]) {
+                surviving_vertices.push_back(v10);
+                surviving_mapped.push_back(vertex_remap[v10]);
+            }
+            if (!vertex_removed[v01]) {
+                surviving_vertices.push_back(v01);
+                surviving_mapped.push_back(vertex_remap[v01]);
+            }
+            if (!vertex_removed[v11]) {
+                surviving_vertices.push_back(v11);
+                surviving_mapped.push_back(vertex_remap[v11]);
+            }
+            
+            // Create triangles based on how many vertices survived
+            if (surviving_mapped.size() >= 3) {
+                if (surviving_mapped.size() == 4) {
+                    // Full quad - create two triangles (preserving original structure)
+                    size_t mv00 = vertex_remap[v00];
+                    size_t mv10 = vertex_remap[v10]; 
+                    size_t mv01 = vertex_remap[v01];
+                    size_t mv11 = vertex_remap[v11];
+                    
+                    Triangle tri1(mv00, mv10, mv01);
+                    tri1.computeNormal(vertices);
+                    triangles.push_back(tri1);
+                    surface_triangle_count++;
+                    
+                    Triangle tri2(mv10, mv11, mv01);
+                    tri2.computeNormal(vertices);
+                    triangles.push_back(tri2);
+                    surface_triangle_count++;
+                } else if (surviving_mapped.size() == 3) {
+                    // Triangle from 3 vertices
+                    Triangle tri(surviving_mapped[0], surviving_mapped[1], surviving_mapped[2]);
+                    tri.computeNormal(vertices);
+                    triangles.push_back(tri);
                     surface_triangle_count++;
                 }
+                // If only 2 vertices survive, we can't make a triangle for this cell
             }
-        }, false);
-        
-        std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
-                  << " triangles using detria with boundary" << std::endl;
-    } else {
-        std::cout << "Edge-based optimization: Detria triangulation failed, falling back to original method" << std::endl;
-        triangulateVolumeWithGarlandHeckbert(terrain, params);
-        return;
+        }
     }
+    
+    std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
+              << " triangles using grid-based reconstruction" << std::endl;
     
     // Step 8: Generate volumetric elements (walls and bottom) using same approach as before
     // Find boundary edges for wall generation from the simplified surface
