@@ -17,7 +17,7 @@
  *
  * The surface mesh (what most people would think of as the terrain features)
  * is produced using adaptive mesh simplification based on geometric error
- * metrics:
+ * metrics (NOTE - still TODO as of this writing):
  *
  * Garland, M. and Heckbert, P (1995). "Fast Polygonal Approximation of
  * Terrains and Height Fields" Technical Report CMU-CS-95-181.
