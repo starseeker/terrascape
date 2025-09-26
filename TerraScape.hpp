@@ -548,9 +548,23 @@ class QuadricError {
 	
 	// Find optimal point that minimizes quadric (solve for minimum)
 	Point3D findOptimalPoint() const {
-	    // Try to solve the linear system Ax = b where A is the quadric matrix
-	    // For terrains, we can often use simpler heuristics
-	    return Point3D(0, 0, 0); // Will implement more sophisticated version
+		// Solve the linear system ∂(v^T Q v)/∂v = 0
+		// This gives us the system: [2*q0  2*q1  2*q2] [x]   [-2*q3]
+		//                           [2*q1  2*q4  2*q5] [y] = [-2*q6]
+		//                           [2*q2  2*q5  2*q7] [z]   [-2*q8]
+		//
+		// Simplified approach for terrain: use analytical solution when possible
+		// For full implementation, would need matrix inversion
+		
+		// For now, return zero point - will be overridden by candidate evaluation
+		return Point3D(0, 0, 0);
+	}
+	
+	// Check if this quadric represents a degenerate case
+	bool isDegenerate() const {
+		// Check if the quadric matrix has very small coefficients
+		double sum = std::abs(q[0]) + std::abs(q[4]) + std::abs(q[7]); // Diagonal elements
+		return sum < 1e-12;
 	}
 	
     private:
@@ -3110,24 +3124,41 @@ void TerrainMesh::buildEdgeCollapseQueue(const std::vector<Point3D>& vertices,
 Point3D TerrainMesh::computeOptimalCollapsePosition(const QuadricError& q1, const QuadricError& q2,
     const Point3D& v1, const Point3D& v2) {
     
-    // For simplicity, use midpoint for now
-    // A full implementation would solve the linear system to find the true minimum
-    Point3D midpoint((v1.x + v2.x) * 0.5, (v1.y + v2.y) * 0.5, (v1.z + v2.z) * 0.5);
-    
-    // Evaluate error at three candidate positions: v1, v2, midpoint
+    // Combine quadrics from both vertices
     QuadricError combined = q1 + q2;
-    double error1 = combined.evaluate(v1.x, v1.y, v1.z);
-    double error2 = combined.evaluate(v2.x, v2.y, v2.z);
-    double error_mid = combined.evaluate(midpoint.x, midpoint.y, midpoint.z);
     
-    // Return position with lowest error
-    if (error1 <= error2 && error1 <= error_mid) {
-        return v1;
-    } else if (error2 <= error_mid) {
-        return v2;
-    } else {
-        return midpoint;
+    // Try to find the optimal position by solving the linear system
+    // This is a simplified version - the full Garland-Heckbert method solves ∂(v^T Q v)/∂v = 0
+    // For now, we evaluate at several candidate positions and choose the best
+    
+    std::vector<Point3D> candidates = {v1, v2};
+    
+    // Add midpoint
+    candidates.push_back(Point3D((v1.x + v2.x) * 0.5, (v1.y + v2.y) * 0.5, (v1.z + v2.z) * 0.5));
+    
+    // Add interpolated points along the edge (more Garland-Heckbert compliant)
+    for (double t = 0.25; t <= 0.75; t += 0.25) {
+        Point3D interp(
+            v1.x + t * (v2.x - v1.x),
+            v1.y + t * (v2.y - v1.y), 
+            v1.z + t * (v2.z - v1.z)
+        );
+        candidates.push_back(interp);
     }
+    
+    // Find the candidate with minimum quadric error
+    double min_error = std::numeric_limits<double>::max();
+    Point3D best_position = v1;
+    
+    for (const Point3D& candidate : candidates) {
+        double error = combined.evaluate(candidate.x, candidate.y, candidate.z);
+        if (error < min_error) {
+            min_error = error;
+            best_position = candidate;
+        }
+    }
+    
+    return best_position;
 }
 
 // Helper method: Perform edge collapse and update data structures
