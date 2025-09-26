@@ -1562,89 +1562,70 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     std::cout << "Edge-based optimization: Reduced from " << initial_vertices.size() 
               << " to " << vertices.size() << " vertices" << std::endl;
     
-    // Step 7: Generate final surface triangulation preserving grid structure
-    // IMPORTANT: Use original grid-based triangulation with simplified vertices
-    // to maintain proper volume calculations (detria changes geometry too much)
-    triangles.clear();
-    surface_triangle_count = 0;
+    // Step 7: Generate final surface triangulation using detria with pre-computed boundary polygon
+    std::vector<detria::PointD> detria_points;
+    std::vector<size_t> point_to_vertex_map;
     
-    // Use the existing vertex mapping from earlier in the function
-    vertices.clear();
-    new_vertex_index = 0;
-    
-    // Rebuild vertex list with only surviving vertices
+    // Add all surviving vertices
     for (size_t i = 0; i < initial_vertices.size(); i++) {
         if (!vertex_removed[i]) {
-            vertex_remap[i] = new_vertex_index++;
-            vertices.push_back(initial_vertices[i]);
+            detria_points.push_back({initial_vertices[i].x, initial_vertices[i].y});
+            point_to_vertex_map.push_back(vertex_remap[i]);
         }
     }
     
-    std::cout << "Edge-based optimization: Reduced from " << initial_vertices.size() 
-              << " to " << vertices.size() << " vertices" << std::endl;
+    std::cout << "Edge-based optimization: Using detria with " << detria_points.size() << " points" << std::endl;
     
-    // Regenerate surface triangulation using original grid structure with surviving vertices
-    // Handle partial quads where some vertices were simplified away
-    for (int y = 0; y < terrain.height - 1; y++) {
-        for (int x = 0; x < terrain.width - 1; x++) {
-            size_t v00 = grid_to_vertex[y][x];
-            size_t v10 = grid_to_vertex[y][x + 1];
-            size_t v01 = grid_to_vertex[y + 1][x];
-            size_t v11 = grid_to_vertex[y + 1][x + 1];
-            
-            // Collect surviving vertices in this quad
-            std::vector<size_t> surviving_vertices;
-            std::vector<size_t> surviving_mapped;
-            
-            if (!vertex_removed[v00]) {
-                surviving_vertices.push_back(v00);
-                surviving_mapped.push_back(vertex_remap[v00]);
+    detria::Triangulation<detria::PointD> tri;
+    tri.setPoints(detria_points);
+    
+    // Create boundary outline using surviving boundary vertices
+    std::vector<uint32_t> outline_indices;
+    for (size_t boundary_vertex : boundary_polygon) {
+        if (!vertex_removed[boundary_vertex]) {
+            // Find this vertex in our point list
+            auto it = std::find(point_to_vertex_map.begin(), point_to_vertex_map.end(), vertex_remap[boundary_vertex]);
+            if (it != point_to_vertex_map.end()) {
+                outline_indices.push_back(static_cast<uint32_t>(std::distance(point_to_vertex_map.begin(), it)));
             }
-            if (!vertex_removed[v10]) {
-                surviving_vertices.push_back(v10);
-                surviving_mapped.push_back(vertex_remap[v10]);
-            }
-            if (!vertex_removed[v01]) {
-                surviving_vertices.push_back(v01);
-                surviving_mapped.push_back(vertex_remap[v01]);
-            }
-            if (!vertex_removed[v11]) {
-                surviving_vertices.push_back(v11);
-                surviving_mapped.push_back(vertex_remap[v11]);
-            }
-            
-            // Create triangles based on how many vertices survived
-            if (surviving_mapped.size() >= 3) {
-                if (surviving_mapped.size() == 4) {
-                    // Full quad - create two triangles (preserving original structure)
-                    size_t mv00 = vertex_remap[v00];
-                    size_t mv10 = vertex_remap[v10]; 
-                    size_t mv01 = vertex_remap[v01];
-                    size_t mv11 = vertex_remap[v11];
-                    
-                    Triangle tri1(mv00, mv10, mv01);
-                    tri1.computeNormal(vertices);
-                    triangles.push_back(tri1);
-                    surface_triangle_count++;
-                    
-                    Triangle tri2(mv10, mv11, mv01);
-                    tri2.computeNormal(vertices);
-                    triangles.push_back(tri2);
-                    surface_triangle_count++;
-                } else if (surviving_mapped.size() == 3) {
-                    // Triangle from 3 vertices
-                    Triangle tri(surviving_mapped[0], surviving_mapped[1], surviving_mapped[2]);
-                    tri.computeNormal(vertices);
-                    triangles.push_back(tri);
+        }
+    }
+    
+    if (!outline_indices.empty()) {
+        tri.addOutline(outline_indices);
+        std::cout << "Edge-based optimization: Added boundary outline with " << outline_indices.size() << " vertices" << std::endl;
+    }
+    
+    // Perform triangulation
+    if (tri.triangulate(true)) {
+        triangles.clear();
+        surface_triangle_count = 0;
+        
+        tri.forEachTriangle([&](detria::Triangle<uint32_t> tri_data) {
+            if (tri_data.x < point_to_vertex_map.size() && 
+                tri_data.y < point_to_vertex_map.size() && 
+                tri_data.z < point_to_vertex_map.size()) {
+                
+                size_t v0 = point_to_vertex_map[tri_data.x];
+                size_t v1 = point_to_vertex_map[tri_data.y];
+                size_t v2 = point_to_vertex_map[tri_data.z];
+                
+                if (v0 < vertices.size() && v1 < vertices.size() && v2 < vertices.size()) {
+                    Triangle new_triangle(v0, v1, v2);
+                    new_triangle.computeNormal(vertices);
+                    triangles.push_back(new_triangle);
                     surface_triangle_count++;
                 }
-                // If only 2 vertices survive, we can't make a triangle for this cell
             }
-        }
+        }, false);
+        
+        std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
+                  << " triangles using detria with boundary" << std::endl;
+    } else {
+        std::cout << "Edge-based optimization: Detria triangulation failed, falling back to original method" << std::endl;
+        triangulateVolumeWithGarlandHeckbert(terrain, params);
+        return;
     }
-    
-    std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
-              << " triangles using grid-based reconstruction" << std::endl;
     
     // Step 8: Generate volumetric elements (walls and bottom) using same approach as before
     // Find boundary edges for wall generation from the simplified surface
@@ -3281,44 +3262,18 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     }
 
     // Calculate volume using divergence theorem
-    double divergence_volume = 0.0;
+    stats.setVolume(0.0);
     for (const auto& triangle : triangles) {
 	const Point3D& p0 = vertices[triangle.vertices[0]];
 	const Point3D& p1 = vertices[triangle.vertices[1]];
 	const Point3D& p2 = vertices[triangle.vertices[2]];
 
-	// Volume contribution from this triangle using divergence theorem
-	divergence_volume += (p0.x * (p1.y * p2.z - p2.y * p1.z) +
+	// Volume contribution from this triangle
+	stats.setVolume(stats.getVolume() + (p0.x * (p1.y * p2.z - p2.y * p1.z) +
 		    p1.x * (p2.y * p0.z - p0.y * p2.z) +
-		    p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0;
+		    p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0);
     }
-    divergence_volume = std::abs(divergence_volume);
-    
-    // Calculate volume using traditional tetrahedron method for comparison
-    // For each triangle, create a tetrahedron from triangle to origin (0,0,0)
-    double tetrahedron_volume = 0.0;
-    for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
-        const Triangle& triangle = triangles[i];
-        const Point3D& p0 = vertices[triangle.vertices[0]];
-        const Point3D& p1 = vertices[triangle.vertices[1]];
-        const Point3D& p2 = vertices[triangle.vertices[2]];
-        
-        // Volume of tetrahedron formed by triangle and origin
-        // V = |det(p0, p1, p2)| / 6 where each p is a column vector
-        double det = p0.x * (p1.y * p2.z - p1.z * p2.y) -
-                     p0.y * (p1.x * p2.z - p1.z * p2.x) +
-                     p0.z * (p1.x * p2.y - p1.y * p2.x);
-        tetrahedron_volume += std::abs(det) / 6.0;
-    }
-    
-    // For debug comparison, print both methods
-    std::cout << "Volume calculation comparison:" << std::endl;
-    std::cout << "  Divergence theorem: " << divergence_volume << std::endl;
-    std::cout << "  Tetrahedron method: " << tetrahedron_volume << std::endl;
-    std::cout << "  Surface triangle count: " << surface_triangle_count << std::endl;
-    std::cout << "  Total triangle count: " << triangles.size() << std::endl;
-    
-    stats.setVolume(divergence_volume);
+    stats.setVolume(std::abs(stats.getVolume()));
 
     // Calculate expected volume from terrain data
     stats.setExpectedVolume(0.0);
