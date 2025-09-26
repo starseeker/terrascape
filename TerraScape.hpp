@@ -8,6 +8,58 @@
 /** @file TerraScape.hpp
  *
  * Terrain Triangle Mesh Generation
+ *
+ * This logic implements algorithms for converting elevation grids
+ * (Digital Elevation Models) into triangle meshes.  It focuses on
+ * producing manifold meshes defining closed volumes, while offering
+ * some ability to adjust the level of detail with which the surface
+ * terrain is represented in the output mesh.
+ *
+ * The surface mesh (what most people would think of as the terrain features)
+ * is produced using adaptive mesh simplification based on geometric error
+ * metrics:
+ *
+ * Garland, M., & Heckbert, P. S. (1997). "Surface simplification using quadric
+ * error metrics." Proceedings of SIGGRAPH '97, 209-216.
+ *
+ * Lindstrom, P., & Turk, G. (1998). "Fast and memory efficient polygonal simplification."
+ * Proceedings of the IEEE Conference on Visualization (VIS '98), 279-286.
+ *
+ * The "walls" are basically handled as cell edge extrusions from the ground
+ * plane to their corresponding surface mesh cell cell.  Generally these are
+ * not long and narrow enough to be numerically problematic, so we use the
+ * simple approach to construct these triangles. (In theory that CAN change if
+ * the terrain height gets tall enough relative to the cell size, so we may
+ * someday have to revisit the issue if problems arise.)
+ *
+ * The bottom face - i.e. the face opposite the surface mesh generated from the
+ * height data - is another matter. A mesh can be produced for this face
+ * trivially by adding two triangles for every cell, but that approach produces
+ * an enormous number of triangles which contribute nothing to the shape of the
+ * overall volume.  Moreover, the grid aligned, linear, coplanar nature of the
+ * mesh makes it tricky to use some of the standard computer graphics
+ * decimation techniques successfully while maintaining a manifold topology.
+ * Going the other way - using only the boundary polylines and trying to
+ * triangulate - has its own problems.  The result if done naively tends to be
+ * super long and super thin triangles for much of the mesh, with a few
+ * extremely large triangles to close out the patterns.  Long thin triangles
+ * pose their own analytic problems, so we want to avoid that as well.
+ *
+ * In the end, we went with the detria (https://github.com/Kimbatt/detria)
+ * constrained Delaunay triangulation implementation for its robustness and
+ * support of Steiner points.  We sample the interior of the bottom face
+ * polygons to provide interior Steiner points that improve the overall quality
+ * of the triangulation - it adds a few more triangles and vertices to the mesh
+ * size, but the mesh quality requires it and typically the surface mesh
+ * triangle count will hugely dominate the triangle count anyway.  If the
+ * detria triangulation *should* fail for some reason, we do fall back to the
+ * naive bottom face two-triangles-per-cell mesh approach rather than failing
+ * to produce an output - that, however, tends to double the mesh size.
+ *
+ * Chew, L. P. (1989). "Constrained Delaunay triangulations." Algorithmica,
+ * 4(1), 97-108.
+ * Ruppert, J. (1995). "A Delaunay refinement algorithm for quality 2-dimensional
+ * mesh generation." Journal of Algorithms, 18(3), 548-585.
  */
 
 #pragma once
@@ -1453,7 +1505,7 @@ TerrainData::processGuideLines(const std::vector<std::pair<double, double>>& edg
 
 	    // Use dynamic step count based on probability vector size
 	    int num_steps = static_cast<int>(step_probabilities.size());
-	    
+
 	    for (int step = 1; step <= num_steps; ++step) {
 		// Apply probability selection
 		double probability = step_probabilities[step - 1];
@@ -1461,10 +1513,9 @@ TerrainData::processGuideLines(const std::vector<std::pair<double, double>>& edg
 
 		// Calculate gradient step distance - shorter near edges, longer toward center
 		// Use geometric progression: each step is further than the previous
-		double step_ratio = static_cast<double>(step) / static_cast<double>(num_steps + 1);
 		double progression_factor = 0.6; // Controls how much the step distances grow
 		double base_distance = line_length / (num_steps + 1);
-		
+
 		// Calculate geometric progression distance
 		double geometric_sum = (1.0 - std::pow(1.0 + progression_factor, num_steps)) / (-progression_factor);
 		double normalized_position = 0.0;
@@ -1472,13 +1523,13 @@ TerrainData::processGuideLines(const std::vector<std::pair<double, double>>& edg
 		    normalized_position += std::pow(1.0 + progression_factor, s - 1);
 		}
 		normalized_position /= geometric_sum;
-		
+
 		// Apply step divisor and add controlled randomness (±15% variation)
 		double step_distance = (normalized_position * line_length) / step_divisor;
 		double randomness_factor = 0.15; // ±15% randomness
 		double random_offset = (next_random() - 0.5) * 2.0 * randomness_factor;
 		step_distance *= (1.0 + random_offset);
-		
+
 		// Ensure we don't go past the center or too close to the edge
 		step_distance = std::max(step_distance, base_distance * 0.5);
 		step_distance = std::min(step_distance, line_length * 0.95);
@@ -1600,7 +1651,7 @@ TerrainData::generateSteinerPoints (
     // Process boundary guide lines with enhanced coverage
     // Use smaller sample step to increase active guideline density and reduce long thin triangles
     size_t boundary_sample_step = std::max(1, (int)(boundary.size() / 150)); // Increased density
-    
+
     // Enhanced boundary probabilities with more steps for better gradient coverage
     // Higher probability for steps closer to edges, decreasing toward center
     std::vector<double> boundary_probabilities = {0.95, 0.85, 0.65, 0.45, 0.25, 0.1}; // 6 steps
@@ -1612,7 +1663,7 @@ TerrainData::generateSteinerPoints (
     for (const auto& hole : holes) {
 	// Increase hole guideline density to prevent thin triangles near holes
 	size_t hole_sample_step = std::max(1, (int)(hole.size() / 75)); // Increased density
-	
+
 	// Enhanced hole probabilities with more aggressive sampling near edges
 	// Holes need more intensive coverage to avoid problematic triangles
 	std::vector<double> hole_probabilities = {1.0, 0.8, 0.5, 0.2, 0.05}; // 5 steps
