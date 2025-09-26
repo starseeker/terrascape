@@ -16,11 +16,11 @@
  * terrain is represented in the output mesh.
  *
  * The surface mesh (what most people would think of as the terrain features)
- * is produced using adaptive mesh simplification based on geometric error
- * metrics (NOTE - still TODO as of this writing):
- *
- * Garland, M. and Heckbert, P (1995). "Fast Polygonal Approximation of
- * Terrains and Height Fields" Technical Report CMU-CS-95-181.
+ * is produced using a feature-driven, grid-constrained sampling that retains
+ * boundary points and promotes high-slope / high-curvature / high-roughness
+ * cells until a minimum vertex density is satisfied.  There is no vertex
+ * relocation or snapping to features - the method is quite basic - so the
+ * underlying grid structure will be visually apparent.
  *
  * The "walls" are basically handled as cell edge extrusions from the ground
  * plane to their corresponding surface mesh cell cell.  Generally these are
