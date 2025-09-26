@@ -1481,13 +1481,6 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     size_t max_collapses = 50000;
     std::set<Edge> remaining_edges = surface_edges; // Track remaining edges
     
-    // Build vertex adjacency for faster edge lookup (PERFORMANCE OPTIMIZATION)
-    std::unordered_map<size_t, std::unordered_set<size_t>> vertex_adjacency;
-    for (const Edge& edge : remaining_edges) {
-        vertex_adjacency[edge.getV0()].insert(edge.getV1());
-        vertex_adjacency[edge.getV1()].insert(edge.getV0());
-    }
-    
     while (!collapse_queue.empty() && remaining_edges.size() > target_edges && collapse_count < max_collapses) {
         EdgeCollapse best_collapse = collapse_queue.top();
         collapse_queue.pop();
@@ -1520,35 +1513,27 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         // Update quadric for remaining vertex
         vertex_quadrics[v0] = vertex_quadrics[v0] + vertex_quadrics[v1];
         
-        // Use adjacency list for faster edge updates (PERFORMANCE OPTIMIZATION)
+        // Remove edges connected to v1 and add edges connected to v0
         std::set<Edge> edges_to_remove;
         std::set<Edge> edges_to_add;
         
-        // Process edges connected to v1 using adjacency list
-        for (size_t neighbor : vertex_adjacency[v1]) {
-            if (vertex_removed[neighbor]) continue;
-            
-            Edge edge_to_remove = Edge(v1, neighbor);
-            edges_to_remove.insert(edge_to_remove);
-            
-            // Remap edge to use v0 instead of v1
-            if (neighbor != v0) { // Avoid self-edges
-                edges_to_add.insert(Edge(v0, neighbor));
+        for (const Edge& edge : remaining_edges) {
+            if (edge.getV0() == v1 || edge.getV1() == v1) {
+                edges_to_remove.insert(edge);
+                // Remap edge to use v0 instead of v1
+                size_t other_vertex = (edge.getV0() == v1) ? edge.getV1() : edge.getV0();
+                if (other_vertex != v0) { // Avoid self-edges
+                    edges_to_add.insert(Edge(v0, other_vertex));
+                }
             }
         }
         
         // Apply edge updates
         for (const Edge& edge : edges_to_remove) {
             remaining_edges.erase(edge);
-            // Update adjacency lists
-            vertex_adjacency[edge.getV0()].erase(edge.getV1());
-            vertex_adjacency[edge.getV1()].erase(edge.getV0());
         }
         for (const Edge& edge : edges_to_add) {
             remaining_edges.insert(edge);
-            // Update adjacency lists
-            vertex_adjacency[edge.getV0()].insert(edge.getV1());
-            vertex_adjacency[edge.getV1()].insert(edge.getV0());
         }
         
         collapse_count++;
