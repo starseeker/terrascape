@@ -2071,35 +2071,15 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
     // First generate optimized surface using Garland-Heckbert
     generateGarlandHeckbertSurface(terrain, params);
     
-    // Store surface vertex count for later reference
+    // Store surface vertex and triangle counts
     size_t surface_vertex_count = vertices.size();
+    size_t surface_triangle_count = triangles.size();
     
-    // Now add bottom vertices and build walls
-    // Create mapping from surface vertices back to grid coordinates for walls
-    std::vector<std::pair<int, int>> vertex_to_grid(surface_vertex_count);
+    // Extract boundary polygons directly from the simplified surface mesh
+    // No need to map back to grid - the surface mesh contains all the topology we need
+    std::cout << "Extracting boundary polygons directly from simplified surface mesh" << std::endl;
     
-    // Find grid coordinates for each surface vertex
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        Point3D& vertex = vertices[v];
-        int grid_x = (int)std::round((vertex.x - terrain.origin.x) / terrain.cell_size);
-        int grid_y = (int)std::round((terrain.origin.y - vertex.y) / terrain.cell_size);
-        
-        // Clamp to valid range
-        grid_x = std::max(0, std::min(grid_x, terrain.width - 1));
-        grid_y = std::max(0, std::min(grid_y, terrain.height - 1));
-        
-        vertex_to_grid[v] = {grid_x, grid_y};
-    }
-    
-    // Add bottom vertices (same x,y coordinates as surface, but z=0)
-    std::vector<size_t> bottom_vertex_map(surface_vertex_count);
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        Point3D surface_vertex = vertices[v];
-        Point3D bottom_vertex(surface_vertex.x, surface_vertex.y, 0.0);
-        bottom_vertex_map[v] = addVertex(bottom_vertex);
-    }
-    
-    // Build boundary edges for wall generation
+    // Build boundary edges for wall generation and bottom face extraction
     std::set<Edge> boundary_edges;
     std::map<Edge, std::vector<size_t>> edge_triangles;
     
@@ -2121,6 +2101,16 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         }
     }
     
+    std::cout << "Found " << boundary_edges.size() << " boundary edges in simplified surface" << std::endl;
+    
+    // Add bottom vertices (project surface vertices to z=0 plane)
+    std::vector<size_t> bottom_vertex_map(surface_vertex_count);
+    for (size_t v = 0; v < surface_vertex_count; v++) {
+        Point3D surface_vertex = vertices[v];
+        Point3D bottom_vertex(surface_vertex.x, surface_vertex.y, 0.0);
+        bottom_vertex_map[v] = addVertex(bottom_vertex);
+    }
+    
     // Generate walls for boundary edges
     for (const Edge& edge : boundary_edges) {
         size_t v0 = edge.getV0();
@@ -2133,87 +2123,34 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         addTriangle(v1, b0, b1);
     }
     
-    // For Garland-Heckbert simplified surfaces, triangulate bottom face using boundary vertices
-    // Extract and properly order boundary vertices for detria triangulation
-    std::cout << "Triangulating bottom face using simplified surface boundary (no artificial holes)" << std::endl;
-    
-    // Collect all boundary vertices from surface mesh
+    // Extract boundary polygons for bottom face triangulation
+    // Collect boundary vertices
     std::set<size_t> boundary_vertex_set;
     for (const Edge& edge : boundary_edges) {
         boundary_vertex_set.insert(edge.getV0());
         boundary_vertex_set.insert(edge.getV1());
     }
     
-    std::cout << "Found " << boundary_vertex_set.size() << " boundary vertices for bottom triangulation" << std::endl;
+    std::cout << "Extracted " << boundary_vertex_set.size() << " boundary vertices from simplified surface" << std::endl;
     
-    // Use detria for high-quality Delaunay triangulation instead of simple fan triangulation
+    // Triangulate bottom face using boundary vertices (no artificial holes!)
     if (boundary_vertex_set.size() >= 3) {
         try {
-            // Create ordered boundary by tracing connected edges
-            std::vector<size_t> ordered_boundary;
-            std::set<size_t> used_vertices;
-            
-            // Start with any boundary vertex
-            size_t current_vertex = *boundary_vertex_set.begin();
-            ordered_boundary.push_back(current_vertex);
-            used_vertices.insert(current_vertex);
-            
-            // Trace the boundary by following connected edges
-            while (used_vertices.size() < boundary_vertex_set.size()) {
-                bool found_next = false;
-                for (const Edge& edge : boundary_edges) {
-                    size_t v0 = edge.getV0();
-                    size_t v1 = edge.getV1();
-                    
-                    if (v0 == current_vertex && used_vertices.find(v1) == used_vertices.end()) {
-                        current_vertex = v1;
-                        ordered_boundary.push_back(current_vertex);
-                        used_vertices.insert(current_vertex);
-                        found_next = true;
-                        break;
-                    } else if (v1 == current_vertex && used_vertices.find(v0) == used_vertices.end()) {
-                        current_vertex = v0;
-                        ordered_boundary.push_back(current_vertex);
-                        used_vertices.insert(current_vertex);
-                        found_next = true;
-                        break;
-                    }
-                }
-                
-                if (!found_next) {
-                    // If we can't trace a complete boundary, fall back to convex hull approach
-                    std::cout << "Warning: Could not trace complete boundary, using convex hull approach" << std::endl;
-                    break;
-                }
-            }
-            
-            // Set up detria triangulation
+            // Set up detria triangulation with boundary vertices only
             detria::Triangulation tri;
             std::vector<detria::PointD> boundary_points;
             std::vector<size_t> boundary_vertex_indices;
             
-            // Use ordered boundary if we got a complete trace, otherwise use convex hull
-            if (used_vertices.size() == boundary_vertex_set.size()) {
-                // Complete boundary - use ordered vertices
-                for (size_t v : ordered_boundary) {
-                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
-                    boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
-                    boundary_vertex_indices.push_back(bottom_vertex_map[v]);
-                }
-                std::cout << "Using complete ordered boundary with " << ordered_boundary.size() << " vertices" << std::endl;
-            } else {
-                // Fall back to all boundary vertices (detria will compute convex hull)
-                for (size_t v : boundary_vertex_set) {
-                    Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
-                    boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
-                    boundary_vertex_indices.push_back(bottom_vertex_map[v]);
-                }
-                std::cout << "Using convex hull approach with " << boundary_vertex_set.size() << " vertices" << std::endl;
+            // Add boundary vertices to detria
+            for (size_t v : boundary_vertex_set) {
+                Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+                boundary_points.push_back({bottom_vertex.x, bottom_vertex.y});
+                boundary_vertex_indices.push_back(bottom_vertex_map[v]);
             }
             
             tri.setPoints(boundary_points);
             
-            // Create outline
+            // Create outline (detria will compute convex hull for us)
             std::vector<uint32_t> outline_indices;
             for (size_t i = 0; i < boundary_points.size(); ++i) {
                 outline_indices.push_back(static_cast<uint32_t>(i));
@@ -2232,12 +2169,11 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
                                boundary_vertex_indices[triangle.y]);
                     triangle_count++;
                 });
-                std::cout << "Created detria Delaunay triangulation with " << triangle_count 
-                          << " triangles (improved quality vs fan)" << std::endl;
+                std::cout << "Created detria triangulation of bottom face with " << triangle_count 
+                          << " triangles (no artificial holes)" << std::endl;
             } else {
-                std::cout << "Warning: Detria triangulation failed, falling back to fan triangulation" << std::endl;
-                // Fall back to fan triangulation
-                // Calculate center point of all boundary vertices for fan triangulation
+                std::cout << "Detria triangulation failed, using fan triangulation fallback" << std::endl;
+                // Fallback to fan triangulation
                 double center_x = 0.0, center_y = 0.0;
                 for (size_t v : boundary_vertex_set) {
                     Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
@@ -2247,26 +2183,21 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
                 center_x /= boundary_vertex_set.size();
                 center_y /= boundary_vertex_set.size();
                 
-                // Add center vertex for fan triangulation
                 size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
                 
-                // Create fan triangulation from center to boundary edges
                 for (const Edge& edge : boundary_edges) {
                     size_t b0 = bottom_vertex_map[edge.getV0()];
                     size_t b1 = bottom_vertex_map[edge.getV1()];
-                    
-                    // Add triangle from center to boundary edge (CCW for bottom face)
                     addTriangle(center_vertex, b1, b0);
                 }
                 
-                std::cout << "Created fallback fan triangulation with " << boundary_edges.size() 
-                          << " triangles from center point" << std::endl;
+                std::cout << "Created fan triangulation fallback with " << boundary_edges.size() 
+                          << " triangles" << std::endl;
             }
             
         } catch (...) {
-            std::cout << "Warning: Detria triangulation failed with exception, falling back to fan triangulation" << std::endl;
-            // Fall back to fan triangulation
-            // Calculate center point of all boundary vertices for fan triangulation
+            std::cout << "Detria triangulation failed with exception, using fan triangulation fallback" << std::endl;
+            // Fallback to fan triangulation
             double center_x = 0.0, center_y = 0.0;
             for (size_t v : boundary_vertex_set) {
                 Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
@@ -2276,20 +2207,16 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
             center_x /= boundary_vertex_set.size();
             center_y /= boundary_vertex_set.size();
             
-            // Add center vertex for fan triangulation
             size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
             
-            // Create fan triangulation from center to boundary edges
             for (const Edge& edge : boundary_edges) {
                 size_t b0 = bottom_vertex_map[edge.getV0()];
                 size_t b1 = bottom_vertex_map[edge.getV1()];
-                
-                // Add triangle from center to boundary edge (CCW for bottom face)
                 addTriangle(center_vertex, b1, b0);
             }
             
-            std::cout << "Created fallback fan triangulation with " << boundary_edges.size() 
-                      << " triangles from center point" << std::endl;
+            std::cout << "Created fan triangulation fallback with " << boundary_edges.size() 
+                      << " triangles" << std::endl;
         }
     }
 }
@@ -2380,18 +2307,44 @@ void TerrainMesh::buildEdgeCollapseQueue(const std::vector<Point3D>& vertices,
     std::priority_queue<EdgeCollapse>& collapse_queue) {
     
     std::set<Edge> edges;
+    std::map<Edge, int> edge_count;
     
-    // Collect all edges from triangles
+    // Collect all edges from triangles and count their usage
     for (const Triangle& triangle : triangles) {
-        edges.insert(Edge(triangle.vertices[0], triangle.vertices[1]));
-        edges.insert(Edge(triangle.vertices[1], triangle.vertices[2]));
-        edges.insert(Edge(triangle.vertices[2], triangle.vertices[0]));
+        Edge e1(triangle.vertices[0], triangle.vertices[1]);
+        Edge e2(triangle.vertices[1], triangle.vertices[2]);
+        Edge e3(triangle.vertices[2], triangle.vertices[0]);
+        
+        edges.insert(e1);
+        edges.insert(e2);
+        edges.insert(e3);
+        
+        edge_count[e1]++;
+        edge_count[e2]++;
+        edge_count[e3]++;
     }
+    
+    // Identify boundary vertices (vertices on edges used by only one triangle)
+    std::set<size_t> boundary_vertices;
+    for (const auto& pair : edge_count) {
+        if (pair.second == 1) {  // Boundary edge
+            const Edge& edge = pair.first;
+            boundary_vertices.insert(edge.getV0());
+            boundary_vertices.insert(edge.getV1());
+        }
+    }
+    
+    std::cout << "Protected " << boundary_vertices.size() << " boundary vertices from edge collapse" << std::endl;
     
     // For each edge, compute collapse cost and optimal position
     for (const Edge& edge : edges) {
         size_t v0 = edge.getV0();
         size_t v1 = edge.getV1();
+        
+        // Don't collapse edges involving boundary vertices - keep boundary fixed
+        if (boundary_vertices.count(v0) || boundary_vertices.count(v1)) {
+            continue;
+        }
         
         const QuadricError& q0 = vertex_quadrics[v0];
         const QuadricError& q1 = vertex_quadrics[v1];
