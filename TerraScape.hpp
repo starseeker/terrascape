@@ -19,11 +19,8 @@
  * is produced using adaptive mesh simplification based on geometric error
  * metrics:
  *
- * Garland, M., & Heckbert, P. S. (1997). "Surface simplification using quadric
- * error metrics." Proceedings of SIGGRAPH '97, 209-216.
- *
- * Lindstrom, P., & Turk, G. (1998). "Fast and memory efficient polygonal simplification."
- * Proceedings of the IEEE Conference on Visualization (VIS '98), 279-286.
+ * Garland, M. and Heckbert, P (1995). "Fast Polygonal Approximation of
+ * Terrains and Height Fields" Technical Report CMU-CS-95-181.
  *
  * The "walls" are basically handled as cell edge extrusions from the ground
  * plane to their corresponding surface mesh cell cell.  Generally these are
@@ -58,8 +55,6 @@
  *
  * Chew, L. P. (1989). "Constrained Delaunay triangulations." Algorithmica,
  * 4(1), 97-108.
- * Ruppert, J. (1995). "A Delaunay refinement algorithm for quality 2-dimensional
- * mesh generation." Journal of Algorithms, 18(3), 548-585.
  */
 
 #pragma once
