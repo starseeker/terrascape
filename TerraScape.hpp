@@ -366,6 +366,7 @@ class TerrainMesh {
 		std::vector<Triangle>& triangles,
 		std::vector<QuadricError>& vertex_quadrics,
 		std::vector<bool>& vertex_removed,
+		std::vector<size_t>& vertex_collapse_target,
 		std::priority_queue<EdgeCollapse>& collapse_queue);
 	void rebuildAffectedRegion(size_t collapsed_vertex, size_t remaining_vertex,
 		const std::vector<Point3D>& vertices,
@@ -1967,6 +1968,12 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     size_t current_triangles = original_triangles;
     
     std::vector<bool> vertex_removed(surface_vertices.size(), false);
+    std::vector<size_t> vertex_collapse_target(surface_vertices.size());
+    
+    // Initialize collapse mapping - each vertex initially maps to itself
+    for (size_t i = 0; i < surface_vertices.size(); i++) {
+        vertex_collapse_target[i] = i;
+    }
     
     std::cout << "Garland-Heckbert: Starting with " << original_triangles << " triangles, target: " << target_triangles << std::endl;
     
@@ -1985,7 +1992,7 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
         // Perform edge collapse and update data structures
         size_t triangles_before = current_triangles;
         if (performEdgeCollapse(best_collapse, surface_vertices, surface_triangles, 
-                               vertex_quadrics, vertex_removed, collapse_queue)) {
+                               vertex_quadrics, vertex_removed, vertex_collapse_target, collapse_queue)) {
             collapse_count++;
             
             // Estimate triangle count reduction (typically 2 triangles removed per edge collapse)
@@ -2006,21 +2013,32 @@ void TerrainMesh::generateGarlandHeckbertSurface(const TerrainData& terrain, con
     
     std::cout << "Garland-Heckbert: Completed " << collapse_count << " edge collapses" << std::endl;
     
-    // Step 5: Apply edge collapses and compact the surface mesh
-    // First, update all triangles to map collapsed vertices
+    // Step 5: Apply edge collapses by updating triangle connectivity
+    // Create a function to resolve the final target of a vertex after all collapses
+    auto getFinalTarget = [&vertex_collapse_target](size_t vertex) -> size_t {
+        size_t target = vertex;
+        std::set<size_t> visited;  // Prevent infinite loops
+        
+        while (vertex_collapse_target[target] != target && visited.find(target) == visited.end()) {
+            visited.insert(target);
+            target = vertex_collapse_target[target];
+        }
+        return target;
+    };
+    
+    // Update all triangles to use final targets for collapsed vertices
     for (Triangle& triangle : surface_triangles) {
         for (int i = 0; i < 3; i++) {
-            size_t& v = triangle.vertices[i];
-            // If this vertex was removed, find what it was collapsed to
-            // (In our simplified approach, v1 is always collapsed to v0)
+            triangle.vertices[i] = getFinalTarget(triangle.vertices[i]);
         }
+        // Recompute triangle normal after vertex updates
+        triangle.computeNormal(surface_vertices);
     }
     
     // Remove degenerate triangles (those with duplicate vertices after collapse)
     auto new_end = std::remove_if(surface_triangles.begin(), surface_triangles.end(),
-        [&vertex_removed](const Triangle& t) {
-            return vertex_removed[t.vertices[0]] || vertex_removed[t.vertices[1]] || vertex_removed[t.vertices[2]] ||
-                   t.vertices[0] == t.vertices[1] || t.vertices[1] == t.vertices[2] || t.vertices[2] == t.vertices[0];
+        [](const Triangle& t) {
+            return t.vertices[0] == t.vertices[1] || t.vertices[1] == t.vertices[2] || t.vertices[2] == t.vertices[0];
         });
     surface_triangles.erase(new_end, surface_triangles.end());
     
@@ -2391,6 +2409,7 @@ bool TerrainMesh::performEdgeCollapse(const EdgeCollapse& collapse,
     std::vector<Triangle>& triangles,
     std::vector<QuadricError>& vertex_quadrics,
     std::vector<bool>& vertex_removed,
+    std::vector<size_t>& vertex_collapse_target,
     std::priority_queue<EdgeCollapse>& collapse_queue) {
     
     size_t v0 = collapse.edge.getV0();
@@ -2400,11 +2419,11 @@ bool TerrainMesh::performEdgeCollapse(const EdgeCollapse& collapse,
     vertices[v0] = collapse.new_position;
     vertex_removed[v1] = true;
     
+    // Update collapse mapping: v1 now maps to v0
+    vertex_collapse_target[v1] = v0;
+    
     // Update quadric for remaining vertex
     vertex_quadrics[v0] = vertex_quadrics[v0] + vertex_quadrics[v1];
-    
-    // Simple approach: just mark vertex as removed and handle degenerate triangles in final compaction
-    // This is much more efficient than updating all triangles immediately
     
     return true;
 }
