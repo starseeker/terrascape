@@ -36,6 +36,8 @@ int main(int argc, char* argv[])
         ("surface-only", "Generate surface-only mesh (no volume)")
         ("components", "Handle terrain islands and holes separately (default)")
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
+        ("planar-patches", "Use new coplanar patch-based surface mesh approach")
+        ("coplanar-tolerance", "Tolerance for coplanar patch detection", cxxopts::value<double>()->default_value("0.01"))
         ("brlcad-test", "Test BRL-CAD DSP integration")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
@@ -55,9 +57,11 @@ int main(int argc, char* argv[])
     bool surface_only = result.count("surface-only") > 0;
     bool use_components = result.count("components") > 0;
     bool use_legacy = result.count("legacy") > 0;
+    bool use_planar_patches = result.count("planar-patches") > 0;
     bool brlcad_test = result.count("brlcad-test") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
+    double coplanar_tolerance = result.count("coplanar-tolerance") ? result["coplanar-tolerance"].as<double>() : 0.01;
     
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
     std::cout << "Input: " << input_file << std::endl;
@@ -133,6 +137,9 @@ int main(int argc, char* argv[])
         std::cout << "Mode: Surface-only (Terra/Scape)" << std::endl;
     } else if (use_simplified) {
         std::cout << "Mode: Simplified (Terra/Scape)" << std::endl;
+    } else if (use_planar_patches) {
+        std::cout << "Mode: Planar patches (optimized surface mesh)" << std::endl;
+        std::cout << "Coplanar tolerance: " << coplanar_tolerance << std::endl;
     } else {
         std::cout << "Mode: Dense (with component analysis)" << std::endl;
     }
@@ -172,6 +179,8 @@ int main(int argc, char* argv[])
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
             mesh.triangulateVolumeSimplified(terrain, params);
+        } else if (use_planar_patches) {
+            mesh.triangulateVolumeWithPlanarPatches(terrain, coplanar_tolerance);
         } else {
             // Default to component-based approach
             mesh.triangulateVolume(terrain);
