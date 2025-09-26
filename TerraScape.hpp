@@ -1561,51 +1561,6 @@ TerrainData::generateSteinerPoints (
     double min_y = origin.y - max_y_in * cell_size;  // Corrected for y-flip
     double max_y = origin.y - min_y_in * cell_size;  // Corrected for y-flip
 
-    // Debug output to understand the issue
-    std::cout << "Steiner point generation: boundary size=" << boundary.size() 
-              << ", holes count=" << holes.size() << std::endl;
-    
-    // Filter out invalid/degenerate holes to prevent infinite loops
-    std::vector<std::vector<std::pair<double, double>>> valid_holes;
-    size_t total_hole_edges = 0;
-    for (const auto& hole : holes) {
-        // Skip holes that are too small or have degenerate edges
-        if (hole.size() >= 3) {
-            bool has_degenerate = false;
-            for (size_t i = 0; i < hole.size(); ++i) {
-                size_t next = (i + 1) % hole.size();
-                double dx = hole[next].first - hole[i].first;
-                double dy = hole[next].second - hole[i].second;
-                double len_sq = dx * dx + dy * dy;
-                if (len_sq < 1e-10) {  // Very small edge, likely degenerate
-                    has_degenerate = true;
-                    break;
-                }
-            }
-            if (!has_degenerate) {
-                valid_holes.push_back(hole);
-                total_hole_edges += hole.size();
-            }
-        }
-    }
-    
-    // Limit the number of holes processed to prevent performance issues
-    const size_t MAX_HOLES = 50;  // Reasonable limit for Steiner point generation
-    const size_t MAX_TOTAL_EDGES = 1000;  // Limit total complexity
-    if (valid_holes.size() > MAX_HOLES || total_hole_edges > MAX_TOTAL_EDGES) {
-        std::cout << "WARNING: Too many holes (" << valid_holes.size() << " holes, " 
-                  << total_hole_edges << " edges). Limiting to " << MAX_HOLES 
-                  << " largest holes for performance." << std::endl;
-        
-        // Sort holes by size (descending) and keep only the largest ones
-        std::sort(valid_holes.begin(), valid_holes.end(), 
-                  [](const auto& a, const auto& b) { return a.size() > b.size(); });
-        if (valid_holes.size() > MAX_HOLES) {
-            valid_holes.resize(MAX_HOLES);
-        }
-    }
-    
-    std::cout << "Processing " << valid_holes.size() << " valid holes" << std::endl;
 
     std::vector<std::pair<double, double>> steiner_points;
 
@@ -1622,7 +1577,7 @@ TerrainData::generateSteinerPoints (
     }
 
     // Average all hole points
-    for (const auto& hole : valid_holes) {
+    for (const auto& hole : holes) {
 	for (const auto& point : hole) {
 	    center_x += point.first;
 	    center_y += point.second;
@@ -1667,7 +1622,7 @@ TerrainData::generateSteinerPoints (
 	}
 
 	// Distance to holes
-	for (const auto& hole : valid_holes) {
+	for (const auto& hole : holes) {
 	    for (size_t i = 0; i < hole.size(); ++i) {
 		size_t next = (i + 1) % hole.size();
 		double dx1 = hole[next].first - hole[i].first;
@@ -1709,7 +1664,7 @@ TerrainData::generateSteinerPoints (
 	    distanceToEdges, steiner_points, boundary_sample_step);
 
     // Process hole guide lines with enhanced coverage
-    for (const auto& hole : valid_holes) {
+    for (const auto& hole : holes) {
 	// Increase hole guideline density to prevent thin triangles near holes
 	size_t hole_sample_step = std::max(1, (int)(hole.size() / 75)); // Increased density
 
@@ -2178,16 +2133,46 @@ void TerrainMesh::triangulateVolumeWithGarlandHeckbert(const TerrainData& terrai
         addTriangle(v1, b0, b1);
     }
     
-    // Generate bottom face using existing detria-based approach
-    std::vector<std::vector<size_t>> bottom_vertices(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
+    // For Garland-Heckbert simplified surfaces, triangulate bottom face using boundary vertices
+    // instead of grid-based approach that creates artificial holes
+    std::cout << "Triangulating bottom face using simplified surface boundary (no artificial holes)" << std::endl;
     
-    // Map surface vertices to grid for bottom face triangulation
-    for (size_t v = 0; v < surface_vertex_count; v++) {
-        auto [grid_x, grid_y] = vertex_to_grid[v];
-        bottom_vertices[grid_y][grid_x] = bottom_vertex_map[v];
+    // Collect all boundary vertices from surface mesh
+    std::set<size_t> boundary_vertex_set;
+    for (const Edge& edge : boundary_edges) {
+        boundary_vertex_set.insert(edge.getV0());
+        boundary_vertex_set.insert(edge.getV1());
     }
     
-    triangulateBottomFaceWithDetria(bottom_vertices, terrain, nullptr);
+    std::cout << "Found " << boundary_vertex_set.size() << " boundary vertices for bottom triangulation" << std::endl;
+    
+    // Simple approach: Create triangles from boundary vertices to a central point
+    if (boundary_vertex_set.size() >= 3) {
+        // Calculate center point of all boundary vertices for fan triangulation
+        double center_x = 0.0, center_y = 0.0;
+        for (size_t v : boundary_vertex_set) {
+            Point3D bottom_vertex = vertices[bottom_vertex_map[v]];
+            center_x += bottom_vertex.x;
+            center_y += bottom_vertex.y;
+        }
+        center_x /= boundary_vertex_set.size();
+        center_y /= boundary_vertex_set.size();
+        
+        // Add center vertex for fan triangulation
+        size_t center_vertex = addVertex(Point3D(center_x, center_y, 0.0));
+        
+        // Create fan triangulation from center to boundary edges
+        for (const Edge& edge : boundary_edges) {
+            size_t b0 = bottom_vertex_map[edge.getV0()];
+            size_t b1 = bottom_vertex_map[edge.getV1()];
+            
+            // Add triangle from center to boundary edge (CCW for bottom face)
+            addTriangle(center_vertex, b1, b0);
+        }
+        
+        std::cout << "Created fan triangulation with " << boundary_edges.size() 
+                  << " triangles from center point" << std::endl;
+    }
 }
 
 // Helper method: Build initial complete surface triangulation from height field
