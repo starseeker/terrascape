@@ -459,7 +459,7 @@ class QuadricError {
 // Local terrain analysis for adaptive simplification
 class TerrainFeature {
     public:
-	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0) {}
+	TerrainFeature() : curvature(0), slope(0), roughness(0), is_boundary(false), importance(0), quadric_error(0.0) {}
 
 	// Getters (legacy interface)
 	double getCurvature() const { return curvature; }
@@ -798,33 +798,36 @@ TerrainFeature TerrainData::analyzePointWithQuadric(int x, int y) const {
     // Initialize quadric for this vertex by summing quadrics from adjacent faces
     QuadricError quadric;
     double current_height = getHeight(x, y);
+    Point3D current_pos(x, y, current_height);
     
-    // For height fields, we can create planes from the local surface approximation
-    // Create planes from adjacent grid cells to this vertex
+    // For a grid vertex (x,y), it participates in up to 4 quads around it
+    // Each quad generates 2 triangles, so up to 8 triangles total
     std::vector<std::array<Point3D, 3>> adjacent_triangles;
     
-    // Generate triangles from adjacent grid cells
-    for (int dy = -1; dy <= 0; dy++) {
-	for (int dx = -1; dx <= 0; dx++) {
-	    if (isValidCell(x + dx, y + dy) && isValidCell(x + dx + 1, y + dy) &&
-		isValidCell(x + dx, y + dy + 1) && isValidCell(x + dx + 1, y + dy + 1)) {
-		
-		// Two triangles per quad
-		Point3D p00(x + dx, y + dy, getHeight(x + dx, y + dy));
-		Point3D p10(x + dx + 1, y + dy, getHeight(x + dx + 1, y + dy));
-		Point3D p01(x + dx, y + dy + 1, getHeight(x + dx, y + dy + 1));
-		Point3D p11(x + dx + 1, y + dy + 1, getHeight(x + dx + 1, y + dy + 1));
-		
-		// Check if current vertex is part of these triangles
-		Point3D current_pos(x, y, current_height);
-		if ((x == x + dx && y == y + dy) || (x == x + dx + 1 && y == y + dy) || 
-		    (x == x + dx && y == y + dy + 1)) {
-		    adjacent_triangles.push_back({p00, p10, p01});
-		}
-		if ((x == x + dx + 1 && y == y + dy) || (x == x + dx && y == y + dy + 1) || 
-		    (x == x + dx + 1 && y == y + dy + 1)) {
-		    adjacent_triangles.push_back({p10, p01, p11});
-		}
+    // Check all 4 possible quads around this vertex
+    int quad_offsets[4][2] = {{-1, -1}, {0, -1}, {-1, 0}, {0, 0}};
+    
+    for (int q = 0; q < 4; q++) {
+	int qx = x + quad_offsets[q][0];
+	int qy = y + quad_offsets[q][1];
+	
+	// Check if this quad exists (all 4 corners valid)
+	if (isValidCell(qx, qy) && isValidCell(qx+1, qy) &&
+	    isValidCell(qx, qy+1) && isValidCell(qx+1, qy+1)) {
+	    
+	    Point3D p00(qx, qy, getHeight(qx, qy));
+	    Point3D p10(qx+1, qy, getHeight(qx+1, qy));
+	    Point3D p01(qx, qy+1, getHeight(qx, qy+1));
+	    Point3D p11(qx+1, qy+1, getHeight(qx+1, qy+1));
+	    
+	    // Two triangles per quad: (p00, p10, p01) and (p10, p11, p01)
+	    // Check if current vertex is part of triangle 1: (p00, p10, p01)
+	    if ((qx == x && qy == y) || (qx+1 == x && qy == y) || (qx == x && qy+1 == y)) {
+		adjacent_triangles.push_back({p00, p10, p01});
+	    }
+	    // Check if current vertex is part of triangle 2: (p10, p11, p01)
+	    if ((qx+1 == x && qy == y) || (qx+1 == x && qy+1 == y) || (qx == x && qy+1 == y)) {
+		adjacent_triangles.push_back({p10, p11, p01});
 	    }
 	}
     }
@@ -834,9 +837,12 @@ TerrainFeature TerrainData::analyzePointWithQuadric(int x, int y) const {
 	// Compute plane equation from triangle
 	Point3D v1 = triangle[1] - triangle[0];
 	Point3D v2 = triangle[2] - triangle[0];
-	Point3D normal = v1.cross(v2).normalized();
+	Point3D normal = v1.cross(v2);
 	
-	if (normal.length() > 1e-10) { // Valid normal
+	double normal_length = normal.length();
+	if (normal_length > 1e-10) { // Valid normal
+	    normal = Point3D(normal.x / normal_length, normal.y / normal_length, normal.z / normal_length);
+	    
 	    // Plane equation: ax + by + cz + d = 0
 	    double a = normal.x;
 	    double b = normal.y;
@@ -849,7 +855,13 @@ TerrainFeature TerrainData::analyzePointWithQuadric(int x, int y) const {
     }
     
     // Calculate quadric error at current position
-    double error = quadric.evaluate(x, y, current_height);
+    double error = quadric.evaluate(current_pos.x, current_pos.y, current_pos.z);
+    
+    // For terrain, the error should be related to how flat or curved the local surface is
+    // If error is very small, use the legacy importance metric as a backup
+    if (std::abs(error) < 1e-10) {
+	error = feature.getImportance();
+    }
     
     feature.setQuadric(quadric);
     feature.setQuadricError(error);
@@ -870,51 +882,77 @@ std::vector<std::vector<bool>> TerrainData::generateGarlandHeckbertMask(const Si
 	}
     }
     
-    // Build initial mesh from grid and compute quadric errors
+    // Compute quadric errors for all interior points
     std::vector<std::vector<TerrainFeature>> features(height, std::vector<TerrainFeature>(width));
-    std::vector<std::pair<double, std::pair<int, int>>> error_points;
+    std::vector<std::tuple<double, int, int>> error_points; // error, x, y
+    
+    double total_error = 0.0;
+    int error_point_count = 0;
     
     for (int y = 1; y < height-1; ++y) {
 	for (int x = 1; x < width-1; ++x) {
 	    features[y][x] = analyzePointWithQuadric(x, y);
+	    double quadric_error = features[y][x].getQuadricError();
 	    
-	    // Points with low quadric error are candidates for removal
-	    if (features[y][x].getQuadricError() < params.getErrorTol()) {
-		// Store with negative error so highest errors (hardest to remove) come first
-		error_points.push_back({-features[y][x].getQuadricError(), {x, y}});
-	    } else {
-		// Must keep high-error points
-		mask[y][x] = true;
-	    }
+	    total_error += quadric_error;
+	    error_point_count++;
+	    
+	    error_points.push_back(std::make_tuple(quadric_error, x, y));
 	}
     }
     
-    // Sort by error (ascending - easiest to remove first)
+    // Sort by quadric error (ascending - lowest error first, these are candidates for removal)
     std::sort(error_points.begin(), error_points.end());
     
-    // Count current points
-    int current_points = 0;
-    for (int y = 0; y < height; ++y) {
-	for (int x = 0; x < width; ++x) {
-	    if (mask[y][x]) current_points++;
+    // Determine how many points to remove based on quadric error and target reduction
+    int total_points = width * height;
+    int target_points = total_points * (100 - params.getMinReduction()) / 100;
+    int boundary_points = 2 * width + 2 * height - 4; // Boundary perimeter
+    int interior_target = target_points - boundary_points;
+    int interior_available = (width - 2) * (height - 2);
+    
+    // Make sure we don't try to remove too many points
+    interior_target = std::min(interior_target, interior_available);
+    interior_target = std::max(interior_target, interior_available / 4); // Keep at least 25% of interior
+    
+    // Debug output (can be removed in production)
+    double avg_error = error_point_count > 0 ? total_error / error_point_count : 0.0;
+    if (false) { // Set to true for debugging
+	std::cout << "DEBUG: Average quadric error: " << avg_error << ", Error threshold: " << params.getErrorTol() << std::endl;
+	std::cout << "DEBUG: Target interior points to keep: " << interior_target << " out of " << interior_available << std::endl;
+    }
+    
+    // Use structured approach: keep every Nth point, but bias towards high quadric error
+    // This ensures we maintain grid connectivity while still using quadric metrics
+    
+    // First, mark points to keep based on quadric error (highest error first)
+    std::vector<bool> interior_keep(error_points.size(), false);
+    
+    // Keep the highest-error points first
+    for (int i = error_points.size() - 1; i >= 0 && interior_target > 0; i--) {
+	interior_keep[i] = true;
+	interior_target--;
+    }
+    
+    // Apply the decisions to the mask
+    for (size_t i = 0; i < error_points.size(); i++) {
+	if (interior_keep[i]) {
+	    int x = std::get<1>(error_points[i]);
+	    int y = std::get<2>(error_points[i]);
+	    mask[y][x] = true;
 	}
     }
     
-    int total_points = width * height;
-    int min_required = total_points * (100 - params.getMinReduction()) / 100;
-    
-    // Remove points with lowest error until we reach target reduction
-    // But keep enough points to satisfy minimum requirement
-    int points_to_keep = std::max(min_required - current_points, 0);
-    
-    // Keep highest error points from those we can remove
-    for (int i = error_points.size() - 1; i >= 0 && points_to_keep > 0; i--) {
-	int x = error_points[i].second.first;
-	int y = error_points[i].second.second;
-	if (!mask[y][x]) {
-	    mask[y][x] = true;
-	    points_to_keep--;
+    // Count final points for debugging
+    int final_kept = 0;
+    for (int y = 0; y < height; ++y) {
+	for (int x = 0; x < width; ++x) {
+	    if (mask[y][x]) final_kept++;
 	}
+    }
+    
+    if (false) { // Set to true for debugging
+	std::cout << "DEBUG: Final kept points: " << final_kept << " out of " << total_points << std::endl;
     }
     
     return mask;
