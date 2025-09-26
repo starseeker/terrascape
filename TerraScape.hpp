@@ -3281,18 +3281,44 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     }
 
     // Calculate volume using divergence theorem
-    stats.setVolume(0.0);
+    double divergence_volume = 0.0;
     for (const auto& triangle : triangles) {
 	const Point3D& p0 = vertices[triangle.vertices[0]];
 	const Point3D& p1 = vertices[triangle.vertices[1]];
 	const Point3D& p2 = vertices[triangle.vertices[2]];
 
-	// Volume contribution from this triangle
-	stats.setVolume(stats.getVolume() + (p0.x * (p1.y * p2.z - p2.y * p1.z) +
+	// Volume contribution from this triangle using divergence theorem
+	divergence_volume += (p0.x * (p1.y * p2.z - p2.y * p1.z) +
 		    p1.x * (p2.y * p0.z - p0.y * p2.z) +
-		    p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0);
+		    p2.x * (p0.y * p1.z - p1.y * p0.z)) / 6.0;
     }
-    stats.setVolume(std::abs(stats.getVolume()));
+    divergence_volume = std::abs(divergence_volume);
+    
+    // Calculate volume using traditional tetrahedron method for comparison
+    // For each triangle, create a tetrahedron from triangle to origin (0,0,0)
+    double tetrahedron_volume = 0.0;
+    for (size_t i = 0; i < surface_triangle_count && i < triangles.size(); ++i) {
+        const Triangle& triangle = triangles[i];
+        const Point3D& p0 = vertices[triangle.vertices[0]];
+        const Point3D& p1 = vertices[triangle.vertices[1]];
+        const Point3D& p2 = vertices[triangle.vertices[2]];
+        
+        // Volume of tetrahedron formed by triangle and origin
+        // V = |det(p0, p1, p2)| / 6 where each p is a column vector
+        double det = p0.x * (p1.y * p2.z - p1.z * p2.y) -
+                     p0.y * (p1.x * p2.z - p1.z * p2.x) +
+                     p0.z * (p1.x * p2.y - p1.y * p2.x);
+        tetrahedron_volume += std::abs(det) / 6.0;
+    }
+    
+    // For debug comparison, print both methods
+    std::cout << "Volume calculation comparison:" << std::endl;
+    std::cout << "  Divergence theorem: " << divergence_volume << std::endl;
+    std::cout << "  Tetrahedron method: " << tetrahedron_volume << std::endl;
+    std::cout << "  Surface triangle count: " << surface_triangle_count << std::endl;
+    std::cout << "  Total triangle count: " << triangles.size() << std::endl;
+    
+    stats.setVolume(divergence_volume);
 
     // Calculate expected volume from terrain data
     stats.setExpectedVolume(0.0);
