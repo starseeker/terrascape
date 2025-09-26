@@ -1,15 +1,29 @@
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <string>
-#include <sstream>
-#include <iomanip>
 #include "TerraScape.hpp"
+#include "file_io.hpp"
 #include "cxxopts.hpp"
 #ifdef HAVE_GDAL
 #include <gdal_priv.h>
 #include <gdal.h>
 #endif
+
+// Main function for BRL-CAD: Convert DSP to triangulated mesh ready for nmg_region
+bool triangulateTerrainForBRLCAD(const TerraScape::DSPData& dsp, TerraScape::NMGTriangleData& nmg_data) {
+	// Step 1: Convert DSP to TerraScape format
+	TerraScape::TerrainData terrain;
+	if (!terrain.fromDSP(dsp)) {
+		return false;
+	}
+
+	// Step 2: Generate volumetric triangle mesh using TerraScape
+	TerraScape::TerrainMesh mesh;
+	mesh.triangulateVolume(terrain);
+
+	// Step 3: Convert mesh to NMG format
+	return mesh.toNMG(nmg_data);
+}
 
 int main(int argc, char* argv[])
 {
@@ -23,7 +37,6 @@ int main(int argc, char* argv[])
         ("components", "Handle terrain islands and holes separately (default)")
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
         ("brlcad-test", "Test BRL-CAD DSP integration")
-        ("manifold-validation", "Validate mesh using @elalish/manifold library")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
@@ -43,7 +56,6 @@ int main(int argc, char* argv[])
     bool use_components = result.count("components") > 0;
     bool use_legacy = result.count("legacy") > 0;
     bool brlcad_test = result.count("brlcad-test") > 0;
-    bool manifold_validation = result.count("manifold-validation") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
@@ -57,7 +69,7 @@ int main(int argc, char* argv[])
         
         // Load terrain data first
         TerraScape::TerrainData terrain;
-        if (!TerraScape::readTerrainFile(input_file, terrain)) {
+        if (!TerraScapeIO::readTerrainFile(input_file, terrain)) {
             std::cerr << "Error: Failed to read terrain file: " << input_file << std::endl;
             return 1;
         }
@@ -66,14 +78,14 @@ int main(int argc, char* argv[])
         
         // Convert to DSP format
         TerraScape::DSPData dsp;
-        if (!TerraScape::convertTerrainToDSP(terrain, dsp)) {
+        if (!terrain.toDSP(dsp)) {
             std::cerr << "Error: Failed to convert terrain to DSP format" << std::endl;
             return 1;
         }
         
         // Test BRL-CAD integration
         TerraScape::NMGTriangleData nmg_data;
-        if (!TerraScape::triangulateTerrainForBRLCAD(dsp, nmg_data)) {
+        if (!triangulateTerrainForBRLCAD(dsp, nmg_data)) {
             std::cerr << "Error: BRL-CAD triangulation failed" << std::endl;
             return 1;
         }
@@ -98,30 +110,14 @@ int main(int argc, char* argv[])
         }
         
         // Validate the mesh
-        TerraScape::MeshStats stats = TerraScape::validateMesh(mesh, terrain);
+        TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
-        std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
-        std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
-        std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
-        std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
+        std::cout << "  Volume: " << stats.getVolume() << " (expected: " << stats.getExpectedVolume() << ")" << std::endl;
+        std::cout << "  Surface area: " << stats.getSurfaceArea() << " (expected: " << stats.getExpectedSurfaceArea() << ")" << std::endl;
+        std::cout << "  Is manifold: " << (stats.getIsManifold() ? "yes" : "no") << std::endl;
+        std::cout << "  CCW oriented: " << (stats.getIsCCWOriented() ? "yes" : "no") << std::endl;
         
-        // Perform manifold validation using @elalish/manifold library
-        if (manifold_validation) {
-            std::cout << "\nManifold Library Validation:" << std::endl;
-            TerraScape::ManifoldValidationInfo manifold_info = TerraScape::validateMeshWithManifold(mesh);
-            std::cout << "  Vertices: " << manifold_info.num_vertices << std::endl;
-            std::cout << "  Triangles: " << manifold_info.num_triangles << std::endl;
-            std::cout << "  Is manifold: " << (manifold_info.is_manifold ? "yes" : "no") << std::endl;
-            std::cout << "  Status: " << manifold_info.error_message << std::endl;
-            
-            // If there's a validation issue, report it
-            if (!manifold_info.is_manifold) {
-                std::cerr << "Warning: Mesh failed manifold library validation!" << std::endl;
-                std::cerr << "  Issue: " << manifold_info.error_message << std::endl;
-            }
-        }
-        
-        if (TerraScape::writeObjFile(output_file, mesh)) {
+        if (TerraScapeIO::writeObjFile(output_file, mesh)) {
             std::cout << "Successfully wrote BRL-CAD compatible mesh to: " << output_file << std::endl;
         } else {
             std::cerr << "Failed to write output file: " << output_file << std::endl;
@@ -152,7 +148,7 @@ int main(int argc, char* argv[])
 #endif
         // Read terrain data
         TerraScape::TerrainData terrain;
-        if (!TerraScape::readTerrainFile(input_file, terrain)) {
+        if (!TerraScapeIO::readTerrainFile(input_file, terrain)) {
             std::cerr << "Error: Failed to read terrain file: " << input_file << std::endl;
             return 1;
         }
@@ -163,53 +159,37 @@ int main(int argc, char* argv[])
         // Generate triangle mesh
         TerraScape::TerrainMesh mesh;
         if (use_components) {
-            TerraScape::triangulateTerrainVolumeWithComponents(terrain, mesh);
+            mesh.triangulateVolumeWithComponents(terrain);
         } else if (use_legacy) {
-            TerraScape::triangulateTerrainVolumeLegacy(terrain, mesh);
+            mesh.triangulateVolumeLegacy(terrain);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
-            params.error_threshold = error_threshold;
-            params.min_triangle_reduction = reduction_percent;
-            TerraScape::triangulateTerrainSurfaceOnly(terrain, mesh, params);
+            params.setErrorTol(error_threshold);
+            params.setMinReduction(reduction_percent);
+            mesh.triangulateSurfaceOnly(terrain, params);
         } else if (use_simplified) {
             TerraScape::SimplificationParams params;
-            params.error_threshold = error_threshold;
-            params.min_triangle_reduction = reduction_percent;
-            TerraScape::triangulateTerrainVolumeSimplified(terrain, mesh, params);
+            params.setErrorTol(error_threshold);
+            params.setMinReduction(reduction_percent);
+            mesh.triangulateVolumeSimplified(terrain, params);
         } else {
             // Default to component-based approach
-            TerraScape::triangulateTerrainVolume(terrain, mesh);
+            mesh.triangulateVolume(terrain);
         }
         
         std::cout << "Generated mesh: " << mesh.vertices.size() << " vertices, " 
                   << mesh.triangles.size() << " triangles" << std::endl;
         
         // Validate mesh properties
-        TerraScape::MeshStats stats = TerraScape::validateMesh(mesh, terrain);
+        TerraScape::MeshStats stats = mesh.validate(terrain);
         std::cout << "Mesh validation:" << std::endl;
-        std::cout << "  Volume: " << stats.volume << " (expected: " << stats.expected_volume << ")" << std::endl;
-        std::cout << "  Surface area: " << stats.surface_area << " (expected: " << stats.expected_surface_area << ")" << std::endl;
-        std::cout << "  Is manifold: " << (stats.is_manifold ? "yes" : "no") << std::endl;
-        std::cout << "  CCW oriented: " << (stats.is_ccw_oriented ? "yes" : "no") << std::endl;
-        
-        // Perform manifold validation using @elalish/manifold library if requested
-        if (manifold_validation) {
-            std::cout << "\nManifold Library Validation:" << std::endl;
-            TerraScape::ManifoldValidationInfo manifold_info = TerraScape::validateMeshWithManifold(mesh);
-            std::cout << "  Vertices: " << manifold_info.num_vertices << std::endl;
-            std::cout << "  Triangles: " << manifold_info.num_triangles << std::endl;
-            std::cout << "  Is manifold: " << (manifold_info.is_manifold ? "yes" : "no") << std::endl;
-            std::cout << "  Status: " << manifold_info.error_message << std::endl;
-            
-            // If there's a validation issue, report it
-            if (!manifold_info.is_manifold) {
-                std::cerr << "Warning: Mesh failed manifold library validation!" << std::endl;
-                std::cerr << "  Issue: " << manifold_info.error_message << std::endl;
-            }
-        }
+        std::cout << "  Volume: " << stats.getVolume() << " (expected: " << stats.getExpectedVolume() << ")" << std::endl;
+        std::cout << "  Surface area: " << stats.getSurfaceArea() << " (expected: " << stats.getExpectedSurfaceArea() << ")" << std::endl;
+        std::cout << "  Is manifold: " << (stats.getIsManifold() ? "yes" : "no") << std::endl;
+        std::cout << "  CCW oriented: " << (stats.getIsCCWOriented() ? "yes" : "no") << std::endl;
         
         // Write OBJ file
-        if (!TerraScape::writeObjFile(output_file, mesh)) {
+        if (!TerraScapeIO::writeObjFile(output_file, mesh)) {
             std::cerr << "Error: Failed to write OBJ file: " << output_file << std::endl;
             return 1;
         }

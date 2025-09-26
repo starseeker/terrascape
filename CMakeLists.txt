@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.12)
 project(TerraScape VERSION 0.8)
 
 # Set C++ standard to C++17
@@ -7,10 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable CTest framework
 enable_testing()
-
-# Add manifold library as subdirectory
-option(MANIFOLD_TEST "Build Manifold tests" OFF)
-add_subdirectory(third_party/manifold)
 
 # Find GDAL as optional dependency
 find_package(GDAL CONFIG)
@@ -22,7 +18,7 @@ endif()
 add_executable(terrascape_demo main.cpp)
 target_include_directories(terrascape_demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(terrascape_demo PRIVATE ${GDAL_INCLUDE_DIRS})
-target_link_libraries(terrascape_demo manifold ${GDAL_LIBRARIES})
+target_link_libraries(terrascape_demo ${GDAL_LIBRARIES})
 target_compile_options(terrascape_demo PRIVATE ${GDAL_CFLAGS_OTHER})
 set_target_properties(terrascape_demo PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
