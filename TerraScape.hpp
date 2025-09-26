@@ -1350,38 +1350,115 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         return;
     }
     
-    std::cout << "Using edge-based optimization for surface simplification" << std::endl;
+    std::cout << "Using edge-based optimization for surface simplification with boundary extraction" << std::endl;
     
-    // Step 1: Build initial surface representation using edges only (no triangles stored)
-    std::vector<Point3D> surface_vertices;
-    std::set<Edge> surface_edges;
+    // Step 1: Generate full grid triangulation ONLY to extract boundary polygons and outer boundary
+    // This addresses the issue of difficulty assembling bounding polygons from post-simplification data
+    std::vector<Point3D> initial_vertices;
+    std::vector<Triangle> initial_triangles;
     std::vector<std::vector<size_t>> grid_to_vertex(terrain.height, std::vector<size_t>(terrain.width, SIZE_MAX));
     
-    buildInitialSurfaceEdges(terrain, surface_vertices, surface_edges, grid_to_vertex);
+    buildInitialSurfaceTriangulation(terrain, initial_vertices, initial_triangles, grid_to_vertex);
     
-    std::cout << "Edge-based optimization: Created " << surface_vertices.size() << " vertices and " 
-              << surface_edges.size() << " edges (no triangles stored)" << std::endl;
+    // Extract boundary edges and polygons from the full triangulation
+    std::set<Edge> boundary_edges;
+    std::map<Edge, std::vector<size_t>> edge_triangles;
     
-    // Step 2: Compute quadric error metrics directly from edges
-    std::vector<QuadricError> vertex_quadrics(surface_vertices.size());
-    computeVertexQuadricsFromEdges(terrain, surface_vertices, surface_edges, grid_to_vertex, vertex_quadrics);
+    // Find boundary edges (edges used by only one triangle)
+    for (size_t t = 0; t < initial_triangles.size(); t++) {
+        const Triangle& triangle = initial_triangles[t];
+        Edge e1(triangle.vertices[0], triangle.vertices[1]);
+        Edge e2(triangle.vertices[1], triangle.vertices[2]);
+        Edge e3(triangle.vertices[2], triangle.vertices[0]);
+        
+        edge_triangles[e1].push_back(t);
+        edge_triangles[e2].push_back(t);
+        edge_triangles[e3].push_back(t);
+    }
     
-    // Step 3: Build priority queue of edge collapse candidates from edges
+    for (const auto& pair : edge_triangles) {
+        if (pair.second.size() == 1) {  // Boundary edge
+            boundary_edges.insert(pair.first);
+        }
+    }
+    
+    // Extract ordered boundary polygon from boundary edges  
+    std::vector<size_t> boundary_polygon;
+    if (!boundary_edges.empty()) {
+        // Start with any boundary edge
+        Edge current_edge = *boundary_edges.begin();
+        boundary_polygon.push_back(current_edge.getV0());
+        boundary_polygon.push_back(current_edge.getV1());
+        boundary_edges.erase(current_edge);
+        
+        // Follow the boundary
+        while (!boundary_edges.empty()) {
+            size_t last_vertex = boundary_polygon.back();
+            bool found = false;
+            
+            for (auto it = boundary_edges.begin(); it != boundary_edges.end(); ++it) {
+                if (it->getV0() == last_vertex) {
+                    boundary_polygon.push_back(it->getV1());
+                    boundary_edges.erase(it);
+                    found = true;
+                    break;
+                } else if (it->getV1() == last_vertex) {
+                    boundary_polygon.push_back(it->getV0());
+                    boundary_edges.erase(it);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) break; // Incomplete boundary or holes
+        }
+    }
+    
+    std::cout << "Edge-based optimization: Extracted boundary polygon with " << boundary_polygon.size() 
+              << " vertices from full triangulation" << std::endl;
+    
+    // Step 2: Now extract edges from triangulation and discard the triangles for edge-based processing
+    std::set<Edge> surface_edges;
+    for (const Triangle& triangle : initial_triangles) {
+        surface_edges.insert(Edge(triangle.vertices[0], triangle.vertices[1]));
+        surface_edges.insert(Edge(triangle.vertices[1], triangle.vertices[2]));
+        surface_edges.insert(Edge(triangle.vertices[2], triangle.vertices[0]));
+    }
+    
+    // Clear triangles - we only need edges for simplification
+    initial_triangles.clear(); // This is the key optimization - discard triangles after boundary extraction
+    
+    std::cout << "Edge-based optimization: Extracted " << surface_edges.size() 
+              << " edges from triangulation (triangles discarded)" << std::endl;
+    
+    // Step 3: Compute quadric error metrics directly from edges (no triangles needed)
+    std::vector<QuadricError> vertex_quadrics(initial_vertices.size());
+    computeVertexQuadricsFromEdges(terrain, initial_vertices, surface_edges, grid_to_vertex, vertex_quadrics);
+    
+    // Step 4: Build priority queue of edge collapse candidates from edges
     std::priority_queue<EdgeCollapse> collapse_queue;
-    buildEdgeCollapseQueueFromEdges(surface_vertices, surface_edges, vertex_quadrics, collapse_queue);
+    buildEdgeCollapseQueueFromEdges(initial_vertices, surface_edges, vertex_quadrics, collapse_queue);
     
-    // Step 4: Perform edge collapses to identify surviving vertices
+    // Step 5: Perform edge collapses to identify surviving vertices
     size_t original_edges = surface_edges.size();
     size_t target_reduction_percent = params.getMinReduction();
     size_t target_edges = original_edges * (100 - target_reduction_percent) / 100;
     
-    std::vector<bool> vertex_removed(surface_vertices.size(), false);
-    std::vector<size_t> vertex_collapse_target(surface_vertices.size());
+    std::vector<bool> vertex_removed(initial_vertices.size(), false);
+    std::vector<size_t> vertex_collapse_target(initial_vertices.size());
     
     // Initialize collapse mapping
-    for (size_t i = 0; i < surface_vertices.size(); i++) {
+    for (size_t i = 0; i < initial_vertices.size(); i++) {
         vertex_collapse_target[i] = i;
     }
+    
+    // Protect boundary vertices from collapse to maintain boundary integrity
+    std::set<size_t> protected_vertices;
+    for (size_t v : boundary_polygon) {
+        protected_vertices.insert(v);
+    }
+    
+    std::cout << "Edge-based optimization: Protected " << protected_vertices.size() 
+              << " boundary vertices from collapse" << std::endl;
     
     std::cout << "Edge-based optimization: Starting with " << original_edges << " edges, targeting " 
               << target_reduction_percent << "% reduction" << std::endl;
@@ -1399,6 +1476,12 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
             continue;
         }
         
+        // Don't collapse boundary vertices
+        if (protected_vertices.count(best_collapse.edge.getV0()) || 
+            protected_vertices.count(best_collapse.edge.getV1())) {
+            continue;
+        }
+        
         // Check if this edge still exists in our remaining edges
         if (remaining_edges.find(best_collapse.edge) == remaining_edges.end()) {
             continue;
@@ -1409,7 +1492,7 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         size_t v1 = best_collapse.edge.getV1();
         
         // Move v0 to optimal position and mark v1 as removed
-        surface_vertices[v0] = best_collapse.new_position;
+        initial_vertices[v0] = best_collapse.new_position;
         vertex_removed[v1] = true;
         vertex_collapse_target[v1] = v0;
         
@@ -1450,115 +1533,90 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     std::cout << "Edge-based optimization: Completed " << collapse_count << " edge collapses" << std::endl;
     std::cout << "Edge-based optimization: " << remaining_edges.size() << " edges remain from " << original_edges << " original" << std::endl;
     
-    // Step 5: Create final surface vertices (only non-removed vertices)
-    std::vector<size_t> vertex_remap(surface_vertices.size(), SIZE_MAX);
+    // Step 6: Create final surface vertices (only non-removed vertices)
+    std::vector<size_t> vertex_remap(initial_vertices.size(), SIZE_MAX);
     vertices.clear();
     size_t new_vertex_index = 0;
     
-    for (size_t i = 0; i < surface_vertices.size(); i++) {
+    for (size_t i = 0; i < initial_vertices.size(); i++) {
         if (!vertex_removed[i]) {
             vertex_remap[i] = new_vertex_index++;
-            vertices.push_back(surface_vertices[i]);
+            vertices.push_back(initial_vertices[i]);
         }
     }
     
-    std::cout << "Edge-based optimization: Reduced from " << surface_vertices.size() 
+    std::cout << "Edge-based optimization: Reduced from " << initial_vertices.size() 
               << " to " << vertices.size() << " vertices" << std::endl;
     
-    // Step 6: Generate final surface triangulation using detria with surviving vertices
-    // First identify boundary vertices from the remaining edges
-    std::set<size_t> boundary_vertex_set;
-    std::map<size_t, std::vector<size_t>> vertex_adjacency;
-    
-    // Build adjacency from remaining edges and identify vertices with fewer neighbors
-    for (const Edge& edge : remaining_edges) {
-        size_t v0 = edge.getV0();
-        size_t v1 = edge.getV1();
-        
-        if (!vertex_removed[v0] && !vertex_removed[v1]) {
-            vertex_adjacency[v0].push_back(v1);
-            vertex_adjacency[v1].push_back(v0);
-        }
-    }
-    
-    // Find vertices that likely form the boundary (fewer connections)
-    for (const auto& pair : vertex_adjacency) {
-        if (pair.second.size() <= 4) { // Boundary vertices typically have fewer connections
-            boundary_vertex_set.insert(pair.first);
-        }
-    }
-    
-    std::cout << "Edge-based optimization: Identified " << boundary_vertex_set.size() 
-              << " potential boundary vertices" << std::endl;
-    
+    // Step 7: Generate final surface triangulation using detria with pre-computed boundary polygon
     std::vector<detria::PointD> detria_points;
     std::vector<size_t> point_to_vertex_map;
     
-    for (size_t i = 0; i < surface_vertices.size(); i++) {
+    // Add all surviving vertices
+    for (size_t i = 0; i < initial_vertices.size(); i++) {
         if (!vertex_removed[i]) {
-            detria_points.push_back({surface_vertices[i].x, surface_vertices[i].y});
-            point_to_vertex_map.push_back(i);
+            detria_points.push_back({initial_vertices[i].x, initial_vertices[i].y});
+            point_to_vertex_map.push_back(vertex_remap[i]);
         }
     }
     
-    // Step 6: Generate final surface triangulation - for now use a simple approach
-    // The key optimization (edge-based processing) has already been achieved
-    triangles.clear();
-    surface_triangle_count = 0;
+    std::cout << "Edge-based optimization: Using detria with " << detria_points.size() << " points" << std::endl;
     
-    // Simple approach: create triangles from adjacent vertices in a grid-like pattern
-    // This is just for demonstration - the real benefit is in the edge-based processing above
-    std::vector<Point3D> final_vertices;
-    std::map<size_t, size_t> orig_to_final;
+    detria::Triangulation<detria::PointD> tri;
+    tri.setPoints(detria_points);
     
-    for (size_t i = 0; i < surface_vertices.size(); i++) {
-        if (!vertex_removed[i]) {
-            orig_to_final[i] = final_vertices.size();
-            final_vertices.push_back(surface_vertices[i]);
-        }
-    }
-    
-    vertices = final_vertices;
-    
-    // Create triangles from remaining edges using a simple approach
-    std::set<std::array<size_t, 3>> unique_triangles;
-    
-    for (const Edge& edge : remaining_edges) {
-        size_t v0 = edge.getV0();
-        size_t v1 = edge.getV1();
-        
-        if (!vertex_removed[v0] && !vertex_removed[v1]) {
-            // Find a third vertex that forms a triangle with this edge
-            for (const Edge& other_edge : remaining_edges) {
-                if (other_edge.getV0() == v1 && !vertex_removed[other_edge.getV1()]) {
-                    size_t v2 = other_edge.getV1();
-                    // Check if we have the closing edge
-                    Edge closing_edge(v2, v0);
-                    if (remaining_edges.count(closing_edge)) {
-                        std::array<size_t, 3> tri = {orig_to_final[v0], orig_to_final[v1], orig_to_final[v2]};
-                        std::sort(tri.begin(), tri.end());
-                        unique_triangles.insert(tri);
-                    }
-                }
+    // Create boundary outline using surviving boundary vertices
+    std::vector<uint32_t> outline_indices;
+    for (size_t boundary_vertex : boundary_polygon) {
+        if (!vertex_removed[boundary_vertex]) {
+            // Find this vertex in our point list
+            auto it = std::find(point_to_vertex_map.begin(), point_to_vertex_map.end(), vertex_remap[boundary_vertex]);
+            if (it != point_to_vertex_map.end()) {
+                outline_indices.push_back(static_cast<uint32_t>(std::distance(point_to_vertex_map.begin(), it)));
             }
         }
     }
     
-    // Add unique triangles
-    for (const auto& tri_array : unique_triangles) {
-        Triangle new_triangle(tri_array[0], tri_array[1], tri_array[2]);
-        new_triangle.computeNormal(vertices);
-        triangles.push_back(new_triangle);
-        surface_triangle_count++;
+    if (!outline_indices.empty()) {
+        tri.addOutline(outline_indices);
+        std::cout << "Edge-based optimization: Added boundary outline with " << outline_indices.size() << " vertices" << std::endl;
     }
     
-    std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
-              << " triangles using edge-based reconstruction" << std::endl;
+    // Perform triangulation
+    if (tri.triangulate(true)) {
+        triangles.clear();
+        surface_triangle_count = 0;
+        
+        tri.forEachTriangle([&](detria::Triangle<uint32_t> tri_data) {
+            if (tri_data.x < point_to_vertex_map.size() && 
+                tri_data.y < point_to_vertex_map.size() && 
+                tri_data.z < point_to_vertex_map.size()) {
+                
+                size_t v0 = point_to_vertex_map[tri_data.x];
+                size_t v1 = point_to_vertex_map[tri_data.y];
+                size_t v2 = point_to_vertex_map[tri_data.z];
+                
+                if (v0 < vertices.size() && v1 < vertices.size() && v2 < vertices.size()) {
+                    Triangle new_triangle(v0, v1, v2);
+                    new_triangle.computeNormal(vertices);
+                    triangles.push_back(new_triangle);
+                    surface_triangle_count++;
+                }
+            }
+        }, false);
+        
+        std::cout << "Edge-based optimization: Created final surface with " << surface_triangle_count 
+                  << " triangles using detria with boundary" << std::endl;
+    } else {
+        std::cout << "Edge-based optimization: Detria triangulation failed, falling back to original method" << std::endl;
+        triangulateVolumeWithGarlandHeckbert(terrain, params);
+        return;
+    }
     
-    // Step 7: Generate volumetric elements (walls and bottom) using same approach as before
+    // Step 8: Generate volumetric elements (walls and bottom) using same approach as before
     // Find boundary edges for wall generation from the simplified surface
-    std::set<Edge> boundary_edges;
-    std::map<Edge, std::vector<size_t>> edge_triangles;
+    std::set<Edge> final_boundary_edges;
+    std::map<Edge, std::vector<size_t>> final_edge_triangles;
     
     for (size_t t = 0; t < surface_triangle_count; t++) {
         const Triangle& triangle = triangles[t];
@@ -1566,14 +1624,14 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         Edge e2(triangle.vertices[1], triangle.vertices[2]);
         Edge e3(triangle.vertices[2], triangle.vertices[0]);
         
-        edge_triangles[e1].push_back(t);
-        edge_triangles[e2].push_back(t);
-        edge_triangles[e3].push_back(t);
+        final_edge_triangles[e1].push_back(t);
+        final_edge_triangles[e2].push_back(t);
+        final_edge_triangles[e3].push_back(t);
     }
     
-    for (const auto& pair : edge_triangles) {
+    for (const auto& pair : final_edge_triangles) {
         if (pair.second.size() == 1) {
-            boundary_edges.insert(pair.first);
+            final_boundary_edges.insert(pair.first);
         }
     }
     
@@ -1587,7 +1645,7 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
     }
     
     // Generate walls for boundary edges
-    for (const Edge& edge : boundary_edges) {
+    for (const Edge& edge : final_boundary_edges) {
         size_t v0 = edge.getV0();
         size_t v1 = edge.getV1();
         size_t b0 = bottom_vertex_map[v0];
@@ -1614,7 +1672,7 @@ void TerrainMesh::triangulateVolumeSimplifiedOptimized(const TerrainData& terrai
         
         // Create triangles from center to each boundary edge
         size_t bottom_triangle_count = 0;
-        for (const Edge& edge : boundary_edges) {
+        for (const Edge& edge : final_boundary_edges) {
             size_t b0 = bottom_vertex_map[edge.getV0()];
             size_t b1 = bottom_vertex_map[edge.getV1()];
             addTriangle(center_vertex, b1, b0); // Reverse winding for bottom face
