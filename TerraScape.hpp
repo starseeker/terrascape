@@ -2523,9 +2523,10 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	boundary_points.push_back({vertex.x, vertex.y});
     }
 
-    // Step 5: Test detria with minimal implementation like bottom face
-    // This investigates why detria works for bottom face but not surface patches
-    if (patch.size() >= 25) { // Only test on large patches
+    // Step 5: Test with edge Steiner points but simplified approach for manifold guarantee
+    // Following @starseeker's suggestion, we've added edge cell Steiner points
+    // But detria still creates non-manifold meshes. Try a hybrid approach:
+    if (patch.size() >= 50) { // Only for large patches
 	try {
 	    // Mirror bottom face approach: boundary polygon + Steiner points + detria
 	    std::vector<std::pair<double, double>> boundary_polygon;
@@ -2551,7 +2552,53 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	    std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
 		boundary_polygon, holes, patch_cells, min_x, max_x + 1, min_y, max_y + 1);
 
-	    // Create points exactly like bottom face
+	    // Following @starseeker's suggestion: add Steiner points at the center of each 
+	    // cell on the edge of the planar patch to improve triangulation behavior
+	    std::set<std::pair<int, int>> boundary_cells;
+	    
+	    // Find cells on the edge of the patch (cells that have neighbors not in the patch)
+	    for (const auto& cell : patch_cells) {
+		int x = cell.first;
+		int y = cell.second;
+		
+		// Check 4-connected neighbors
+		std::vector<std::pair<int, int>> neighbors = {{x-1, y}, {x+1, y}, {x, y-1}, {x, y+1}};
+		
+		bool is_edge_cell = false;
+		for (const auto& neighbor : neighbors) {
+		    // If neighbor is outside patch bounds or not in patch, this is an edge cell
+		    if (neighbor.first < 0 || neighbor.first >= terrain.width ||
+			neighbor.second < 0 || neighbor.second >= terrain.height ||
+			!patch_cells.count(neighbor)) {
+			is_edge_cell = true;
+			break;
+		    }
+		}
+		
+		if (is_edge_cell) {
+		    boundary_cells.insert(cell);
+		}
+	    }
+	    
+	    // Add Steiner points at the center of each edge cell
+	    for (const auto& edge_cell : boundary_cells) {
+		int x = edge_cell.first;
+		int y = edge_cell.second;
+		
+		// Calculate cell center in world coordinates
+		double center_x = (x + 0.5) * terrain.cell_size + terrain.origin.x;
+		double center_y = (y + 0.5) * terrain.cell_size + terrain.origin.y;
+		
+		steiner_points.push_back({center_x, center_y});
+	    }
+	    
+	    // Debug: Show how many Steiner points we're adding
+	    if (patch.size() >= 25) {
+		std::cout << "Patch with " << patch.size() << " cells: " << steiner_points.size() 
+		         << " total Steiner points (" << boundary_cells.size() << " edge cell centers)" << std::endl;
+	    }
+
+	    // Create simple triangulation with edge cell Steiner points
 	    std::vector<detria::PointD> all_points;
 	    std::vector<size_t> all_vertex_indices;
 
@@ -2561,32 +2608,29 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	    }
 	    all_vertex_indices = boundary_indices;
 
-	    // Add Steiner points as vertices exactly like bottom face
+	    // Add edge cell Steiner points 
 	    for (const auto& point : steiner_points) {
-		double world_z = patch.plane_z; // Use patch height instead of 0
+		double world_z = patch.plane_z;
 		size_t vertex_index = addVertex(Point3D(point.first, point.second, world_z));
 		all_vertex_indices.push_back(vertex_index);
 		all_points.push_back({point.first, point.second});
 	    }
 
-	    // Set up detria exactly like bottom face
+	    // Try detria with edge Steiner points
 	    detria::Triangulation tri;
 	    tri.setPoints(all_points);
 
-	    // Add outline exactly like bottom face
+	    // Add boundary outline constraint
 	    std::vector<uint32_t> outline_indices;
 	    for (size_t i = 0; i < boundary_polygon.size(); ++i) {
 		outline_indices.push_back(static_cast<uint32_t>(i));
 	    }
 	    tri.addOutline(outline_indices);
 
-	    // Triangulate exactly like bottom face
 	    bool success = tri.triangulate(true);
 
 	    if (success) {
-		// Extract triangles exactly like bottom face (but surface orientation)
-		bool cwTriangles = false; // Same as bottom face
-
+		bool cwTriangles = false;
 		tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
 		    size_t v0, v1, v2;
 
@@ -2602,10 +2646,9 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 			v2 = all_vertex_indices[triangle.z];
 		    } else return;
 
-		    // Use surface orientation instead of bottom face reversed winding
-		    addSurfaceTriangle(v0, v1, v2); // Normal winding for surface
+		    addSurfaceTriangle(v0, v1, v2);
 		}, cwTriangles);
-		return; // Success - used detria
+		return; // Success - used detria with edge Steiner points
 	    }
 	} catch (const std::exception&) {
 	    // Fall back to grid if detria fails
