@@ -107,6 +107,7 @@ class MeshStats;
 class TerrainData;
 class DSPData;
 class NMGTriangleData;
+class PlanarPatch;
 
 // Basic 3D point structure
 class Point3D {
@@ -325,6 +326,9 @@ class TerrainMesh {
 	void triangulateSurfaceOnly(const TerrainData& terrain, const SimplificationParams& params);
 	void triangulateVolumeWithComponents(const TerrainData& terrain);
 	void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component);
+	
+	// New planar patch-based surface triangulation
+	void triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params);
 
     private:
 	// Helper methods for triangulation
@@ -337,6 +341,20 @@ class TerrainMesh {
 		const std::vector<std::vector<size_t>>& bottom_vertices,
 		std::vector<std::pair<double, double>>& hole_boundary,
 		std::vector<size_t>& vertex_indices);
+		
+	// Planar patch surface triangulation helpers
+	std::vector<PlanarPatch> findPlanarPatches(const TerrainData& terrain, 
+		const std::set<std::pair<int, int>>& active_cells,
+		double coplanar_tolerance = 0.1, int min_patch_size = 16);
+	void growPlanarPatch(PlanarPatch& patch, const TerrainData& terrain,
+		const std::set<std::pair<int, int>>& active_cells,
+		std::set<std::pair<int, int>>& processed_cells,
+		double coplanar_tolerance);
+	bool triangulatePlanarPatchWithDetria(PlanarPatch& patch, const TerrainData& terrain);
+	void triangulateRemainingCellsWithFallback(const TerrainData& terrain,
+		const std::set<std::pair<int, int>>& remaining_cells,
+		const std::vector<std::vector<size_t>>& surface_vertices,
+		const std::vector<PlanarPatch>& patches);
 };
 
 // Mesh validation statistics
@@ -461,6 +479,47 @@ class EdgeHash {
 	size_t operator()(const Edge& e) const {
 	    return std::hash<size_t>()(e.getV0()) ^ (std::hash<size_t>()(e.getV1()) << 1);
 	}
+};
+
+// Planar patch structure for coplanar surface regions
+class PlanarPatch {
+    public:
+	std::vector<std::pair<int, int>> cells;  // List of (x, y) coordinates in this patch
+	double height;                           // Average height of the patch
+	Point3D normal;                          // Best-fit plane normal
+	double plane_d;                          // Plane equation coefficient d (ax+by+cz=d)
+	double coplanarity_error;                // Maximum deviation from plane
+	int min_x, max_x, min_y, max_y;         // Bounding box
+	std::vector<size_t> vertex_indices;     // Indices of vertices created for this patch
+	bool triangulated;                       // Whether this patch has been triangulated
+
+	PlanarPatch() : height(0), normal(0, 0, 1), plane_d(0), coplanarity_error(0),
+		min_x(INT_MAX), max_x(INT_MIN), min_y(INT_MAX), max_y(INT_MIN), 
+		triangulated(false) {}
+
+	void addCell(int x, int y, double h) {
+	    cells.push_back({x, y});
+	    min_x = std::min(min_x, x);
+	    max_x = std::max(max_x, x);
+	    min_y = std::min(min_y, y);
+	    max_y = std::max(max_y, y);
+	    
+	    // Update average height incrementally
+	    if (cells.size() == 1) {
+		height = h;
+	    } else {
+		height = (height * (cells.size() - 1) + h) / cells.size();
+	    }
+	}
+	
+	// Check if a cell is coplanar within tolerance
+	bool isCoplanar(int x, int y, double h, double tolerance = 0.1) const {
+	    if (cells.empty()) return true;
+	    return std::abs(h - height) <= tolerance;
+	}
+	
+	// Compute best-fit plane through patch cells
+	void computePlane(const TerrainData& terrain);
 };
 
 // Connected component structure for handling terrain islands
@@ -2124,6 +2183,405 @@ bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
     }
 
     return true;
+}
+
+// Compute best-fit plane through patch cells
+void PlanarPatch::computePlane(const TerrainData& terrain) {
+    if (cells.size() < 3) {
+	normal = Point3D(0, 0, 1);
+	plane_d = height;
+	coplanarity_error = 0;
+	return;
+    }
+    
+    // Compute centroid
+    Point3D centroid(0, 0, 0);
+    for (const auto& cell : cells) {
+	double world_x = terrain.origin.x + cell.first * terrain.cell_size;
+	double world_y = terrain.origin.y - cell.second * terrain.cell_size;
+	double h = terrain.getHeight(cell.first, cell.second);
+	centroid = centroid + Point3D(world_x, world_y, h);
+    }
+    centroid = Point3D(centroid.x / cells.size(), centroid.y / cells.size(), centroid.z / cells.size());
+    
+    // Use covariance matrix for best-fit plane
+    double xx = 0, xy = 0, xz = 0, yy = 0, yz = 0, zz = 0;
+    for (const auto& cell : cells) {
+	double world_x = terrain.origin.x + cell.first * terrain.cell_size;
+	double world_y = terrain.origin.y - cell.second * terrain.cell_size;
+	double h = terrain.getHeight(cell.first, cell.second);
+	
+	double dx = world_x - centroid.x;
+	double dy = world_y - centroid.y;
+	double dz = h - centroid.z;
+	
+	xx += dx * dx; xy += dx * dy; xz += dx * dz;
+	yy += dy * dy; yz += dy * dz; zz += dz * dz;
+    }
+    
+    // For near-planar patches, use simple approach with z-normal
+    if (zz < 1e-6) {
+	normal = Point3D(0, 0, 1);
+	plane_d = centroid.z;
+    } else {
+	// For general case, find eigenvector of smallest eigenvalue
+	// Simplified: assume mostly horizontal planes with small normal z-component
+	normal = Point3D(-xz/zz, -yz/zz, 1).normalized();
+	plane_d = normal.dot(centroid);
+    }
+    
+    // Compute coplanarity error
+    coplanarity_error = 0;
+    for (const auto& cell : cells) {
+	double world_x = terrain.origin.x + cell.first * terrain.cell_size;
+	double world_y = terrain.origin.y - cell.second * terrain.cell_size;
+	double h = terrain.getHeight(cell.first, cell.second);
+	
+	Point3D point(world_x, world_y, h);
+	double distance = std::abs(normal.dot(point) - plane_d);
+	coplanarity_error = std::max(coplanarity_error, distance);
+    }
+}
+
+// New planar patch-based surface triangulation approach
+void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params) {
+    clear();
+
+    if (terrain.width <= 0 || terrain.height <= 0) {
+	return;
+    }
+
+    // Build set of active surface cells
+    std::set<std::pair<int, int>> active_cells;
+    for (int y = 0; y < terrain.height; ++y) {
+	for (int x = 0; x < terrain.width; ++x) {
+	    active_cells.insert({x, y});
+	}
+    }
+
+    // Step 1: Find planar patches of 16+ coplanar cells
+    std::vector<PlanarPatch> patches = findPlanarPatches(terrain, active_cells, 
+		params.getErrorTol(), 16);
+
+    // Step 2: Create vertices for all cells (needed for both patches and fallback)
+    std::vector<std::vector<size_t>> surface_vertices(terrain.height, 
+		std::vector<size_t>(terrain.width, SIZE_MAX));
+    
+    for (int y = 0; y < terrain.height; ++y) {
+	for (int x = 0; x < terrain.width; ++x) {
+	    double world_x = terrain.origin.x + x * terrain.cell_size;
+	    double world_y = terrain.origin.y - y * terrain.cell_size;
+	    double height = terrain.getHeight(x, y);
+	    surface_vertices[y][x] = addVertex(Point3D(world_x, world_y, height));
+	}
+    }
+
+    // Step 3: Triangulate each planar patch using detria
+    std::set<std::pair<int, int>> triangulated_cells;
+    for (auto& patch : patches) {
+	if (triangulatePlanarPatchWithDetria(patch, terrain)) {
+	    // Mark cells as triangulated
+	    for (const auto& cell : patch.cells) {
+		triangulated_cells.insert(cell);
+	    }
+	}
+    }
+
+    // Step 4: Find remaining cells not covered by patches
+    std::set<std::pair<int, int>> remaining_cells;
+    for (const auto& cell : active_cells) {
+	if (triangulated_cells.find(cell) == triangulated_cells.end()) {
+	    remaining_cells.insert(cell);
+	}
+    }
+
+    // Step 5: Triangulate remaining cells with fallback grid method
+    triangulateRemainingCellsWithFallback(terrain, remaining_cells, surface_vertices, patches);
+
+    // TODO: Step 6: Apply mmesh simplification to the final surface mesh
+    // This would require integrating the mmesh library functionality
+}
+
+// Find planar patches during flood fill analysis
+std::vector<PlanarPatch> TerrainMesh::findPlanarPatches(const TerrainData& terrain,
+	const std::set<std::pair<int, int>>& active_cells, 
+	double coplanar_tolerance, int min_patch_size) {
+    
+    std::vector<PlanarPatch> patches;
+    std::set<std::pair<int, int>> processed_cells;
+
+    // Use 8-connected flood fill to find potential patch seeds
+    for (const auto& seed_cell : active_cells) {
+	if (processed_cells.count(seed_cell)) continue;
+	
+	int x = seed_cell.first, y = seed_cell.second;
+	double seed_height = terrain.getHeight(x, y);
+	
+	// Start a new potential patch
+	PlanarPatch patch;
+	patch.addCell(x, y, seed_height);
+	processed_cells.insert(seed_cell);
+	
+	// Grow the patch using flood fill
+	growPlanarPatch(patch, terrain, active_cells, processed_cells, coplanar_tolerance);
+	
+	// Only keep patches with minimum size
+	if (patch.cells.size() >= static_cast<size_t>(min_patch_size)) {
+	    patch.computePlane(terrain);
+	    patches.push_back(patch);
+	}
+    }
+    
+    return patches;
+}
+
+// Grow planar patch using flood fill until boundaries are hit
+void TerrainMesh::growPlanarPatch(PlanarPatch& patch, const TerrainData& terrain,
+	const std::set<std::pair<int, int>>& active_cells,
+	std::set<std::pair<int, int>>& processed_cells,
+	double coplanar_tolerance) {
+    
+    std::queue<std::pair<int, int>> to_visit;
+    
+    // Add all current patch cells to visit queue (in case we want to grow from multiple seeds)
+    for (const auto& cell : patch.cells) {
+	to_visit.push(cell);
+    }
+    
+    // 8-connected neighborhood (including diagonals)
+    int dx[] = {-1, -1, -1,  0,  0,  1,  1,  1};
+    int dy[] = {-1,  0,  1, -1,  1, -1,  0,  1};
+    
+    while (!to_visit.empty()) {
+	auto current = to_visit.front();
+	to_visit.pop();
+	
+	int x = current.first;
+	int y = current.second;
+	
+	// Check all 8 neighbors
+	for (int i = 0; i < 8; ++i) {
+	    int nx = x + dx[i];
+	    int ny = y + dy[i];
+	    
+	    // Check bounds and if cell is active and unprocessed
+	    if (terrain.isValidCell(nx, ny) && 
+		active_cells.count({nx, ny}) && 
+		!processed_cells.count({nx, ny})) {
+		
+		double neighbor_height = terrain.getHeight(nx, ny);
+		
+		// Check if neighbor is coplanar with current patch
+		if (patch.isCoplanar(nx, ny, neighbor_height, coplanar_tolerance)) {
+		    patch.addCell(nx, ny, neighbor_height);
+		    processed_cells.insert({nx, ny});
+		    to_visit.push({nx, ny});
+		}
+	    }
+	}
+    }
+}
+
+// Triangulate a planar patch using detria (adapted from bottom face triangulation)
+bool TerrainMesh::triangulatePlanarPatchWithDetria(PlanarPatch& patch, const TerrainData& terrain) {
+    if (patch.cells.size() < 3) return false;
+    
+    // Create boundary vertices (counter-clockwise)
+    std::vector<std::pair<double, double>> boundary;
+    std::vector<size_t> vertex_indices;
+    
+    // Find boundary cells by checking for cells that have non-patch neighbors
+    std::set<std::pair<int, int>> patch_cell_set(patch.cells.begin(), patch.cells.end());
+    std::vector<std::pair<int, int>> boundary_cells;
+    
+    for (const auto& cell : patch.cells) {
+	int x = cell.first, y = cell.second;
+	
+	// Check if cell is on the boundary (has at least one non-patch neighbor)
+	bool is_boundary = false;
+	int dx[] = {-1, 0, 1, 0};
+	int dy[] = {0, -1, 0, 1};
+	
+	for (int i = 0; i < 4; ++i) {
+	    int nx = x + dx[i];
+	    int ny = y + dy[i];
+	    
+	    if (!terrain.isValidCell(nx, ny) || !patch_cell_set.count({nx, ny})) {
+		is_boundary = true;
+		break;
+	    }
+	}
+	
+	if (is_boundary) {
+	    boundary_cells.push_back(cell);
+	}
+    }
+    
+    if (boundary_cells.empty()) return false;
+    
+    // Sort boundary cells to form a proper boundary polygon
+    // Simple approach: find extremal points and connect in order
+    auto min_x_it = std::min_element(boundary_cells.begin(), boundary_cells.end(),
+		[](const auto& a, const auto& b) { return a.first < b.first; });
+    
+    // Start from leftmost boundary cell and traverse boundary
+    std::pair<int, int> start_cell = *min_x_it;
+    std::vector<std::pair<int, int>> ordered_boundary = {start_cell};
+    std::set<std::pair<int, int>> used_boundary;
+    used_boundary.insert(start_cell);
+    
+    // Simple boundary tracing (could be improved)
+    auto current = start_cell;
+    while (ordered_boundary.size() < boundary_cells.size()) {
+	std::pair<int, int> next_cell = current;
+	double min_dist = std::numeric_limits<double>::max();
+	
+	for (const auto& candidate : boundary_cells) {
+	    if (used_boundary.count(candidate)) continue;
+	    
+	    double dist = std::sqrt((candidate.first - current.first) * (candidate.first - current.first) +
+				   (candidate.second - current.second) * (candidate.second - current.second));
+	    
+	    if (dist < min_dist) {
+		min_dist = dist;
+		next_cell = candidate;
+	    }
+	}
+	
+	if (next_cell == current) break; // No more boundary cells found
+	
+	ordered_boundary.push_back(next_cell);
+	used_boundary.insert(next_cell);
+	current = next_cell;
+    }
+    
+    // Convert to world coordinates for detria
+    for (const auto& cell : ordered_boundary) {
+	double world_x = terrain.origin.x + cell.first * terrain.cell_size;
+	double world_y = terrain.origin.y - cell.second * terrain.cell_size;
+	boundary.push_back({world_x, world_y});
+	
+	// Find vertex index for this cell
+	for (size_t v_idx = 0; v_idx < vertices.size(); ++v_idx) {
+	    const Point3D& v = vertices[v_idx];
+	    if (std::abs(v.x - world_x) < 1e-6 && std::abs(v.y - world_y) < 1e-6) {
+		vertex_indices.push_back(v_idx);
+		break;
+	    }
+	}
+    }
+    
+    if (boundary.size() < 3 || vertex_indices.size() != boundary.size()) {
+	return false; // Invalid boundary
+    }
+    
+    // Generate Steiner points adapted for patch scale
+    double patch_area = (patch.max_x - patch.min_x + 1) * (patch.max_y - patch.min_y + 1) * 
+		       terrain.cell_size * terrain.cell_size;
+    
+    // Use terrain's Steiner point generation but adapt for patch bounds
+    std::set<std::pair<int, int>> patch_active_cells(patch.cells.begin(), patch.cells.end());
+    std::vector<std::vector<std::pair<double, double>>> holes; // No holes for now
+    
+    std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
+	boundary, holes, patch_active_cells, 
+	patch.min_x * terrain.cell_size, patch.max_x * terrain.cell_size,
+	patch.min_y * terrain.cell_size, patch.max_y * terrain.cell_size);
+    
+    // Try detria triangulation
+    try {
+	// Set up detria triangulation
+	detria::Triangulation tri;
+	
+	// Create all points: boundary + steiner points
+	std::vector<detria::PointD> all_points;
+	for (const auto& bp : boundary) {
+	    all_points.push_back({bp.first, bp.second});
+	}
+	
+	// Create vertices for Steiner points and add to all_points
+	for (const auto& sp : steiner_points) {
+	    all_points.push_back({sp.first, sp.second});
+	    size_t steiner_idx = addVertex(Point3D(sp.first, sp.second, patch.height));
+	    vertex_indices.push_back(steiner_idx);
+	}
+	
+	tri.setPoints(all_points);
+	
+	// Add boundary outline (indices refer to all_points)
+	std::vector<uint32_t> outline_indices;
+	for (size_t i = 0; i < boundary.size(); ++i) {
+	    outline_indices.push_back(static_cast<uint32_t>(i));
+	}
+	tri.addOutline(outline_indices);
+	
+	if (tri.triangulate(true)) {
+	    // Extract triangles and add them to the mesh
+	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+		// Map detria point indices back to our vertex indices
+		if (triangle.x < vertex_indices.size() && 
+		    triangle.y < vertex_indices.size() && 
+		    triangle.z < vertex_indices.size()) {
+		    addSurfaceTriangle(vertex_indices[triangle.x], vertex_indices[triangle.y], vertex_indices[triangle.z]);
+		}
+	    });
+	    
+	    patch.triangulated = true;
+	    return true;
+	}
+    } catch (...) {
+	// Detria failed, fall back to grid triangulation for this patch
+    }
+    
+    return false;
+}
+
+// Triangulate remaining cells using basic grid approach, being careful about boundaries
+void TerrainMesh::triangulateRemainingCellsWithFallback(const TerrainData& terrain,
+	const std::set<std::pair<int, int>>& remaining_cells,
+	const std::vector<std::vector<size_t>>& surface_vertices,
+	const std::vector<PlanarPatch>& patches) {
+    
+    // Create map of patch cells for quick lookup
+    std::set<std::pair<int, int>> patch_cells;
+    for (const auto& patch : patches) {
+	if (patch.triangulated) {
+	    for (const auto& cell : patch.cells) {
+		patch_cells.insert(cell);
+	    }
+	}
+    }
+    
+    // Grid-based triangulation for remaining cells
+    for (int y = 0; y < terrain.height - 1; ++y) {
+	for (int x = 0; x < terrain.width - 1; ++x) {
+	    // Check if all 4 corners of this grid cell are in remaining cells
+	    std::vector<std::pair<int, int>> corners = {
+		{x, y}, {x+1, y}, {x, y+1}, {x+1, y+1}
+	    };
+	    
+	    bool all_remaining = true;
+	    for (const auto& corner : corners) {
+		if (remaining_cells.find(corner) == remaining_cells.end()) {
+		    all_remaining = false;
+		    break;
+		}
+	    }
+	    
+	    if (all_remaining) {
+		// Standard grid triangulation
+		size_t v00 = surface_vertices[y][x];
+		size_t v10 = surface_vertices[y][x+1];
+		size_t v01 = surface_vertices[y+1][x];
+		size_t v11 = surface_vertices[y+1][x+1];
+		
+		addSurfaceTriangle(v00, v01, v10);
+		addSurfaceTriangle(v10, v01, v11);
+	    }
+	    // TODO: Handle partial cells at patch boundaries more carefully
+	    // to ensure manifold connections
+	}
+    }
 }
 
 } // namespace TerraScape

@@ -34,6 +34,7 @@ int main(int argc, char* argv[])
         ("o,output", "Output OBJ file", cxxopts::value<std::string>()->default_value("terrain.obj"))
         ("s,simplified", "Use Terra/Scape simplified triangulation")
         ("surface-only", "Generate surface-only mesh (no volume)")
+        ("planar-patches", "Use new planar patch-based surface triangulation")
         ("components", "Handle terrain islands and holes separately (default)")
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
         ("brlcad-test", "Test BRL-CAD DSP integration")
@@ -53,6 +54,7 @@ int main(int argc, char* argv[])
     std::string output_file = result["output"].as<std::string>();
     bool use_simplified = result.count("simplified") > 0;
     bool surface_only = result.count("surface-only") > 0;
+    bool planar_patches = result.count("planar-patches") > 0;
     bool use_components = result.count("components") > 0;
     bool use_legacy = result.count("legacy") > 0;
     bool brlcad_test = result.count("brlcad-test") > 0;
@@ -129,6 +131,8 @@ int main(int argc, char* argv[])
         std::cout << "Mode: Components (separate islands and holes)" << std::endl;
     } else if (use_legacy) {
         std::cout << "Mode: Legacy (single connected mesh)" << std::endl;
+    } else if (planar_patches) {
+        std::cout << "Mode: Planar patches (new approach)" << std::endl;
     } else if (surface_only) {
         std::cout << "Mode: Surface-only (Terra/Scape)" << std::endl;
     } else if (use_simplified) {
@@ -136,7 +140,7 @@ int main(int argc, char* argv[])
     } else {
         std::cout << "Mode: Dense (with component analysis)" << std::endl;
     }
-    if (use_simplified || surface_only) {
+    if (use_simplified || surface_only || planar_patches) {
         std::cout << "Error threshold: " << error_threshold << std::endl;
         std::cout << "Target reduction: " << reduction_percent << "%" << std::endl;
     }
@@ -162,6 +166,11 @@ int main(int argc, char* argv[])
             mesh.triangulateVolumeWithComponents(terrain);
         } else if (use_legacy) {
             mesh.triangulateVolumeLegacy(terrain);
+        } else if (planar_patches) {
+            TerraScape::SimplificationParams params;
+            params.setErrorTol(error_threshold);
+            params.setMinReduction(reduction_percent);
+            mesh.triangulateSurfaceWithPlanarPatches(terrain, params);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
