@@ -2213,9 +2213,9 @@ double SimplificationParams::computeEffectiveCoplanarTolerance(const TerrainData
         base_tolerance = std::max(base_tolerance, norm_tolerance);
     }
     
-    // Apply consistent scaling factor for coplanar aggressiveness
-    // Make coplanar detection more permissive (2.5x) than feature size to encourage flat area simplification
-    double coplanar_tolerance = base_tolerance * 2.5;
+    // Use same tolerance as feature size - no additional scaling needed
+    // Base tolerance already provides appropriate coplanar detection sensitivity
+    double coplanar_tolerance = base_tolerance;
     
     // Ensure minimum sensible coplanar tolerance
     if (coplanar_tolerance <= 0.0) {

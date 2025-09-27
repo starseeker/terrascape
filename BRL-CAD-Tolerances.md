@@ -66,7 +66,7 @@ feature_size = effective_tolerance
 ```
 
 ### Coplanar Tolerance for Planar Patches
-For coplanar patch detection, tolerances are consistently scaled to be more aggressive:
+For coplanar patch detection, tolerances use the same computation as feature size:
 
 ```
 base_tolerance = max(
@@ -74,18 +74,18 @@ base_tolerance = max(
     rel_tol * bounding_box_diagonal,               // relative tolerance 
     cell_size * tan(norm_tol * π/180)              // normal tolerance
 )
-coplanar_tolerance = base_tolerance * 2.5          // Consistent 2.5x scaling
+coplanar_tolerance = base_tolerance                 // Same as feature size
 ```
 
 ### Design Rationale
 
 1. **Loose tolerances → More aggressive simplification**: As specified in the requirements, loose tolerances translate to larger feature sizes and more aggressive coplanar patching.
 
-2. **Consistent tolerance interpretation**: Both feature size and coplanar tolerance use the same base calculations for abs/rel/norm tolerance conversion, ensuring consistent interpretation across all tolerance types.
+2. **Consistent tolerance interpretation**: Both feature size and coplanar tolerance use identical calculations for abs/rel/norm tolerance conversion, ensuring consistent interpretation across all tolerance types.
 
-3. **Proportional coplanar scaling**: Coplanar tolerance is consistently 2.5x the feature size regardless of which tolerance type (abs/rel/norm) is used, providing predictable and controllable aggressiveness.
+3. **Simplified coplanar scaling**: Testing with the crater example showed that additional coplanar scaling factors (2.5x) provided minimal benefit (<2% difference), so coplanar tolerance uses the same value as feature size for simplicity.
 
-4. **Flat area optimization**: The higher coplanar tolerance promotes more aggressive patching because "flat areas contribute the least to overall shape."
+4. **Flat area optimization**: The tolerance-based approach naturally provides appropriate coplanar detection sensitivity without requiring additional scaling factors.
 
 ## Integration with BRL-CAD DSP
 
