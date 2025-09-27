@@ -2486,6 +2486,169 @@ bool TerrainMesh::triangulatePlanarPatchWithDetria(PlanarPatch& patch, const Ter
     return false;
 }
 
+// Triangulate remaining cells using basic grid approach, being careful about boundaries
+void TerrainMesh::triangulateRemainingCellsWithFallback(const TerrainData& terrain,
+    
+    // Create boundary vertices (counter-clockwise)
+    std::vector<std::pair<double, double>> boundary;
+    std::vector<size_t> vertex_indices;
+    
+    // Find boundary cells by checking for cells that have non-patch neighbors
+    std::set<std::pair<int, int>> patch_cell_set(patch.cells.begin(), patch.cells.end());
+    std::vector<std::pair<int, int>> boundary_cells;
+    
+    for (const auto& cell : patch.cells) {
+	int x = cell.first, y = cell.second;
+	
+	// Check if cell is on the boundary (has at least one non-patch neighbor)
+	bool is_boundary = false;
+	int dx[] = {-1, 0, 1, 0};
+	int dy[] = {0, -1, 0, 1};
+	
+	for (int i = 0; i < 4; ++i) {
+	    int nx = x + dx[i];
+	    int ny = y + dy[i];
+	    
+	    if (!terrain.isValidCell(nx, ny) || !patch_cell_set.count({nx, ny})) {
+		is_boundary = true;
+		break;
+	    }
+	}
+	
+	if (is_boundary) {
+	    boundary_cells.push_back(cell);
+	}
+    }
+    
+    if (boundary_cells.empty()) return false;
+    
+    // Sort boundary cells to form a proper boundary polygon
+    // Simple approach: find extremal points and connect in order
+    auto min_x_it = std::min_element(boundary_cells.begin(), boundary_cells.end(),
+		[](const auto& a, const auto& b) { return a.first < b.first; });
+    
+    // Start from leftmost boundary cell and traverse boundary
+    std::pair<int, int> start_cell = *min_x_it;
+    std::vector<std::pair<int, int>> ordered_boundary = {start_cell};
+    std::set<std::pair<int, int>> used_boundary;
+    used_boundary.insert(start_cell);
+    
+    // Simple boundary tracing (could be improved)
+    auto current = start_cell;
+    while (ordered_boundary.size() < boundary_cells.size()) {
+	std::pair<int, int> next_cell = current;
+	double min_dist = std::numeric_limits<double>::max();
+	
+	for (const auto& candidate : boundary_cells) {
+	    if (used_boundary.count(candidate)) continue;
+	    
+	    double dist = std::sqrt((candidate.first - current.first) * (candidate.first - current.first) +
+				   (candidate.second - current.second) * (candidate.second - current.second));
+	    
+	    if (dist < min_dist) {
+		min_dist = dist;
+		next_cell = candidate;
+	    }
+	}
+	
+	if (next_cell == current) break; // No more boundary cells found
+	
+	ordered_boundary.push_back(next_cell);
+	used_boundary.insert(next_cell);
+	current = next_cell;
+    }
+    
+    // Convert to world coordinates for detria
+    for (const auto& cell : ordered_boundary) {
+	double world_x = terrain.origin.x + cell.first * terrain.cell_size;
+	double world_y = terrain.origin.y - cell.second * terrain.cell_size;
+	boundary.push_back({world_x, world_y});
+	
+	// Find vertex index for this cell
+	for (size_t v_idx = 0; v_idx < vertices.size(); ++v_idx) {
+	    const Point3D& v = vertices[v_idx];
+	    if (std::abs(v.x - world_x) < 1e-6 && std::abs(v.y - world_y) < 1e-6) {
+		vertex_indices.push_back(v_idx);
+		break;
+	    }
+	}
+    }
+    
+    if (boundary.size() < 3 || vertex_indices.size() != boundary.size()) {
+	return false; // Invalid boundary
+    }
+    
+    // Generate Steiner points adapted for patch scale
+    double patch_area = (patch.max_x - patch.min_x + 1) * (patch.max_y - patch.min_y + 1) * 
+		       terrain.cell_size * terrain.cell_size;
+    
+    std::vector<std::pair<double, double>> steiner_points;
+    
+    // Only generate Steiner points for larger patches
+    if (patch.cells.size() > 50) {
+	// Use terrain's Steiner point generation but adapt for patch bounds
+	std::set<std::pair<int, int>> patch_active_cells(patch.cells.begin(), patch.cells.end());
+	std::vector<std::vector<std::pair<double, double>>> holes; // No holes for now
+	
+	double min_world_x = terrain.origin.x + patch.min_x * terrain.cell_size;
+	double max_world_x = terrain.origin.x + patch.max_x * terrain.cell_size;
+	double min_world_y = terrain.origin.y - patch.max_y * terrain.cell_size; // Note: y is inverted
+	double max_world_y = terrain.origin.y - patch.min_y * terrain.cell_size;
+	
+	steiner_points = terrain.generateSteinerPoints(
+	    boundary, holes, patch_active_cells, 
+	    min_world_x, max_world_x, min_world_y, max_world_y);
+    }
+    
+    // Try detria triangulation
+    try {
+	// Set up detria triangulation
+	detria::Triangulation tri;
+	
+	// Create all points: boundary + steiner points
+	std::vector<detria::PointD> all_points;
+	for (const auto& bp : boundary) {
+	    all_points.push_back({bp.first, bp.second});
+	}
+	
+	// Create vertices for Steiner points and add to all_points
+	for (const auto& sp : steiner_points) {
+	    all_points.push_back({sp.first, sp.second});
+	    size_t steiner_idx = addVertex(Point3D(sp.first, sp.second, patch.height));
+	    vertex_indices.push_back(steiner_idx);
+	}
+	
+	tri.setPoints(all_points);
+	
+	// Add boundary outline (indices refer to all_points)
+	std::vector<uint32_t> outline_indices;
+	for (size_t i = 0; i < boundary.size(); ++i) {
+	    outline_indices.push_back(static_cast<uint32_t>(i));
+	}
+	tri.addOutline(outline_indices);
+	
+	if (tri.triangulate(true)) {
+	    // Extract triangles and add them to the mesh
+	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+		// Map detria point indices back to our vertex indices
+		if (triangle.x < vertex_indices.size() && 
+		    triangle.y < vertex_indices.size() && 
+		    triangle.z < vertex_indices.size()) {
+		    addSurfaceTriangle(vertex_indices[triangle.x], vertex_indices[triangle.y], vertex_indices[triangle.z]);
+		}
+	    });
+	    
+	    patch.triangulated = true;
+	    return true;
+	}
+    } catch (...) {
+	// Detria failed, fall back to grid triangulation for this patch
+    }
+    
+    return false;
+}
+
+// Triangulate remaining cells using basic grid approach, being careful about boundaries
 void TerrainMesh::triangulateRemainingCellsWithFallback(const TerrainData& terrain,
 	const std::set<std::pair<int, int>>& remaining_cells,
 	const std::vector<std::vector<size_t>>& surface_vertices,
