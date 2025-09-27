@@ -2244,49 +2244,116 @@ void TrianglePlanarPatch::extractBoundaryPolygon(const std::vector<Triangle>& tr
         }
     }
     
-    // Sort boundary edges to form a polygon (simple approach)
+    std::cout << "      Found " << boundary_edges.size() << " boundary edges" << std::endl;
+    
+    // Sort boundary edges to form a polygon - improved algorithm
     if (!boundary_edges.empty()) {
         boundary_polygon.clear();
         boundary_vertex_indices.clear();
         
-        // Start with first edge
+        // Build adjacency map for boundary edges
+        std::map<size_t, std::vector<size_t>> vertex_adjacency;
+        for (const auto& edge : boundary_edges) {
+            vertex_adjacency[edge.first].push_back(edge.second);
+            vertex_adjacency[edge.second].push_back(edge.first);
+        }
+        
+        // Check if each boundary vertex has exactly 2 neighbors (manifold boundary)
+        bool is_manifold_boundary = true;
+        for (const auto& adj : vertex_adjacency) {
+            if (adj.second.size() != 2) {
+                is_manifold_boundary = false;
+                std::cout << "      Non-manifold boundary: vertex " << adj.first 
+                         << " has " << adj.second.size() << " neighbors" << std::endl;
+            }
+        }
+        
+        if (!is_manifold_boundary) {
+            std::cout << "      Boundary is non-manifold, skipping" << std::endl;
+            return;
+        }
+        
+        // Trace boundary starting from first vertex
         std::vector<size_t> boundary_vertices_ordered;
-        boundary_vertices_ordered.push_back(boundary_edges[0].first);
-        boundary_vertices_ordered.push_back(boundary_edges[0].second);
+        std::set<size_t> visited_vertices;
         
-        // Try to connect remaining edges
-        std::vector<bool> used_edges(boundary_edges.size(), false);
-        used_edges[0] = true;
+        size_t start_vertex = boundary_edges[0].first;
+        size_t current_vertex = start_vertex;
+        size_t prev_vertex = SIZE_MAX;
         
-        while (boundary_vertices_ordered.size() < boundary_edges.size() + 1) {
-            size_t last_vertex = boundary_vertices_ordered.back();
-            bool found_next = false;
+        do {
+            boundary_vertices_ordered.push_back(current_vertex);
+            visited_vertices.insert(current_vertex);
             
-            for (size_t i = 1; i < boundary_edges.size(); ++i) {
-                if (used_edges[i]) continue;
-                
-                if (boundary_edges[i].first == last_vertex) {
-                    boundary_vertices_ordered.push_back(boundary_edges[i].second);
-                    used_edges[i] = true;
-                    found_next = true;
-                    break;
-                } else if (boundary_edges[i].second == last_vertex) {
-                    boundary_vertices_ordered.push_back(boundary_edges[i].first);
-                    used_edges[i] = true;
-                    found_next = true;
+            // Find next vertex (not the previous one)
+            size_t next_vertex = SIZE_MAX;
+            for (size_t neighbor : vertex_adjacency[current_vertex]) {
+                if (neighbor != prev_vertex) {
+                    next_vertex = neighbor;
                     break;
                 }
             }
             
-            if (!found_next) break;
+            if (next_vertex == SIZE_MAX) {
+                std::cout << "      Failed to trace boundary: dead end at vertex " << current_vertex << std::endl;
+                return;
+            }
+            
+            prev_vertex = current_vertex;
+            current_vertex = next_vertex;
+            
+        } while (current_vertex != start_vertex && boundary_vertices_ordered.size() < boundary_edges.size() + 10);
+        
+        // Check if we formed a complete loop
+        if (current_vertex != start_vertex) {
+            std::cout << "      Failed to form closed boundary loop" << std::endl;
+            return;
         }
         
-        // Convert vertices to world coordinates
+        // Remove the duplicate start vertex at the end
+        if (boundary_vertices_ordered.size() > 1 && boundary_vertices_ordered.back() == start_vertex) {
+            boundary_vertices_ordered.pop_back();
+        }
+        
+        std::cout << "      Successfully traced boundary polygon with " << boundary_vertices_ordered.size() << " vertices" << std::endl;
+        
+        // Check for reasonable polygon size
+        if (boundary_vertices_ordered.size() < 3) {
+            std::cout << "      Boundary polygon too small: " << boundary_vertices_ordered.size() << " vertices" << std::endl;
+            return;
+        }
+        
+        // Convert vertices to world coordinates and ensure counter-clockwise winding
+        std::vector<std::pair<double, double>> temp_polygon;
+        std::vector<size_t> temp_indices;
+        
         for (size_t vertex_idx : boundary_vertices_ordered) {
             const Point3D& vertex = vertices[vertex_idx];
-            boundary_polygon.push_back({vertex.x, vertex.y});
-            boundary_vertex_indices.push_back(vertex_idx);
+            temp_polygon.push_back({vertex.x, vertex.y});
+            temp_indices.push_back(vertex_idx);
         }
+        
+        // Check winding order using shoelace formula
+        double signed_area = 0.0;
+        for (size_t i = 0; i < temp_polygon.size(); ++i) {
+            size_t j = (i + 1) % temp_polygon.size();
+            signed_area += (temp_polygon[j].first - temp_polygon[i].first) * 
+                          (temp_polygon[j].second + temp_polygon[i].second);
+        }
+        
+        // If clockwise (positive area), reverse to make counter-clockwise
+        if (signed_area > 0) {
+            std::reverse(temp_polygon.begin(), temp_polygon.end());
+            std::reverse(temp_indices.begin(), temp_indices.end());
+            std::cout << "      Reversed polygon to counter-clockwise winding" << std::endl;
+        }
+        
+        // Store the result
+        boundary_polygon = temp_polygon;
+        boundary_vertex_indices = temp_indices;
+        
+        std::cout << "      Final boundary polygon: " << boundary_polygon.size() 
+                 << " points, signed area: " << signed_area << std::endl;
     }
 }
 
@@ -2403,19 +2470,35 @@ std::vector<TrianglePlanarPatch> TerrainMesh::findTrianglePlanarPatches(double c
 
 // Triangulate a triangle-based planar patch using detria
 bool TerrainMesh::triangulateTrianglePatchWithDetria(TrianglePlanarPatch& patch) {
-    if (patch.triangle_indices.size() < 16 || patch.boundary_polygon.size() < 3) {
-        std::cout << "    Patch too small: " << patch.triangle_indices.size() << " triangles, " 
-                  << patch.boundary_polygon.size() << " boundary points" << std::endl;
-        return false; // Too small or invalid boundary
+    if (patch.triangle_indices.size() < 16) {
+        std::cout << "    Patch too small: " << patch.triangle_indices.size() << " triangles" << std::endl;
+        return false;
+    }
+    
+    if (patch.boundary_polygon.size() < 3) {
+        std::cout << "    Invalid boundary: " << patch.boundary_polygon.size() << " boundary points" << std::endl;
+        return false;
     }
     
     std::cout << "    Attempting to triangulate patch with " << patch.triangle_indices.size() 
               << " triangles, boundary polygon size: " << patch.boundary_polygon.size() << std::endl;
     
-    // Remove the old triangles from the mesh first
-    std::vector<bool> triangles_to_remove(triangles.size(), false);
-    for (size_t tri_idx : patch.triangle_indices) {
-        triangles_to_remove[tri_idx] = true;
+    // Validate boundary polygon
+    bool has_duplicate_points = false;
+    for (size_t i = 0; i < patch.boundary_polygon.size(); ++i) {
+        for (size_t j = i + 1; j < patch.boundary_polygon.size(); ++j) {
+            double dx = patch.boundary_polygon[i].first - patch.boundary_polygon[j].first;
+            double dy = patch.boundary_polygon[i].second - patch.boundary_polygon[j].second;
+            if (dx * dx + dy * dy < 1e-10) {
+                has_duplicate_points = true;
+                std::cout << "    Warning: duplicate points at indices " << i << " and " << j << std::endl;
+            }
+        }
+    }
+    
+    if (has_duplicate_points) {
+        std::cout << "    Skipping patch due to duplicate boundary points" << std::endl;
+        return false;
     }
     
     // Try detria triangulation of the boundary polygon
@@ -2429,6 +2512,7 @@ bool TerrainMesh::triangulateTrianglePatchWithDetria(TrianglePlanarPatch& patch)
             all_points.push_back({bp.first, bp.second});
         }
         
+        std::cout << "    Setting " << all_points.size() << " points for detria" << std::endl;
         tri.setPoints(all_points);
         
         // Add boundary outline
@@ -2436,21 +2520,76 @@ bool TerrainMesh::triangulateTrianglePatchWithDetria(TrianglePlanarPatch& patch)
         for (size_t i = 0; i < patch.boundary_polygon.size(); ++i) {
             outline_indices.push_back(static_cast<uint32_t>(i));
         }
+        
+        std::cout << "    Adding outline with " << outline_indices.size() << " indices" << std::endl;
         tri.addOutline(outline_indices);
         
+        // Perform triangulation
+        std::cout << "    Calling detria triangulate..." << std::endl;
         if (tri.triangulate(true)) {
-            std::cout << "    Detria triangulation successful" << std::endl;
+            std::cout << "    Detria triangulation successful!" << std::endl;
             
-            // For now, just mark as successful without actually replacing
-            // (since the triangle removal/replacement logic is complex)
-            patch.triangulated = true;
-            return true;
+            // Count triangles produced and actually replace them
+            std::vector<Triangle> new_detria_triangles;
+            tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+                if (triangle.x < patch.boundary_vertex_indices.size() && 
+                    triangle.y < patch.boundary_vertex_indices.size() && 
+                    triangle.z < patch.boundary_vertex_indices.size()) {
+                    
+                    size_t v0 = patch.boundary_vertex_indices[triangle.x];
+                    size_t v1 = patch.boundary_vertex_indices[triangle.y];  
+                    size_t v2 = patch.boundary_vertex_indices[triangle.z];
+                    
+                    Triangle new_tri(v0, v1, v2);
+                    new_tri.computeNormal(vertices);
+                    new_detria_triangles.push_back(new_tri);
+                }
+            });
+            
+            std::cout << "    Detria produced " << new_detria_triangles.size() << " triangles" << std::endl;
+            
+            if (!new_detria_triangles.empty()) {
+                // Remove old triangles from the patch and replace with detria triangles
+                std::vector<Triangle> updated_triangles;
+                std::set<size_t> patch_triangle_indices(patch.triangle_indices.begin(), patch.triangle_indices.end());
+                
+                // Keep triangles that are not in this patch
+                for (size_t i = 0; i < triangles.size(); ++i) {
+                    if (patch_triangle_indices.find(i) == patch_triangle_indices.end()) {
+                        updated_triangles.push_back(triangles[i]);
+                    }
+                }
+                
+                // Add new detria triangles
+                for (const auto& detria_tri : new_detria_triangles) {
+                    updated_triangles.push_back(detria_tri);
+                }
+                
+                // Update the mesh
+                size_t old_triangle_count = triangles.size();
+                triangles = updated_triangles;
+                
+                // Update surface triangle count (all triangles in this case are surface triangles)
+                if (surface_triangle_count >= patch.triangle_indices.size()) {
+                    surface_triangle_count = surface_triangle_count - patch.triangle_indices.size() + new_detria_triangles.size();
+                }
+                
+                std::cout << "    Replaced " << patch.triangle_indices.size() << " patch triangles with " 
+                         << new_detria_triangles.size() << " detria triangles" << std::endl;
+                std::cout << "    Total triangles: " << old_triangle_count << " -> " << triangles.size() << std::endl;
+                
+                patch.triangulated = true;
+                return true;
+            } else {
+                std::cout << "    Detria produced no valid triangles" << std::endl;
+            }
         } else {
-            std::cout << "    Detria triangulation failed" << std::endl;
+            std::cout << "    Detria triangulation returned false" << std::endl;
         }
+    } catch (const std::exception& e) {
+        std::cout << "    Detria exception: " << e.what() << std::endl;
     } catch (...) {
-        std::cout << "    Detria exception caught" << std::endl;
-        // Detria failed, keep original triangles
+        std::cout << "    Unknown detria exception caught" << std::endl;
     }
     
     return false;
@@ -2598,8 +2737,6 @@ bool TerrainMesh::simplifyMeshWithMmesh(double target_reduction) {
     return false;
 }
 
-} // namespace TerraScape
-
 #if defined(__GNUC__) && !defined(__clang__)
 #  pragma GCC diagnostic pop /* end ignoring warnings */
 #elif defined(__clang__)
@@ -2615,3 +2752,5 @@ bool TerrainMesh::simplifyMeshWithMmesh(double target_reduction) {
 // c-file-style: "stroustrup"
 // End:
 // ex: shiftwidth=4 tabstop=8 cino=N-s
+
+} // namespace TerraScape
