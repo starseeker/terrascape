@@ -333,7 +333,7 @@ class TerrainMesh {
 	void triangulateComponentVolume(const TerrainData& terrain, const ConnectedComponent& component);
 	
 	// New planar patch-based surface triangulation
-	void triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params);
+	void triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params, double coplanar_tolerance = -1.0);
 	
 	// Apply mmesh simplification to surface mesh
 	bool simplifyMeshWithMmesh(double target_reduction = 0.5);
@@ -2358,7 +2358,7 @@ void TrianglePlanarPatch::extractBoundaryPolygon(const std::vector<Triangle>& tr
 }
 
 // New triangle-based planar patch surface triangulation approach
-void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params) {
+void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params, double coplanar_tolerance) {
     clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -2393,7 +2393,12 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
 
     // Step 2: Find triangle-based planar patches
     std::cout << "Step 2: Finding triangle planar patches..." << std::endl;
-    std::vector<TrianglePlanarPatch> patches = findTrianglePlanarPatches(params.getErrorTol(), 16);
+    
+    // Use provided coplanar tolerance, or fallback to error threshold if not specified
+    double tolerance = (coplanar_tolerance >= 0.0) ? coplanar_tolerance : params.getErrorTol();
+    std::cout << "Using coplanar tolerance: " << tolerance << std::endl;
+    
+    std::vector<TrianglePlanarPatch> patches = findTrianglePlanarPatches(tolerance, 16);
 
     std::cout << "Found " << patches.size() << " planar triangle patches of 16+ triangles" << std::endl;
 

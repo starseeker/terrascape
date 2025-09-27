@@ -39,6 +39,7 @@ int main(int argc, char* argv[])
         ("legacy", "Use legacy single-mesh approach (may connect disjoint islands)")
         ("brlcad-test", "Test BRL-CAD DSP integration")
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
+        ("c,coplanar", "Coplanar tolerance for planar patch detection", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
         ("h,help", "Print usage");
     
@@ -59,6 +60,7 @@ int main(int argc, char* argv[])
     bool use_legacy = result.count("legacy") > 0;
     bool brlcad_test = result.count("brlcad-test") > 0;
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
+    double coplanar_tolerance = result.count("coplanar") ? result["coplanar"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
     
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
@@ -133,6 +135,7 @@ int main(int argc, char* argv[])
         std::cout << "Mode: Legacy (single connected mesh)" << std::endl;
     } else if (planar_patches) {
         std::cout << "Mode: Planar patches (new approach)" << std::endl;
+        std::cout << "Coplanar tolerance: " << coplanar_tolerance << std::endl;
     } else if (surface_only) {
         std::cout << "Mode: Surface-only (Terra/Scape)" << std::endl;
     } else if (use_simplified) {
@@ -170,7 +173,7 @@ int main(int argc, char* argv[])
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
-            mesh.triangulateSurfaceWithPlanarPatches(terrain, params);
+            mesh.triangulateSurfaceWithPlanarPatches(terrain, params, coplanar_tolerance);
         } else if (surface_only) {
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
