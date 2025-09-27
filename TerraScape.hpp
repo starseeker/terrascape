@@ -2403,7 +2403,9 @@ void TerrainMesh::triangulateCoplanarPatch(const CoplanarPatch& patch, const Ter
     }
 }
 
-// Triangulate a large coplanar patch using detria for optimization
+// Triangulate a large coplanar patch using detria with grid-mated boundary
+// Following @starseeker's suggestion: do basic grid triangulation first, 
+// extract the exact boundary polygon, then use detria with that boundary as constraint
 void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch, const TerrainData& terrain,
     const std::vector<std::vector<size_t>>& top_vertices) {
     
@@ -2413,59 +2415,162 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 
     const std::set<std::pair<int, int>>& patch_cells = patch.cells;
 
-    // Find bounds of patch
-    int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
-    for (const auto& cell : patch_cells) {
-	min_x = std::min(min_x, cell.first);
-	max_x = std::max(max_x, cell.first);
-	min_y = std::min(min_y, cell.second);
-	max_y = std::max(max_y, cell.second);
-    }
-
-    // Extract all vertices from patch cells (not just boundary)
-    std::set<std::pair<int, int>> vertex_positions;
+    // Step 1: Do basic grid triangulation to create triangulated patch
+    // This gives us the exact boundary that will mate with surrounding grid
+    std::vector<Triangle> grid_triangles;
+    std::set<std::tuple<size_t, size_t, size_t>> grid_triangle_edges;
+    
     for (const auto& cell : patch_cells) {
 	int x = cell.first;
 	int y = cell.second;
 	
-	// Add all 4 corners of this cell
-	vertex_positions.insert({x, y});
-	vertex_positions.insert({x + 1, y});
-	vertex_positions.insert({x, y + 1});
-	vertex_positions.insert({x + 1, y + 1});
-    }
+	if (x < terrain.width - 1 && y < terrain.height - 1) {
+	    size_t v00 = top_vertices[y][x];
+	    size_t v10 = top_vertices[y][x + 1];
+	    size_t v01 = top_vertices[y + 1][x];
+	    size_t v11 = top_vertices[y + 1][x + 1];
 
-    // Convert to vectors for detria
-    std::vector<detria::PointD> all_points;
-    std::vector<size_t> all_vertex_indices;
-    
-    for (const auto& pos : vertex_positions) {
-	int x = pos.first;
-	int y = pos.second;
-	
-	if (x >= 0 && x < terrain.width && y >= 0 && y < terrain.height) {
-	    const Point3D& vertex = vertices[top_vertices[y][x]];
-	    all_points.push_back({vertex.x, vertex.y});
-	    all_vertex_indices.push_back(top_vertices[y][x]);
+	    Triangle tri1(v00, v01, v10);
+	    Triangle tri2(v10, v01, v11);
+	    grid_triangles.push_back(tri1);
+	    grid_triangles.push_back(tri2);
+	    
+	    // Track edges from these triangles
+	    grid_triangle_edges.insert({v00, v01, v10});
+	    grid_triangle_edges.insert({v10, v01, v11});
 	}
     }
 
-    if (all_points.size() < 3) {
-	// Fallback to regular triangulation
-	return triangulateCoplanarPatch(patch, terrain, top_vertices);
+    // Step 2: Extract boundary edges (edges that are only in one triangle)
+    std::map<std::pair<size_t, size_t>, int> edge_count;
+    
+    for (const auto& tri : grid_triangles) {
+	// Add the three edges of this triangle
+	std::vector<std::pair<size_t, size_t>> edges = {
+	    {std::min(tri.vertices[0], tri.vertices[1]), std::max(tri.vertices[0], tri.vertices[1])},
+	    {std::min(tri.vertices[1], tri.vertices[2]), std::max(tri.vertices[1], tri.vertices[2])},
+	    {std::min(tri.vertices[2], tri.vertices[0]), std::max(tri.vertices[2], tri.vertices[0])}
+	};
+	
+	for (const auto& edge : edges) {
+	    edge_count[edge]++;
+	}
+    }
+    
+    // Boundary edges appear exactly once (not shared with adjacent cells outside patch)
+    std::vector<std::pair<size_t, size_t>> boundary_edges;
+    for (const auto& edge_pair : edge_count) {
+	if (edge_pair.second == 1) { // Edge appears only once = boundary edge
+	    boundary_edges.push_back(edge_pair.first);
+	}
+    }
+    
+    if (boundary_edges.size() < 3) {
+	// Fallback to grid triangulation if boundary extraction fails
+	for (const auto& tri : grid_triangles) {
+	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
+	}
+	return;
     }
 
-    // Use detria for triangulation (no constraints for now - just Delaunay)
+    // Step 3: Order boundary edges to form a polygon
+    // Build adjacency list from boundary edges
+    std::map<size_t, std::vector<size_t>> adjacency;
+    for (const auto& edge : boundary_edges) {
+	adjacency[edge.first].push_back(edge.second);
+	adjacency[edge.second].push_back(edge.first);
+    }
+    
+    // Trace boundary polygon starting from any boundary vertex
+    std::vector<size_t> boundary_vertex_indices;
+    std::set<size_t> visited;
+    
+    if (!boundary_edges.empty()) {
+	size_t start_vertex = boundary_edges[0].first;
+	size_t current_vertex = start_vertex;
+	
+	do {
+	    boundary_vertex_indices.push_back(current_vertex);
+	    visited.insert(current_vertex);
+	    
+	    // Find next unvisited neighbor
+	    size_t next_vertex = SIZE_MAX;
+	    for (size_t neighbor : adjacency[current_vertex]) {
+		if (!visited.count(neighbor)) {
+		    next_vertex = neighbor;
+		    break;
+		}
+	    }
+	    
+	    if (next_vertex == SIZE_MAX) break;
+	    current_vertex = next_vertex;
+	    
+	} while (current_vertex != start_vertex && boundary_vertex_indices.size() < boundary_edges.size() + 1);
+    }
+    
+    if (boundary_vertex_indices.size() < 3) {
+	// Fallback to grid triangulation
+	for (const auto& tri : grid_triangles) {
+	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
+	}
+	return;
+    }
+
+    // Step 4: Create boundary polygon for detria
+    std::vector<std::pair<double, double>> boundary_points;
+    for (size_t vertex_idx : boundary_vertex_indices) {
+	const Point3D& vertex = vertices[vertex_idx];
+	boundary_points.push_back({vertex.x, vertex.y});
+    }
+
+    // Step 5: Use detria with the exact boundary constraints
     try {
+	std::vector<detria::PointD> all_points;
+	std::vector<size_t> all_vertex_indices;
+
+	// Add boundary points first
+	for (size_t i = 0; i < boundary_vertex_indices.size(); ++i) {
+	    const Point3D& vertex = vertices[boundary_vertex_indices[i]];
+	    all_points.push_back({vertex.x, vertex.y});
+	    all_vertex_indices.push_back(boundary_vertex_indices[i]);
+	}
+
+	// Add some interior points for better triangulation
+	std::set<size_t> boundary_set(boundary_vertex_indices.begin(), boundary_vertex_indices.end());
+	std::set<size_t> all_patch_vertices;
+	
+	for (const auto& tri : grid_triangles) {
+	    all_patch_vertices.insert(tri.vertices[0]);
+	    all_patch_vertices.insert(tri.vertices[1]);
+	    all_patch_vertices.insert(tri.vertices[2]);
+	}
+	
+	// Add interior vertices (not on boundary)
+	for (size_t vertex_idx : all_patch_vertices) {
+	    if (!boundary_set.count(vertex_idx)) {
+		const Point3D& vertex = vertices[vertex_idx];
+		all_points.push_back({vertex.x, vertex.y});
+		all_vertex_indices.push_back(vertex_idx);
+	    }
+	}
+
+	// Set up detria triangulation with boundary constraints
 	detria::Triangulation tri;
 	tri.setPoints(all_points);
 
+	// Add boundary outline constraint - this preserves the exact boundary
+	std::vector<uint32_t> outline_indices;
+	for (size_t i = 0; i < boundary_vertex_indices.size(); ++i) {
+	    outline_indices.push_back(static_cast<uint32_t>(i));
+	}
+	tri.addOutline(outline_indices);
+
 	// Triangulate
-	bool success = tri.triangulate(true); // Use Delaunay triangulation
+	bool success = tri.triangulate(true);
 
 	if (success) {
 	    // Extract triangles and add them to the mesh
-	    bool cwTriangles = false; // We want counter-clockwise for surface
+	    bool cwTriangles = false;
 
 	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
 		size_t v0, v1, v2;
@@ -2482,16 +2587,19 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 		    v2 = all_vertex_indices[triangle.z];
 		} else return;
 
-		// Add triangle with correct surface orientation 
 		addSurfaceTriangle(v0, v1, v2);
 	    }, cwTriangles);
 	} else {
 	    // Fallback to grid triangulation
-	    return triangulateCoplanarPatch(patch, terrain, top_vertices);
+	    for (const auto& tri : grid_triangles) {
+		addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
+	    }
 	}
     } catch (const std::exception&) {
 	// Fallback to grid triangulation if detria fails
-	return triangulateCoplanarPatch(patch, terrain, top_vertices);
+	for (const auto& tri : grid_triangles) {
+	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
+	}
     }
 }
 
