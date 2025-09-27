@@ -2523,8 +2523,96 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	boundary_points.push_back({vertex.x, vertex.y});
     }
 
-    // Step 5: For now, use only grid triangulation to maintain manifold property
-    // TODO: Investigate why detria creates non-manifold edges despite constraints
+    // Step 5: Test detria with minimal implementation like bottom face
+    // This investigates why detria works for bottom face but not surface patches
+    if (patch.size() >= 25) { // Only test on large patches
+	try {
+	    // Mirror bottom face approach: boundary polygon + Steiner points + detria
+	    std::vector<std::pair<double, double>> boundary_polygon;
+	    std::vector<size_t> boundary_indices;
+	    
+	    for (size_t vertex_idx : boundary_vertex_indices) {
+		const Point3D& vertex = vertices[vertex_idx];
+		boundary_polygon.push_back({vertex.x, vertex.y});
+		boundary_indices.push_back(vertex_idx);
+	    }
+
+	    // Find bounds for Steiner generation (like bottom face)
+	    int min_x = INT_MAX, max_x = INT_MIN, min_y = INT_MAX, max_y = INT_MIN;
+	    for (const auto& cell : patch_cells) {
+		min_x = std::min(min_x, cell.first);
+		max_x = std::max(max_x, cell.first);
+		min_y = std::min(min_y, cell.second);
+		max_y = std::max(max_y, cell.second);
+	    }
+
+	    // Generate Steiner points exactly like bottom face
+	    std::vector<std::vector<std::pair<double, double>>> holes; // No holes
+	    std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
+		boundary_polygon, holes, patch_cells, min_x, max_x + 1, min_y, max_y + 1);
+
+	    // Create points exactly like bottom face
+	    std::vector<detria::PointD> all_points;
+	    std::vector<size_t> all_vertex_indices;
+
+	    // Add boundary points first
+	    for (const auto& point : boundary_polygon) {
+		all_points.push_back({point.first, point.second});
+	    }
+	    all_vertex_indices = boundary_indices;
+
+	    // Add Steiner points as vertices exactly like bottom face
+	    for (const auto& point : steiner_points) {
+		double world_z = patch.plane_z; // Use patch height instead of 0
+		size_t vertex_index = addVertex(Point3D(point.first, point.second, world_z));
+		all_vertex_indices.push_back(vertex_index);
+		all_points.push_back({point.first, point.second});
+	    }
+
+	    // Set up detria exactly like bottom face
+	    detria::Triangulation tri;
+	    tri.setPoints(all_points);
+
+	    // Add outline exactly like bottom face
+	    std::vector<uint32_t> outline_indices;
+	    for (size_t i = 0; i < boundary_polygon.size(); ++i) {
+		outline_indices.push_back(static_cast<uint32_t>(i));
+	    }
+	    tri.addOutline(outline_indices);
+
+	    // Triangulate exactly like bottom face
+	    bool success = tri.triangulate(true);
+
+	    if (success) {
+		// Extract triangles exactly like bottom face (but surface orientation)
+		bool cwTriangles = false; // Same as bottom face
+
+		tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
+		    size_t v0, v1, v2;
+
+		    if (triangle.x < all_vertex_indices.size()) {
+			v0 = all_vertex_indices[triangle.x];
+		    } else return;
+
+		    if (triangle.y < all_vertex_indices.size()) {
+			v1 = all_vertex_indices[triangle.y];
+		    } else return;
+
+		    if (triangle.z < all_vertex_indices.size()) {
+			v2 = all_vertex_indices[triangle.z];
+		    } else return;
+
+		    // Use surface orientation instead of bottom face reversed winding
+		    addSurfaceTriangle(v0, v1, v2); // Normal winding for surface
+		}, cwTriangles);
+		return; // Success - used detria
+	    }
+	} catch (const std::exception&) {
+	    // Fall back to grid if detria fails
+	}
+    }
+    
+    // Fallback to grid triangulation (maintains manifold)
     for (const auto& tri : grid_triangles) {
 	addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
     }
