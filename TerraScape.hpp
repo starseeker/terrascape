@@ -2186,6 +2186,7 @@ double SimplificationParams::computeEffectiveCoplanarTolerance(const TerrainData
     // This supports the requirement: "flat areas contribute the least to overall shape so we really need 
     // the coarser tessellations there - so loose tolerances should translate to more aggressive coplanar patching"
     
+    // Use the same base tolerance computations as feature size, but apply consistent scaling for aggressiveness
     double terrain_width = terrain.width * terrain.cell_size;
     double terrain_height = terrain.height * terrain.cell_size; 
     double elevation_range = terrain.max_height - terrain.min_height;
@@ -2193,25 +2194,28 @@ double SimplificationParams::computeEffectiveCoplanarTolerance(const TerrainData
                                    terrain_height * terrain_height + 
                                    elevation_range * elevation_range);
     
-    double coplanar_tolerance = 0.0;
+    double base_tolerance = 0.0;
     
-    // Convert abs_tol for coplanar detection (more permissive)
+    // Convert abs_tol using same calculation as feature size
     if (abs_tol >= 0) {
-        coplanar_tolerance = std::max(coplanar_tolerance, abs_tol * 3.0);
+        base_tolerance = std::max(base_tolerance, abs_tol);
     }
     
-    // Convert rel_tol for coplanar detection 
+    // Convert rel_tol using same calculation as feature size
     if (rel_tol >= 0) {
-        double rel_tolerance = rel_tol * bbox_diagonal * 2.0; // More aggressive for flat areas
-        coplanar_tolerance = std::max(coplanar_tolerance, rel_tolerance);
+        double rel_tolerance = rel_tol * bbox_diagonal;
+        base_tolerance = std::max(base_tolerance, rel_tolerance);
     }
     
-    // Normal tolerance directly affects coplanarity detection
+    // Convert norm_tol using same calculation as feature size
     if (norm_tol >= 0) {
-        // For coplanar patches, be more permissive with normal deviations
-        double norm_tolerance = terrain.cell_size * std::tan((norm_tol * 2.0) * M_PI / 180.0);
-        coplanar_tolerance = std::max(coplanar_tolerance, norm_tolerance);
+        double norm_tolerance = terrain.cell_size * std::tan(norm_tol * M_PI / 180.0);
+        base_tolerance = std::max(base_tolerance, norm_tolerance);
     }
+    
+    // Apply consistent scaling factor for coplanar aggressiveness
+    // Make coplanar detection more permissive (2.5x) than feature size to encourage flat area simplification
+    double coplanar_tolerance = base_tolerance * 2.5;
     
     // Ensure minimum sensible coplanar tolerance
     if (coplanar_tolerance <= 0.0) {

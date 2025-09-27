@@ -66,23 +66,26 @@ feature_size = effective_tolerance
 ```
 
 ### Coplanar Tolerance for Planar Patches
-For coplanar patch detection, tolerances are scaled to be more aggressive:
+For coplanar patch detection, tolerances are consistently scaled to be more aggressive:
 
 ```
-coplanar_tolerance = max(
-    abs_tol * 3.0,                                      // 3x more permissive
-    rel_tol * bounding_box_diagonal * 2.0,             // 2x more permissive
-    cell_size * tan((norm_tol * 2.0) * π/180)          // double the angle
+base_tolerance = max(
+    abs_tol,                                        // absolute tolerance
+    rel_tol * bounding_box_diagonal,               // relative tolerance 
+    cell_size * tan(norm_tol * π/180)              // normal tolerance
 )
+coplanar_tolerance = base_tolerance * 2.5          // Consistent 2.5x scaling
 ```
 
 ### Design Rationale
 
 1. **Loose tolerances → More aggressive simplification**: As specified in the requirements, loose tolerances translate to larger feature sizes and more aggressive coplanar patching.
 
-2. **Maximum-based combination**: When multiple tolerances are specified, the system uses the maximum computed value to ensure all constraints are satisfied.
+2. **Consistent tolerance interpretation**: Both feature size and coplanar tolerance use the same base calculations for abs/rel/norm tolerance conversion, ensuring consistent interpretation across all tolerance types.
 
-3. **Flat area optimization**: Coplanar tolerances are deliberately more permissive because "flat areas contribute the least to overall shape."
+3. **Proportional coplanar scaling**: Coplanar tolerance is consistently 2.5x the feature size regardless of which tolerance type (abs/rel/norm) is used, providing predictable and controllable aggressiveness.
+
+4. **Flat area optimization**: The higher coplanar tolerance promotes more aggressive patching because "flat areas contribute the least to overall shape."
 
 ## Integration with BRL-CAD DSP
 
