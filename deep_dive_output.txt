@@ -1,0 +1,51 @@
+TerraScape Terrain Triangulation Demo
+Input: crater.pgm
+Output: deep_dive_analysis.obj
+Mode: Planar patches (optimized surface mesh)
+Coplanar tolerance: 0.01
+Loaded terrain: 336x459 cells
+Height range: 61.8644 to 100
+Found 569 coplanar patches (total cells in patches: 23676)
+  58 large patches (25+ cells) will be optimized
+Generated 0 Steiner points using guide lines to average center point
+Patch with 56 cells: 51 total Steiner points (51 edge cell centers)
+DETRIA ANALYSIS for patch with 56 cells:
+  Total triangles: 188
+  Boundary edges: 88 (count=1)
+  Interior edges: 238 (count=2)
+  Non-manifold edges: 0 (count>2)
+Generated 0 Steiner points using guide lines to average center point
+Patch with 64 cells: 61 total Steiner points (61 edge cell centers)
+DETRIA ANALYSIS for patch with 64 cells:
+  Total triangles: 226
+  Boundary edges: 106 (count=1)
+  Interior edges: 286 (count=2)
+  Non-manifold edges: 0 (count>2)
+Generated 0 Steiner points using guide lines to average center point
+Patch with 185 cells: 102 total Steiner points (102 edge cell centers)
+DETRIA ANALYSIS for patch with 185 cells:
+  Total triangles: 294
+  Boundary edges: 128 (count=1)
+  Interior edges: 377 (count=2)
+  Non-manifold edges: 0 (count>2)
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated 0 Steiner points using guide lines to average center point
+Generated mesh: 311097 vertices, 304976 triangles
+Mesh validation:
+  Volume: 1.14659e+07 (expected: 1.18049e+07)
+  Surface area: 160944 (expected: 154224)
+  Is manifold: no
+  CCW oriented: yes
+Successfully wrote mesh to: deep_dive_analysis.obj

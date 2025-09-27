@@ -340,6 +340,9 @@ class TerrainMesh {
 	// Convert mesh to NMG-compatible triangle data
 	bool toNMG(NMGTriangleData& nmg_data) const;
 
+	// Deep dive analysis of manifold issues
+	void analyzeMeshManifold();
+
 	// Triangulation methods (moved from standalone functions)
 	void triangulateVolume(const TerrainData& terrain);
 	void triangulateVolumeLegacy(const TerrainData& terrain);
@@ -2164,6 +2167,7 @@ bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
 
 // New triangulation method using coplanar patches for optimized surface mesh
 void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain, double coplanar_tolerance) {
+    std::cout << "DEBUG: Starting triangulateVolumeWithPlanarPatches" << std::endl;
     clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -2593,9 +2597,11 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	    }
 	    
 	    // Debug: Show how many Steiner points we're adding
-	    if (patch.size() >= 25) {
+	    static int patch_debug_count = 0;
+	    if (patch.size() >= 25 && patch_debug_count < 3) {
 		std::cout << "Patch with " << patch.size() << " cells: " << steiner_points.size() 
 		         << " total Steiner points (" << boundary_cells.size() << " edge cell centers)" << std::endl;
+		patch_debug_count++;
 	    }
 
 	    // Create simple triangulation with edge cell Steiner points
@@ -2631,6 +2637,12 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 
 	    if (success) {
 		bool cwTriangles = false;
+		
+		// Deep dive debugging: collect all triangles and edges to understand manifold issues
+		std::vector<std::array<size_t, 3>> detria_triangles;
+		std::map<std::pair<size_t, size_t>, int> detria_edge_count;
+		std::map<std::pair<size_t, size_t>, std::vector<std::array<size_t, 3>>> edges_to_triangles;
+		
 		tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
 		    size_t v0, v1, v2;
 
@@ -2646,8 +2658,56 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 			v2 = all_vertex_indices[triangle.z];
 		    } else return;
 
+		    // Store triangle
+		    std::array<size_t, 3> tri_vertices = {v0, v1, v2};
+		    detria_triangles.push_back(tri_vertices);
+		    
+		    // Count edges (normalize edge direction)
+		    std::vector<std::pair<size_t, size_t>> edges = {
+			{std::min(v0, v1), std::max(v0, v1)},
+			{std::min(v1, v2), std::max(v1, v2)},
+			{std::min(v2, v0), std::max(v2, v0)}
+		    };
+		    
+		    for (const auto& edge : edges) {
+			detria_edge_count[edge]++;
+			edges_to_triangles[edge].push_back(tri_vertices);
+		    }
+
 		    addSurfaceTriangle(v0, v1, v2);
 		}, cwTriangles);
+		
+		// Analysis: Find problematic edges
+		int non_manifold_edges = 0;
+		int boundary_edges = 0;
+		int interior_edges = 0;
+		
+		for (const auto& [edge, count] : detria_edge_count) {
+		    if (count == 1) {
+			boundary_edges++;
+		    } else if (count == 2) {
+			interior_edges++;
+		    } else {
+			non_manifold_edges++;
+			std::cout << "NON-MANIFOLD EDGE: vertices " << edge.first << "-" << edge.second 
+			         << " appears in " << count << " triangles" << std::endl;
+			// Show which triangles share this edge
+			for (const auto& tri : edges_to_triangles[edge]) {
+			    std::cout << "  Triangle: " << tri[0] << ", " << tri[1] << ", " << tri[2] << std::endl;
+			}
+		    }
+		}
+		
+		static int detria_analysis_count = 0;
+		if (detria_analysis_count < 3) { // Only analyze first 3 patches
+		    std::cout << "DETRIA ANALYSIS for patch with " << patch.size() << " cells:" << std::endl;
+		    std::cout << "  Total triangles: " << detria_triangles.size() << std::endl;
+		    std::cout << "  Boundary edges: " << boundary_edges << " (count=1)" << std::endl;
+		    std::cout << "  Interior edges: " << interior_edges << " (count=2)" << std::endl;
+		    std::cout << "  Non-manifold edges: " << non_manifold_edges << " (count>2)" << std::endl;
+		    detria_analysis_count++;
+		}
+		
 		return; // Success - used detria with edge Steiner points
 	    }
 	} catch (const std::exception&) {
@@ -2659,6 +2719,69 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
     for (const auto& tri : grid_triangles) {
 	addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
     }
+}
+
+// Deep dive analysis of manifold issues in the entire mesh
+void TerrainMesh::analyzeMeshManifold() {
+    std::map<std::pair<size_t, size_t>, int> global_edge_count;
+    std::map<std::pair<size_t, size_t>, std::vector<size_t>> edges_to_triangles;
+    
+    // Count all edges in the mesh
+    for (size_t i = 0; i < triangles.size(); i++) {
+	const Triangle& tri = triangles[i];
+	
+	// Get the three edges of this triangle (normalize direction)
+	std::vector<std::pair<size_t, size_t>> edges = {
+	    {std::min(tri.vertices[0], tri.vertices[1]), std::max(tri.vertices[0], tri.vertices[1])},
+	    {std::min(tri.vertices[1], tri.vertices[2]), std::max(tri.vertices[1], tri.vertices[2])},
+	    {std::min(tri.vertices[2], tri.vertices[0]), std::max(tri.vertices[2], tri.vertices[0])}
+	};
+	
+	for (const auto& edge : edges) {
+	    global_edge_count[edge]++;
+	    edges_to_triangles[edge].push_back(i);
+	}
+    }
+    
+    // Analysis
+    int non_manifold_edges = 0;
+    int boundary_edges = 0;
+    int interior_edges = 0;
+    
+    std::cout << "\n=== GLOBAL MESH MANIFOLD ANALYSIS ===" << std::endl;
+    
+    for (const auto& [edge, count] : global_edge_count) {
+	if (count == 1) {
+	    boundary_edges++;
+	} else if (count == 2) {
+	    interior_edges++;
+	} else {
+	    non_manifold_edges++;
+	    if (non_manifold_edges <= 10) { // Only show first 10 to avoid spam
+		std::cout << "NON-MANIFOLD EDGE: vertices " << edge.first << "-" << edge.second 
+		         << " shared by " << count << " triangles (triangle IDs: ";
+		for (size_t tri_id : edges_to_triangles[edge]) {
+		    std::cout << tri_id << " ";
+		}
+		std::cout << ")" << std::endl;
+		
+		// Show the vertex coordinates for understanding
+		const Point3D& v1 = vertices[edge.first];
+		const Point3D& v2 = vertices[edge.second];
+		std::cout << "  Edge coordinates: (" << v1.x << "," << v1.y << "," << v1.z << ") to ("
+		         << v2.x << "," << v2.y << "," << v2.z << ")" << std::endl;
+	    }
+	}
+    }
+    
+    std::cout << "Total mesh triangles: " << triangles.size() << std::endl;
+    std::cout << "Boundary edges: " << boundary_edges << " (count=1)" << std::endl;
+    std::cout << "Interior edges: " << interior_edges << " (count=2)" << std::endl;
+    std::cout << "Non-manifold edges: " << non_manifold_edges << " (count>2)" << std::endl;
+    if (non_manifold_edges > 10) {
+	std::cout << "(showing only first 10 non-manifold edges)" << std::endl;
+    }
+    std::cout << "======================================\n" << std::endl;
 }
 
 // Generate optimized surface mesh using coplanar patches
@@ -2713,7 +2836,14 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
 	}
     }
     
+    std::cout << "DEBUG: About to print triangulation summary" << std::endl;
     std::cout << "Triangulated " << patches.size() << " patches and " << fallback_cells << " fallback cells" << std::endl;
+    
+    // Deep dive analysis of manifold issues
+    std::cout << "Starting deep dive manifold analysis..." << std::endl;
+    std::cout.flush();
+    analyzeMeshManifold();
+    std::cout << "Completed deep dive manifold analysis." << std::endl;
 }
 
 } // namespace TerraScape
