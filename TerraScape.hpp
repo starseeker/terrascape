@@ -2263,6 +2263,8 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
     std::vector<PlanarPatch> patches = findPlanarPatches(terrain, active_cells, 
 		params.getErrorTol(), 16);
 
+    std::cout << "Found " << patches.size() << " planar patches of 16+ cells" << std::endl;
+
     // Step 2: Create vertices for all cells (needed for both patches and fallback)
     std::vector<std::vector<size_t>> surface_vertices(terrain.height, 
 		std::vector<size_t>(terrain.width, SIZE_MAX));
@@ -2278,14 +2280,18 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
 
     // Step 3: Triangulate each planar patch using detria
     std::set<std::pair<int, int>> triangulated_cells;
+    int successful_patches = 0;
     for (auto& patch : patches) {
 	if (triangulatePlanarPatchWithDetria(patch, terrain)) {
+	    successful_patches++;
 	    // Mark cells as triangulated
 	    for (const auto& cell : patch.cells) {
 		triangulated_cells.insert(cell);
 	    }
 	}
     }
+    
+    std::cout << "Successfully triangulated " << successful_patches << " out of " << patches.size() << " patches" << std::endl;
 
     // Step 4: Find remaining cells not covered by patches
     std::set<std::pair<int, int>> remaining_cells;
@@ -2294,6 +2300,8 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
 	    remaining_cells.insert(cell);
 	}
     }
+    
+    std::cout << "Triangulated cells: " << triangulated_cells.size() << ", Remaining cells: " << remaining_cells.size() << std::endl;
 
     // Step 5: Triangulate remaining cells with fallback grid method
     triangulateRemainingCellsWithFallback(terrain, remaining_cells, surface_vertices, patches);
@@ -2479,14 +2487,23 @@ bool TerrainMesh::triangulatePlanarPatchWithDetria(PlanarPatch& patch, const Ter
     double patch_area = (patch.max_x - patch.min_x + 1) * (patch.max_y - patch.min_y + 1) * 
 		       terrain.cell_size * terrain.cell_size;
     
-    // Use terrain's Steiner point generation but adapt for patch bounds
-    std::set<std::pair<int, int>> patch_active_cells(patch.cells.begin(), patch.cells.end());
-    std::vector<std::vector<std::pair<double, double>>> holes; // No holes for now
+    std::vector<std::pair<double, double>> steiner_points;
     
-    std::vector<std::pair<double, double>> steiner_points = terrain.generateSteinerPoints(
-	boundary, holes, patch_active_cells, 
-	patch.min_x * terrain.cell_size, patch.max_x * terrain.cell_size,
-	patch.min_y * terrain.cell_size, patch.max_y * terrain.cell_size);
+    // Only generate Steiner points for larger patches
+    if (patch.cells.size() > 50) {
+	// Use terrain's Steiner point generation but adapt for patch bounds
+	std::set<std::pair<int, int>> patch_active_cells(patch.cells.begin(), patch.cells.end());
+	std::vector<std::vector<std::pair<double, double>>> holes; // No holes for now
+	
+	double min_world_x = terrain.origin.x + patch.min_x * terrain.cell_size;
+	double max_world_x = terrain.origin.x + patch.max_x * terrain.cell_size;
+	double min_world_y = terrain.origin.y - patch.max_y * terrain.cell_size; // Note: y is inverted
+	double max_world_y = terrain.origin.y - patch.min_y * terrain.cell_size;
+	
+	steiner_points = terrain.generateSteinerPoints(
+	    boundary, holes, patch_active_cells, 
+	    min_world_x, max_world_x, min_world_y, max_world_y);
+    }
     
     // Try detria triangulation
     try {
