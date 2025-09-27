@@ -41,6 +41,9 @@ int main(int argc, char* argv[])
         ("e,error", "Error threshold for simplification", cxxopts::value<double>()->default_value("0.1"))
         ("c,coplanar", "Coplanar tolerance for planar patch detection", cxxopts::value<double>()->default_value("0.1"))
         ("r,reduction", "Minimum triangle reduction percentage", cxxopts::value<int>()->default_value("70"))
+        ("abs", "BRL-CAD absolute tolerance in model units", cxxopts::value<double>())
+        ("rel", "BRL-CAD relative tolerance as fraction of bounding box diagonal", cxxopts::value<double>())
+        ("norm", "BRL-CAD normal tolerance in degrees", cxxopts::value<double>())
         ("h,help", "Print usage");
     
     auto result = options.parse(argc, argv);
@@ -62,6 +65,12 @@ int main(int argc, char* argv[])
     double error_threshold = result.count("error") ? result["error"].as<double>() : 0.1;
     double coplanar_tolerance = result.count("coplanar") ? result["coplanar"].as<double>() : 0.1;
     int reduction_percent = result.count("reduction") ? result["reduction"].as<int>() : 70;
+    
+    // Parse BRL-CAD tolerance options
+    double abs_tolerance = result.count("abs") ? result["abs"].as<double>() : -1.0;
+    double rel_tolerance = result.count("rel") ? result["rel"].as<double>() : -1.0;
+    double norm_tolerance = result.count("norm") ? result["norm"].as<double>() : -1.0;
+    bool has_brlcad_tolerances = (abs_tolerance >= 0 || rel_tolerance >= 0 || norm_tolerance >= 0);
     
     std::cout << "TerraScape Terrain Triangulation Demo" << std::endl;
     std::cout << "Input: " << input_file << std::endl;
@@ -144,10 +153,31 @@ int main(int argc, char* argv[])
         std::cout << "Mode: Dense (with component analysis)" << std::endl;
     }
     if (use_simplified || surface_only || planar_patches) {
-        std::cout << "Error threshold: " << error_threshold << std::endl;
-        std::cout << "Target reduction: " << reduction_percent << "%" << std::endl;
+        if (has_brlcad_tolerances) {
+            std::cout << "Using BRL-CAD tolerances:" << std::endl;
+            if (abs_tolerance >= 0) std::cout << "  Absolute: " << abs_tolerance << std::endl;
+            if (rel_tolerance >= 0) std::cout << "  Relative: " << rel_tolerance << std::endl;
+            if (norm_tolerance >= 0) std::cout << "  Normal: " << norm_tolerance << " degrees" << std::endl;
+        } else {
+            std::cout << "Error threshold: " << error_threshold << std::endl;
+            std::cout << "Target reduction: " << reduction_percent << "%" << std::endl;
+        }
     }
    
+    // Helper function to configure SimplificationParams
+    auto configureSimplificationParams = [&]() {
+        TerraScape::SimplificationParams params;
+        if (has_brlcad_tolerances) {
+            // Use BRL-CAD style tolerances
+            params.setBrlcadTolerances(abs_tolerance, rel_tolerance, norm_tolerance);
+        } else {
+            // Use legacy parameters
+            params.setErrorTol(error_threshold);
+        }
+        params.setMinReduction(reduction_percent);
+        return params;
+    };
+
     try {
 #ifdef HAVE_GDAL 
         // Initialize GDAL
@@ -170,19 +200,14 @@ int main(int argc, char* argv[])
         } else if (use_legacy) {
             mesh.triangulateVolumeLegacy(terrain);
         } else if (planar_patches) {
-            TerraScape::SimplificationParams params;
-            params.setErrorTol(error_threshold);
-            params.setMinReduction(reduction_percent);
-            mesh.triangulateSurfaceWithPlanarPatches(terrain, params, coplanar_tolerance);
+            auto params = configureSimplificationParams();
+            double effective_coplanar_tolerance = has_brlcad_tolerances ? -1.0 : coplanar_tolerance;
+            mesh.triangulateSurfaceWithPlanarPatches(terrain, params, effective_coplanar_tolerance);
         } else if (surface_only) {
-            TerraScape::SimplificationParams params;
-            params.setErrorTol(error_threshold);
-            params.setMinReduction(reduction_percent);
+            auto params = configureSimplificationParams();
             mesh.triangulateSurfaceOnly(terrain, params);
         } else if (use_simplified) {
-            TerraScape::SimplificationParams params;
-            params.setErrorTol(error_threshold);
-            params.setMinReduction(reduction_percent);
+            auto params = configureSimplificationParams();
             mesh.triangulateVolumeSimplified(terrain, params);
         } else {
             // Default to component-based approach
