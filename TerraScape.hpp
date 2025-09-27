@@ -335,8 +335,8 @@ class TerrainMesh {
 	// New planar patch-based surface triangulation
 	void triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params, double coplanar_tolerance = -1.0);
 	
-	// Apply mmesh simplification to surface mesh
-	bool simplifyMeshWithMmesh(double target_reduction = 0.5);
+	// Apply mmesh simplification to surface mesh using BRL-CAD tolerance-based parameters
+	bool simplifyMeshWithMmesh(const SimplificationParams& params, const TerrainData& terrain);
 
     private:
 	// Helper methods for triangulation
@@ -392,31 +392,65 @@ class MeshStats {
 };
 
 // Terrain simplification parameters based on Terra/Scape concepts
+// Now supports BRL-CAD style abs/rel/norm tolerances for compatibility with dsp_tess.cpp
 class SimplificationParams {
     public:
 	SimplificationParams() :
 	    error_tol(0.1),
 	    slope_tol(0.2),
 	    min_reduction(50),
-	    preserve_bounds(true) {}
+	    preserve_bounds(true),
+	    abs_tol(-1.0),        // BRL-CAD absolute tolerance (negative = not set)
+	    rel_tol(-1.0),        // BRL-CAD relative tolerance (negative = not set)
+	    norm_tol(-1.0),       // BRL-CAD normal tolerance in degrees (negative = not set)
+	    use_brlcad_tolerances(false) {}
 
-	// Getters
+	// Legacy getters (maintained for backward compatibility)
 	double getErrorTol() const { return error_tol; }
 	double getSlopeTol() const { return slope_tol; }
 	int getMinReduction() const { return min_reduction; }
 	bool getPreserveBounds() const { return preserve_bounds; }
 
-	// Setters
+	// BRL-CAD tolerance getters
+	double getAbsTol() const { return abs_tol; }
+	double getRelTol() const { return rel_tol; }
+	double getNormTol() const { return norm_tol; }
+	bool getUseBrlcadTolerances() const { return use_brlcad_tolerances; }
+
+	// Legacy setters (maintained for backward compatibility)
 	void setErrorTol(double val) { error_tol = val; }
 	void setSlopeTol(double val) { slope_tol = val; }
 	void setMinReduction(int val) { min_reduction = val; }
 	void setPreserveBounds(bool val) { preserve_bounds = val; }
 
+	// BRL-CAD tolerance setters
+	void setAbsTol(double val) { abs_tol = val; use_brlcad_tolerances = (abs_tol >= 0 || rel_tol >= 0 || norm_tol >= 0); }
+	void setRelTol(double val) { rel_tol = val; use_brlcad_tolerances = (abs_tol >= 0 || rel_tol >= 0 || norm_tol >= 0); }
+	void setNormTol(double val) { norm_tol = val; use_brlcad_tolerances = (abs_tol >= 0 || rel_tol >= 0 || norm_tol >= 0); }
+
+	// Set all BRL-CAD tolerances at once (like dsp_tess.cpp interface)
+	void setBrlcadTolerances(double abs, double rel, double norm) {
+	    abs_tol = abs; rel_tol = rel; norm_tol = norm;
+	    use_brlcad_tolerances = true;
+	}
+
+	// Convert BRL-CAD tolerances to effective geometric error and feature size for mmesh
+	// This is the key function that maps abs/rel/norm to practical mmesh parameters
+	double computeEffectiveFeatureSize(const TerrainData& terrain) const;
+	double computeEffectiveCoplanarTolerance(const TerrainData& terrain) const;
+
     private:
+	// Legacy parameters (maintained for backward compatibility)
 	double error_tol;      // Maximum allowed geometric error
 	double slope_tol;      // Slope threshold for feature preservation
 	int min_reduction;     // Minimum percentage of triangles to remove
 	bool preserve_bounds;  // Whether to preserve terrain boundaries
+	
+	// BRL-CAD style tolerance parameters
+	double abs_tol;        // Absolute tolerance in model units
+	double rel_tol;        // Relative tolerance as fraction of bounding box diagonal
+	double norm_tol;       // Normal tolerance in degrees
+	bool use_brlcad_tolerances; // Whether to use BRL-CAD tolerances instead of legacy ones
 };
 
 // Local terrain analysis for adaptive simplification
@@ -2090,6 +2124,103 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
     return stats;
 }
 
+// SimplificationParams methods for converting BRL-CAD tolerances to practical mmesh parameters
+
+double SimplificationParams::computeEffectiveFeatureSize(const TerrainData& terrain) const {
+    if (!use_brlcad_tolerances) {
+        // Use legacy error_tol as feature size 
+        return error_tol;
+    }
+    
+    // Compute terrain dimensions and scale for tolerance conversion
+    double terrain_width = terrain.width * terrain.cell_size;
+    double terrain_height = terrain.height * terrain.cell_size;
+    double elevation_range = terrain.max_height - terrain.min_height;
+    
+    // Bounding box diagonal for rel_tol calculations
+    double bbox_diagonal = std::sqrt(terrain_width * terrain_width + 
+                                   terrain_height * terrain_height + 
+                                   elevation_range * elevation_range);
+    
+    double effective_tolerance = 0.0;
+    
+    // Convert abs_tol if provided
+    if (abs_tol >= 0) {
+        effective_tolerance = std::max(effective_tolerance, abs_tol);
+    }
+    
+    // Convert rel_tol if provided 
+    if (rel_tol >= 0) {
+        double rel_tolerance = rel_tol * bbox_diagonal;
+        effective_tolerance = std::max(effective_tolerance, rel_tolerance);
+    }
+    
+    // Convert norm_tol if provided (normal tolerance affects surface approximation)
+    if (norm_tol >= 0) {
+        // Convert angle tolerance to geometric tolerance
+        // For terrain, use a conservative estimate based on cell size and elevation range
+        double norm_tolerance = terrain.cell_size * std::tan(norm_tol * M_PI / 180.0);
+        effective_tolerance = std::max(effective_tolerance, norm_tolerance);
+    }
+    
+    // Apply scaling factors based on problem statement requirements:
+    // "loose tolerances should translate to more aggressive coplanar patching and larger feature sizes for mmesh"
+    // Larger feature sizes mean more aggressive decimation
+    double feature_size = effective_tolerance;
+    
+    // Ensure minimum sensible feature size
+    if (feature_size <= 0.0) {
+        feature_size = terrain.cell_size * 0.1; // Default to 10% of cell size
+    }
+    
+    return feature_size;
+}
+
+double SimplificationParams::computeEffectiveCoplanarTolerance(const TerrainData& terrain) const {
+    if (!use_brlcad_tolerances) {
+        // Use legacy behavior - derive from error_tol
+        return error_tol * 2.0; // Coplanar tolerance typically more permissive than geometric error
+    }
+    
+    // For coplanar detection, we want looser tolerances to result in more aggressive patching
+    // This supports the requirement: "flat areas contribute the least to overall shape so we really need 
+    // the coarser tessellations there - so loose tolerances should translate to more aggressive coplanar patching"
+    
+    double terrain_width = terrain.width * terrain.cell_size;
+    double terrain_height = terrain.height * terrain.cell_size; 
+    double elevation_range = terrain.max_height - terrain.min_height;
+    double bbox_diagonal = std::sqrt(terrain_width * terrain_width + 
+                                   terrain_height * terrain_height + 
+                                   elevation_range * elevation_range);
+    
+    double coplanar_tolerance = 0.0;
+    
+    // Convert abs_tol for coplanar detection (more permissive)
+    if (abs_tol >= 0) {
+        coplanar_tolerance = std::max(coplanar_tolerance, abs_tol * 3.0);
+    }
+    
+    // Convert rel_tol for coplanar detection 
+    if (rel_tol >= 0) {
+        double rel_tolerance = rel_tol * bbox_diagonal * 2.0; // More aggressive for flat areas
+        coplanar_tolerance = std::max(coplanar_tolerance, rel_tolerance);
+    }
+    
+    // Normal tolerance directly affects coplanarity detection
+    if (norm_tol >= 0) {
+        // For coplanar patches, be more permissive with normal deviations
+        double norm_tolerance = terrain.cell_size * std::tan((norm_tol * 2.0) * M_PI / 180.0);
+        coplanar_tolerance = std::max(coplanar_tolerance, norm_tolerance);
+    }
+    
+    // Ensure minimum sensible coplanar tolerance
+    if (coplanar_tolerance <= 0.0) {
+        coplanar_tolerance = terrain.cell_size * 0.2; // Default to 20% of cell size
+    }
+    
+    return coplanar_tolerance;
+}
+
 bool TerrainData::fromDSP(const DSPData& dsp) {
     if (!dsp.dsp_buf || dsp.dsp_xcnt == 0 || dsp.dsp_ycnt == 0) {
 	return false;
@@ -2394,8 +2525,13 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
     // Step 2: Find triangle-based planar patches
     std::cout << "Step 2: Finding triangle planar patches..." << std::endl;
     
-    // Use provided coplanar tolerance, or fallback to error threshold if not specified
-    double tolerance = (coplanar_tolerance >= 0.0) ? coplanar_tolerance : params.getErrorTol();
+    // Use provided coplanar tolerance, or compute from BRL-CAD tolerances if available
+    double tolerance;
+    if (coplanar_tolerance >= 0.0) {
+        tolerance = coplanar_tolerance;
+    } else {
+        tolerance = params.computeEffectiveCoplanarTolerance(terrain);
+    }
     std::cout << "Using coplanar tolerance: " << tolerance << std::endl;
     
     std::vector<TrianglePlanarPatch> patches = findTrianglePlanarPatches(tolerance, 16);
@@ -2416,8 +2552,7 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
     // Step 4: Apply mmesh simplification to the final surface mesh
     if (surface_triangle_count > 0) {
         std::cout << "Step 4: Applying mmesh simplification to " << surface_triangle_count << " surface triangles..." << std::endl;
-        double reduction_factor = params.getMinReduction() / 100.0; // Convert percentage to fraction
-        if (simplifyMeshWithMmesh(reduction_factor)) {
+        if (simplifyMeshWithMmesh(params, terrain)) {
             std::cout << "Mmesh simplification successful. Final mesh: " << vertices.size() << " vertices, " << triangles.size() << " triangles" << std::endl;
         } else {
             std::cout << "Mmesh simplification failed, using original mesh" << std::endl;
@@ -2674,10 +2809,13 @@ void TerrainMesh::growTrianglePlanarPatch(TrianglePlanarPatch& patch, std::vecto
     }
 }
 
-bool TerrainMesh::simplifyMeshWithMmesh(double target_reduction) {
+bool TerrainMesh::simplifyMeshWithMmesh(const SimplificationParams& params, const TerrainData& terrain) {
     if (vertices.empty() || triangles.empty()) {
         return false;
     }
+    
+    // Compute effective feature size from BRL-CAD tolerances
+    double feature_size = params.computeEffectiveFeatureSize(terrain);
     
     // Convert TerraScape mesh to mmesh format
     std::vector<float> mmesh_vertices;
@@ -2705,8 +2843,8 @@ bool TerrainMesh::simplifyMeshWithMmesh(double target_reduction) {
         vertices.size(), mmesh_vertices.data(), MD_FORMAT_FLOAT, 3 * sizeof(float),
         triangles.size(), mmesh_indices.data(), MD_FORMAT_UINT32, 3 * sizeof(uint32_t));
     
-    // Configure operation parameters
-    mdOperationStrength(&operation, target_reduction);
+    // Configure operation parameters - use feature size instead of target reduction
+    mdOperationStrength(&operation, feature_size);
     
     // Perform mesh decimation
     int result = mdMeshDecimation(&operation, 1, 0); // Single threaded
