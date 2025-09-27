@@ -2524,7 +2524,18 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
     }
 
     // Step 5: Use detria with the exact boundary constraints
+    // NOTE: Currently using grid triangulation only due to manifold issues with detria
+    // The boundary constraint logic is correct, but detria triangulation creates 
+    // non-manifold edges even when constrained
     try {
+	// Use grid triangulation for now - this maintains manifold property
+	for (const auto& tri : grid_triangles) {
+	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
+	}
+	return;
+	
+	// TODO: Investigate why detria with boundary constraints creates non-manifold edges
+	// even though the boundary polygon should mate exactly with surrounding grid
 	std::vector<detria::PointD> all_points;
 	std::vector<size_t> all_vertex_indices;
 
@@ -2570,7 +2581,7 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 
 	if (success) {
 	    // Extract triangles and add them to the mesh
-	    bool cwTriangles = false;
+	    bool cwTriangles = true; // Try clockwise to match grid triangulation
 
 	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
 		size_t v0, v1, v2;
@@ -2587,7 +2598,8 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 		    v2 = all_vertex_indices[triangle.z];
 		} else return;
 
-		addSurfaceTriangle(v0, v1, v2);
+		// Use clockwise with reversed winding (like bottom face)
+		addSurfaceTriangle(v0, v2, v1);
 	    }, cwTriangles);
 	} else {
 	    // Fallback to grid triangulation
