@@ -1990,11 +1990,32 @@ MeshStats TerrainMesh::validate(const TerrainData& terrain) const {
 	edge_count[e3]++;
     }
 
-    // Count non-manifold edges
+    // Count non-manifold edges and boundary edges
+    int boundary_edges = 0;
+    int non_manifold_edges = 0;
+    
     for (const auto& pair : edge_count) {
-	if (pair.second != 2) {
+	if (pair.second == 1) {
+	    boundary_edges++;
+	} else if (pair.second != 2) {
+	    non_manifold_edges++;
 	    stats.setNonManifoldEdges(stats.getNonManifoldEdges() + 1);
 	    stats.setIsManifold(false);
+	}
+    }
+    
+    // Add debug output for manifold validation
+    std::cout << "=== VALIDATION ANALYSIS ===" << std::endl;
+    std::cout << "Total triangles: " << triangles.size() << std::endl;
+    std::cout << "Total edges: " << edge_count.size() << std::endl;
+    std::cout << "Boundary edges (count=1): " << boundary_edges << std::endl;
+    std::cout << "Non-manifold edges (count!=2 and !=1): " << non_manifold_edges << std::endl;
+    
+    if (boundary_edges > 0) {
+	std::cout << "WARNING: Mesh has " << boundary_edges << " boundary edges - this suggests" << std::endl;
+	std::cout << "         either incomplete volume mesh or surface-only mesh being validated." << std::endl;
+	if (non_manifold_edges == 0 && boundary_edges > 0) {
+	    std::cout << "NOTE: Mesh would be manifold if boundary edges were closed." << std::endl;
 	}
     }
 
