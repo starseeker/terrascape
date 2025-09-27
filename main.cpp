@@ -165,30 +165,23 @@ int main(int argc, char* argv[])
         
         // Generate triangle mesh
         TerraScape::TerrainMesh mesh;
-        std::cout << "DEBUG: use_planar_patches=" << use_planar_patches << std::endl;
         if (use_components) {
-            std::cout << "Using components triangulation" << std::endl;
             mesh.triangulateVolumeWithComponents(terrain);
         } else if (use_legacy) {
-            std::cout << "Using legacy triangulation" << std::endl;
             mesh.triangulateVolumeLegacy(terrain);
         } else if (surface_only) {
-            std::cout << "Using surface only triangulation" << std::endl;
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
             mesh.triangulateSurfaceOnly(terrain, params);
         } else if (use_simplified) {
-            std::cout << "Using simplified triangulation" << std::endl;
             TerraScape::SimplificationParams params;
             params.setErrorTol(error_threshold);
             params.setMinReduction(reduction_percent);
             mesh.triangulateVolumeSimplified(terrain, params);
         } else if (use_planar_patches) {
-            std::cout << "Using planar patches triangulation" << std::endl;
             mesh.triangulateVolumeWithPlanarPatches(terrain, coplanar_tolerance);
         } else {
-            std::cout << "Using default component-based triangulation" << std::endl;
             // Default to component-based approach
             mesh.triangulateVolume(terrain);
         }

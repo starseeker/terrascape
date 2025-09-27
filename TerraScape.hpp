@@ -2167,7 +2167,6 @@ bool TerrainMesh::toNMG(NMGTriangleData& nmg_data) const {
 
 // New triangulation method using coplanar patches for optimized surface mesh
 void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain, double coplanar_tolerance) {
-    std::cout << "DEBUG: Starting triangulateVolumeWithPlanarPatches" << std::endl;
     clear();
 
     if (terrain.width <= 0 || terrain.height <= 0) {
@@ -2253,6 +2252,10 @@ void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain,
 	}
     }
 
+    // BOUNDARY DISCONNECT ANALYSIS: Run immediately after surface triangulation
+    std::cout << "=== ANALYZING DETRIA/GRID BOUNDARY DISCONNECT (SURFACE ONLY) ===" << std::endl;
+    analyzeMeshManifold();
+
     // Add bottom surface triangles using detria
     triangulateBottomFaceWithDetria(bottom_vertices, terrain, nullptr);
 
@@ -2302,6 +2305,10 @@ void TerrainMesh::triangulateVolumeWithPlanarPatches(const TerrainData& terrain,
 	addTriangle(top_0, bot_0, top_1);
 	addTriangle(top_1, bot_0, bot_1);
     }
+    
+    // FINAL BOUNDARY DISCONNECT ANALYSIS: Run after complete mesh generation
+    std::cout << "\n=== FINAL MESH ANALYSIS (AFTER BOTTOM + WALLS) ===" << std::endl;
+    analyzeMeshManifold();
 }
 
 // Find coplanar patches of 9 or more cells
@@ -2748,39 +2755,100 @@ void TerrainMesh::analyzeMeshManifold() {
     int boundary_edges = 0;
     int interior_edges = 0;
     
-    std::cout << "\n=== GLOBAL MESH MANIFOLD ANALYSIS ===" << std::endl;
+    std::cout << "\n=== DETAILED BOUNDARY DISCONNECT ANALYSIS ===" << std::endl;
+    
+    // Create spatial hash for detecting geometrically coincident but vertex-distinct edges
+    std::map<std::string, std::vector<std::pair<size_t, size_t>>> geometric_edges;
     
     for (const auto& [edge, count] : global_edge_count) {
+	const Point3D& v1 = vertices[edge.first];
+	const Point3D& v2 = vertices[edge.second];
+	
+	// Create geometric key for edge (independent of vertex indices)
+	char geo_key[256];
+	snprintf(geo_key, sizeof(geo_key), "%.6f,%.6f,%.6f_%.6f,%.6f,%.6f", 
+		 std::min(v1.x, v2.x), std::min(v1.y, v2.y), std::min(v1.z, v2.z),
+		 std::max(v1.x, v2.x), std::max(v1.y, v2.y), std::max(v1.z, v2.z));
+	
+	geometric_edges[std::string(geo_key)].push_back(edge);
+	
 	if (count == 1) {
 	    boundary_edges++;
 	} else if (count == 2) {
 	    interior_edges++;
 	} else {
 	    non_manifold_edges++;
-	    if (non_manifold_edges <= 10) { // Only show first 10 to avoid spam
-		std::cout << "NON-MANIFOLD EDGE: vertices " << edge.first << "-" << edge.second 
-		         << " shared by " << count << " triangles (triangle IDs: ";
-		for (size_t tri_id : edges_to_triangles[edge]) {
-		    std::cout << tri_id << " ";
-		}
-		std::cout << ")" << std::endl;
-		
-		// Show the vertex coordinates for understanding
-		const Point3D& v1 = vertices[edge.first];
-		const Point3D& v2 = vertices[edge.second];
+	    if (non_manifold_edges <= 5) { // Show fewer for detailed analysis
+		std::cout << "\nNON-MANIFOLD EDGE #" << non_manifold_edges << ": vertices " 
+		         << edge.first << "-" << edge.second << " shared by " << count << " triangles" << std::endl;
 		std::cout << "  Edge coordinates: (" << v1.x << "," << v1.y << "," << v1.z << ") to ("
 		         << v2.x << "," << v2.y << "," << v2.z << ")" << std::endl;
+		
+		// Show triangles sharing this edge
+		for (size_t tri_id : edges_to_triangles[edge]) {
+		    const Triangle& tri = triangles[tri_id];
+		    std::cout << "  Triangle " << tri_id << ": vertices " 
+		             << tri.vertices[0] << ", " << tri.vertices[1] << ", " << tri.vertices[2] << std::endl;
+		    
+		    // Show triangle vertex coordinates
+		    for (int v = 0; v < 3; v++) {
+			const Point3D& vertex = vertices[tri.vertices[v]];
+			std::cout << "    Vertex " << tri.vertices[v] << ": (" 
+			         << vertex.x << ", " << vertex.y << ", " << vertex.z << ")" << std::endl;
+		    }
+		}
 	    }
 	}
     }
     
+    // Check for duplicate vertices (geometrically coincident)
+    std::cout << "\n=== DUPLICATE VERTEX ANALYSIS ===" << std::endl;
+    std::map<std::string, std::vector<size_t>> vertex_positions;
+    for (size_t i = 0; i < vertices.size(); i++) {
+	const Point3D& v = vertices[i];
+	char pos_key[128];
+	snprintf(pos_key, sizeof(pos_key), "%.6f,%.6f,%.6f", v.x, v.y, v.z);
+	vertex_positions[std::string(pos_key)].push_back(i);
+    }
+    
+    int duplicate_positions = 0;
+    for (const auto& [pos, vertex_list] : vertex_positions) {
+	if (vertex_list.size() > 1) {
+	    duplicate_positions++;
+	    if (duplicate_positions <= 5) { // Show first 5 duplicate positions
+		std::cout << "Duplicate position " << pos << " has " << vertex_list.size() << " vertices: ";
+		for (size_t vid : vertex_list) {
+		    std::cout << vid << " ";
+		}
+		std::cout << std::endl;
+	    }
+	}
+    }
+    
+    // Check for geometrically coincident but vertex-distinct edges
+    std::cout << "\n=== GEOMETRICALLY COINCIDENT EDGE ANALYSIS ===" << std::endl;
+    int coincident_edge_groups = 0;
+    for (const auto& [geo_key, edge_list] : geometric_edges) {
+	if (edge_list.size() > 1) {
+	    coincident_edge_groups++;
+	    if (coincident_edge_groups <= 5) { // Show first 5 groups
+		std::cout << "Geometrically coincident edges at position " << geo_key << ":" << std::endl;
+		for (const auto& edge : edge_list) {
+		    std::cout << "  Edge vertices " << edge.first << "-" << edge.second 
+		             << " (appears in " << global_edge_count[edge] << " triangles)" << std::endl;
+		}
+	    }
+	}
+    }
+    
+    std::cout << "\n=== SUMMARY ===" << std::endl;
     std::cout << "Total mesh triangles: " << triangles.size() << std::endl;
+    std::cout << "Total vertices: " << vertices.size() << std::endl;
     std::cout << "Boundary edges: " << boundary_edges << " (count=1)" << std::endl;
     std::cout << "Interior edges: " << interior_edges << " (count=2)" << std::endl;
     std::cout << "Non-manifold edges: " << non_manifold_edges << " (count>2)" << std::endl;
-    if (non_manifold_edges > 10) {
-	std::cout << "(showing only first 10 non-manifold edges)" << std::endl;
-    }
+    std::cout << "Duplicate vertex positions: " << duplicate_positions << std::endl;
+    std::cout << "Coincident edge groups: " << coincident_edge_groups << std::endl;
     std::cout << "======================================\n" << std::endl;
 }
 
@@ -2808,9 +2876,20 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
     }
 
     // Triangulate each coplanar patch
+    std::cout << "DEBUG: About to triangulate " << patches.size() << " patches" << std::endl;
+    int patch_count = 0;
     for (const auto& patch : patches) {
+	patch_count++;
+	if (patch_count % 100 == 0) {
+	    std::cout << "DEBUG: Triangulated " << patch_count << " patches" << std::endl;
+	}
 	triangulateCoplanarPatch(patch, terrain, top_vertices);
     }
+    std::cout << "DEBUG: Completed triangulating all " << patch_count << " patches" << std::endl;
+    
+    // DEBUG: Test manifold analysis immediately after patches
+    std::cout << "DEBUG: Testing manifold analysis after patches..." << std::endl;
+    analyzeMeshManifold();
 
     // Triangulate remaining cells using fallback method
     int fallback_cells = 0;
@@ -2836,14 +2915,11 @@ void TerrainMesh::generateSurfaceMeshWithPatches(const TerrainData& terrain,
 	}
     }
     
-    std::cout << "DEBUG: About to print triangulation summary" << std::endl;
     std::cout << "Triangulated " << patches.size() << " patches and " << fallback_cells << " fallback cells" << std::endl;
+    std::cout << "About to run manifold analysis..." << std::endl;
     
     // Deep dive analysis of manifold issues
-    std::cout << "Starting deep dive manifold analysis..." << std::endl;
-    std::cout.flush();
     analyzeMeshManifold();
-    std::cout << "Completed deep dive manifold analysis." << std::endl;
 }
 
 } // namespace TerraScape
