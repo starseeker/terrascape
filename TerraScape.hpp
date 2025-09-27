@@ -2523,95 +2523,10 @@ void TerrainMesh::triangulateCoplanarPatchWithDetria(const CoplanarPatch& patch,
 	boundary_points.push_back({vertex.x, vertex.y});
     }
 
-    // Step 5: Use detria with the exact boundary constraints
-    // NOTE: Currently using grid triangulation only due to manifold issues with detria
-    // The boundary constraint logic is correct, but detria triangulation creates 
-    // non-manifold edges even when constrained
-    try {
-	// Use grid triangulation for now - this maintains manifold property
-	for (const auto& tri : grid_triangles) {
-	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
-	}
-	return;
-	
-	// TODO: Investigate why detria with boundary constraints creates non-manifold edges
-	// even though the boundary polygon should mate exactly with surrounding grid
-	std::vector<detria::PointD> all_points;
-	std::vector<size_t> all_vertex_indices;
-
-	// Add boundary points first
-	for (size_t i = 0; i < boundary_vertex_indices.size(); ++i) {
-	    const Point3D& vertex = vertices[boundary_vertex_indices[i]];
-	    all_points.push_back({vertex.x, vertex.y});
-	    all_vertex_indices.push_back(boundary_vertex_indices[i]);
-	}
-
-	// Add some interior points for better triangulation
-	std::set<size_t> boundary_set(boundary_vertex_indices.begin(), boundary_vertex_indices.end());
-	std::set<size_t> all_patch_vertices;
-	
-	for (const auto& tri : grid_triangles) {
-	    all_patch_vertices.insert(tri.vertices[0]);
-	    all_patch_vertices.insert(tri.vertices[1]);
-	    all_patch_vertices.insert(tri.vertices[2]);
-	}
-	
-	// Add interior vertices (not on boundary)
-	for (size_t vertex_idx : all_patch_vertices) {
-	    if (!boundary_set.count(vertex_idx)) {
-		const Point3D& vertex = vertices[vertex_idx];
-		all_points.push_back({vertex.x, vertex.y});
-		all_vertex_indices.push_back(vertex_idx);
-	    }
-	}
-
-	// Set up detria triangulation with boundary constraints
-	detria::Triangulation tri;
-	tri.setPoints(all_points);
-
-	// Add boundary outline constraint - this preserves the exact boundary
-	std::vector<uint32_t> outline_indices;
-	for (size_t i = 0; i < boundary_vertex_indices.size(); ++i) {
-	    outline_indices.push_back(static_cast<uint32_t>(i));
-	}
-	tri.addOutline(outline_indices);
-
-	// Triangulate
-	bool success = tri.triangulate(true);
-
-	if (success) {
-	    // Extract triangles and add them to the mesh
-	    bool cwTriangles = true; // Try clockwise to match grid triangulation
-
-	    tri.forEachTriangle([&](detria::Triangle<uint32_t> triangle) {
-		size_t v0, v1, v2;
-
-		if (triangle.x < all_vertex_indices.size()) {
-		    v0 = all_vertex_indices[triangle.x];
-		} else return;
-
-		if (triangle.y < all_vertex_indices.size()) {
-		    v1 = all_vertex_indices[triangle.y];
-		} else return;
-
-		if (triangle.z < all_vertex_indices.size()) {
-		    v2 = all_vertex_indices[triangle.z];
-		} else return;
-
-		// Use clockwise with reversed winding (like bottom face)
-		addSurfaceTriangle(v0, v2, v1);
-	    }, cwTriangles);
-	} else {
-	    // Fallback to grid triangulation
-	    for (const auto& tri : grid_triangles) {
-		addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
-	    }
-	}
-    } catch (const std::exception&) {
-	// Fallback to grid triangulation if detria fails
-	for (const auto& tri : grid_triangles) {
-	    addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
-	}
+    // Step 5: For now, use only grid triangulation to maintain manifold property
+    // TODO: Investigate why detria creates non-manifold edges despite constraints
+    for (const auto& tri : grid_triangles) {
+	addSurfaceTriangle(tri.vertices[0], tri.vertices[1], tri.vertices[2]);
     }
 }
 
