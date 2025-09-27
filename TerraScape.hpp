@@ -96,6 +96,10 @@
 
 #include "detria.hpp"
 
+extern "C" {
+#include "meshdecimation.h"
+}
+
 namespace TerraScape {
 
 // Forward declarations for types used in method signatures
@@ -329,6 +333,9 @@ class TerrainMesh {
 	
 	// New planar patch-based surface triangulation
 	void triangulateSurfaceWithPlanarPatches(const TerrainData& terrain, const SimplificationParams& params);
+	
+	// Apply mmesh simplification to surface mesh
+	bool simplifyMeshWithMmesh(double target_reduction = 0.5);
 
     private:
 	// Helper methods for triangulation
@@ -2306,8 +2313,16 @@ void TerrainMesh::triangulateSurfaceWithPlanarPatches(const TerrainData& terrain
     // Step 5: Triangulate remaining cells with fallback grid method
     triangulateRemainingCellsWithFallback(terrain, remaining_cells, surface_vertices, patches);
 
-    // TODO: Step 6: Apply mmesh simplification to the final surface mesh
-    // This would require integrating the mmesh library functionality
+    // Step 6: Apply mmesh simplification to the final surface mesh
+    if (surface_triangle_count > 0) {
+        std::cout << "Applying mmesh simplification to " << surface_triangle_count << " surface triangles..." << std::endl;
+        double reduction_factor = params.getMinReduction() / 100.0; // Convert percentage to fraction
+        if (simplifyMeshWithMmesh(reduction_factor)) {
+            std::cout << "Mmesh simplification successful. Final mesh: " << vertices.size() << " vertices, " << triangles.size() << " triangles" << std::endl;
+        } else {
+            std::cout << "Mmesh simplification failed, using original mesh" << std::endl;
+        }
+    }
 }
 
 // Find planar patches during flood fill analysis
@@ -2531,6 +2546,75 @@ void TerrainMesh::triangulateRemainingCellsWithFallback(const TerrainData& terra
 	    // to ensure manifold connections
 	}
     }
+}
+
+// Apply mmesh simplification to surface mesh
+bool TerrainMesh::simplifyMeshWithMmesh(double target_reduction) {
+    if (vertices.empty() || triangles.empty()) {
+        return false;
+    }
+    
+    // Convert TerraScape mesh to mmesh format
+    std::vector<float> mmesh_vertices;
+    std::vector<uint32_t> mmesh_indices;
+    
+    // Convert vertices (x, y, z as float)
+    for (const auto& vertex : vertices) {
+        mmesh_vertices.push_back(static_cast<float>(vertex.x));
+        mmesh_vertices.push_back(static_cast<float>(vertex.y));
+        mmesh_vertices.push_back(static_cast<float>(vertex.z));
+    }
+    
+    // Convert triangles (indices as uint32_t)
+    for (const auto& triangle : triangles) {
+        mmesh_indices.push_back(static_cast<uint32_t>(triangle.vertices[0]));
+        mmesh_indices.push_back(static_cast<uint32_t>(triangle.vertices[1]));
+        mmesh_indices.push_back(static_cast<uint32_t>(triangle.vertices[2]));
+    }
+    
+    // Set up mmesh operation
+    mdOperation operation;
+    mdOperationInit(&operation);
+    
+    mdOperationData(&operation, 
+        vertices.size(), mmesh_vertices.data(), MD_FORMAT_FLOAT, 3 * sizeof(float),
+        triangles.size(), mmesh_indices.data(), MD_FORMAT_UINT32, 3 * sizeof(uint32_t));
+    
+    // Configure operation parameters
+    mdOperationStrength(&operation, target_reduction);
+    
+    // Perform mesh decimation
+    int result = mdMeshDecimation(&operation, 1, 0); // Single threaded
+    
+    if (result) {
+        // Success - update the mesh with decimated results
+        
+        // Clear current mesh
+        clear();
+        
+        // Copy decimated vertices back
+        for (size_t i = 0; i < operation.vertexcount; ++i) {
+            float* vertex_ptr = static_cast<float*>(operation.vertex) + (i * 3);
+            addVertex(Point3D(vertex_ptr[0], vertex_ptr[1], vertex_ptr[2]));
+        }
+        
+        // Copy decimated triangles back
+        uint32_t* indices_ptr = static_cast<uint32_t*>(operation.indices);
+        for (size_t i = 0; i < operation.tricount; ++i) {
+            uint32_t i0 = indices_ptr[i * 3 + 0];
+            uint32_t i1 = indices_ptr[i * 3 + 1]; 
+            uint32_t i2 = indices_ptr[i * 3 + 2];
+            
+            // Check for valid indices
+            if (i0 < vertices.size() && i1 < vertices.size() && i2 < vertices.size()) {
+                addSurfaceTriangle(i0, i1, i2);
+            }
+        }
+        
+        return true;
+    }
+    
+    return false;
 }
 
 } // namespace TerraScape
